@@ -55,14 +55,14 @@ func (Manager) Run(root, action, message, packageName string) (Result, error) {
 	case "dev":
 		name, args = manager, []string{"run", "dev"}
 	case "commit":
+		if strings.TrimSpace(message) == "" {
+			return Result{}, errors.New("请填写本次提交说明")
+		}
 		name, args = "git", []string{"add", "."}
 		if _, err := run(root, name, args...); err != nil {
 			return Result{}, err
 		}
 		name, args = "git", []string{"commit", "-m", message}
-		if strings.TrimSpace(message) == "" {
-			return Result{}, errors.New("请填写本次提交说明")
-		}
 	case "pm2":
 		if _, err := run(root, manager, "run", "build"); err != nil {
 			return Result{}, err

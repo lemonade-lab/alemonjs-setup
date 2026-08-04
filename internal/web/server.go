@@ -8,7 +8,9 @@ import (
 	"sync"
 	"time"
 
+	"alemonjs-setup/internal/catalog"
 	"alemonjs-setup/internal/project"
+	"alemonjs-setup/internal/release"
 	"alemonjs-setup/internal/robot"
 	"alemonjs-setup/internal/system"
 )
@@ -47,11 +49,12 @@ type server struct {
 }
 
 var goals = []goal{
-	{ID: "develop", Title: "开始开发", Description: "创建一个 AlemonJS 项目。", Steps: []string{"环境检查", "项目名称", "开发语言", "代码规范", "版本管理", "本地运行", "包管理器", "图片开发", "样式方案", "开发技能", "确认创建"}},
+	{ID: "install", Title: "安装机器人", Description: "用推荐默认配置，快速安装一个可以运行的 AlemonJS 机器人。", Steps: []string{"环境检查", "机器人名称与位置", "确认安装"}},
+	{ID: "manage", Title: "管理机器人", Description: "管理已有机器人项目的配置、依赖与运行方式。", Steps: []string{"打开机器人管理"}},
+	{ID: "develop", Title: "开发机器人", Description: "创建一个可按需配置的 AlemonJS 开发项目。", Steps: []string{"环境检查", "项目名称", "开发语言", "代码规范", "版本管理", "本地运行", "包管理器", "图片开发", "样式方案", "开发技能", "确认创建"}},
 	{ID: "desktop", Title: "安装桌面版", Description: "下载 AlemonDesk。", Steps: []string{"选择下载镜像", "下载桌面版"}, Mirrors: githubMirrors("alemondesk")},
 	{ID: "mobile", Title: "安装手机版", Description: "下载 AlemonApp。", Steps: []string{"选择下载镜像", "下载手机版"}, Mirrors: githubMirrors("alemonapp")},
-	{ID: "web", Title: "部署 Web 版", Description: "部署 AlemonGo。", Steps: []string{"选择部署方式", "环境检查", "快速启动"}, DownloadURL: "https://github.com/lemonade-lab/alemongo"},
-	{ID: "build", Title: "构建应用", Description: "构建并分发 AlemonJS 应用。", Steps: []string{"选择构建方式", "构建检查", "生成应用"}},
+	{ID: "web", Title: "部署 Web 版", Description: "部署 AlemonGo。", Steps: []string{"选择部署方式", "环境检查", "快速启动"}, DownloadURL: "https://github.com/lemonade-lab/alemongo/releases/tag/v0.0.52"},
 }
 
 func githubMirrors(repository string) []mirror {
@@ -84,9 +87,51 @@ func NewServer(version string, staticFiles fs.FS, templateFiles ...fs.FS) http.H
 	mux.HandleFunc("/api/v1/tasks", s.tasksHandler)
 	mux.HandleFunc("/api/v1/checks", s.checksHandler)
 	mux.HandleFunc("/api/v1/projects", s.projectsHandler)
+	mux.HandleFunc("/api/v1/releases", s.releasesHandler)
+	mux.HandleFunc("/api/v1/directories/select", s.directoryHandler)
+	mux.HandleFunc("/api/v1/catalog", s.catalogHandler)
 	mux.HandleFunc("/api/v1/robot", s.robotHandler)
 	mux.Handle("/", s.spa())
 	return s.withHeaders(mux)
+}
+
+func (s *server) catalogHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "该操作暂不支持。")
+		return
+	}
+	groups, err := catalog.Fetch(r.URL.Query().Get("kind"))
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, groups)
+}
+
+func (s *server) directoryHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "该操作暂不支持。")
+		return
+	}
+	path, err := system.ChooseDirectory()
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"path": path})
+}
+
+func (s *server) releasesHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "该操作暂不支持。")
+		return
+	}
+	items, err := release.List(r.URL.Query().Get("app"))
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
 }
 
 func (s *server) robotHandler(w http.ResponseWriter, r *http.Request) {

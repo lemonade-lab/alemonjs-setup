@@ -15,8 +15,12 @@ import (
 //go:embed all:dist
 var staticFiles embed.FS
 
+// 前端页面
+
 //go:embed all:templates
 var templateFiles embed.FS
+
+// 开发模板文件 + 机器人启动目录
 
 var Version = "dev"
 
@@ -31,7 +35,7 @@ func main() {
 	}
 
 	server := &http.Server{
-		Addr:              ":" + *port,
+		Addr:              "127.0.0.1:" + *port,
 		Handler:           web.NewServer(Version, staticFiles, templateFiles),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
