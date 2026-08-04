@@ -13,6 +13,7 @@ type Item struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
 	URL         string `json:"url"`
+	Install     string `json:"install"`
 }
 type Group struct {
 	Title string `json:"title"`
@@ -20,8 +21,8 @@ type Group struct {
 }
 
 var sources = map[string]string{
-	"apps": "https://raw.githubusercontent.com/lemonade-lab/alemonjs.dev/main/docs/apps.md",
-	"open": "https://raw.githubusercontent.com/lemonade-lab/alemonjs.dev/main/docs/open.md",
+	"apps":        "https://raw.githubusercontent.com/lemonade-lab/alemonjs.dev/main/docs/apps.md",
+	"environment": "https://raw.githubusercontent.com/lemonade-lab/alemonjs.dev/main/docs/environment.md",
 }
 
 func Fetch(kind string) ([]Group, error) {
@@ -74,6 +75,11 @@ func Fetch(kind string) ([]Group, error) {
 			item := &groups[groupIndex].Items[itemIndex]
 			if item.URL == "" {
 				item.URL = references[item.Name]
+			}
+			if strings.HasPrefix(item.Name, "@alemonjs/") || item.Name == "alemonjs" {
+				item.Install = item.Name
+			} else if strings.HasPrefix(item.URL, "https://github.com/") || strings.HasPrefix(item.URL, "https://gitee.com/") {
+				item.Install = "git+" + item.URL + ".git"
 			}
 		}
 	}

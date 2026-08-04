@@ -14,6 +14,7 @@ import (
 )
 
 type Config struct {
+	Template        string `json:"template"`
 	Name            string `json:"name"`
 	DestinationMode string `json:"destinationMode"`
 	Destination     string `json:"destination"`
@@ -62,15 +63,15 @@ func (c *Creator) Create(config Config) (Result, error) {
 
 	result := Result{Path: path, Status: "failed"}
 	log := func(message string) { result.Logs = append(result.Logs, message) }
-	template := "js"
-	if config.Language == "ts" || config.ImageMode == "react" {
-		template = "ts"
+	template := config.Template
+	if template == "" {
+		template = "dev"
 	}
 	log("正在创建项目文件夹…")
 	if err := copyTemplate(c.templates, template, path); err != nil {
 		return result, fmt.Errorf("复制内置模板失败：%w", err)
 	}
-	log(fmt.Sprintf("已复制 %s 模板。", map[string]string{"js": "JavaScript", "ts": "TypeScript"}[template]))
+	log(fmt.Sprintf("已复制 %s 模板。", map[string]string{"bot": "机器人", "dev": "开发"}[template]))
 	if err := patchPackage(path, config); err != nil {
 		return result, fmt.Errorf("写入项目配置失败：%w", err)
 	}
@@ -110,6 +111,9 @@ func (c *Creator) Create(config Config) (Result, error) {
 }
 
 func validate(c Config) error {
+	if c.Template != "" && c.Template != "bot" && c.Template != "dev" {
+		return errors.New("项目模板无效")
+	}
 	if !validName.MatchString(c.Name) {
 		return errors.New("项目名称只能使用字母、数字、点、下划线或短横线，且必须以字母或数字开头")
 	}

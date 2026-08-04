@@ -1,0 +1,32 @@
+import { useState } from 'react'
+
+type Props = { busy: boolean; onSave: (content: string) => void }
+type Values = Record<string, string>
+
+const empty: Values = { port: '', serverPort: '', input: '', login: '', url: '', fullReceive: '', masterID: '', masterKey: '', botID: '', botKey: '', disabledRegular: '', disabledSelects: '', disabledUserID: '', disabledUserKey: '', redirectRegular: '', redirectTarget: '', mappingRegular: '', mappingTarget: '', repeatedEventTime: '', repeatedUserTime: '', apps: '', cbpTimeout: '', cbpReconnect: '', cbpHeartbeat: '', cbpHealthCheck: '', cbpUserAgent: '', cbpDeviceID: '', cbpFullReceive: '' }
+
+const quote = (value: string) => `'${value.replace(/'/g, "''")}'`
+const mapLines = (key: string, values: string) => values.trim() ? [`${key}:`, ...values.split(',').map((value) => `  ${quote(value.trim())}: true`)] : []
+
+function toYaml(values: Values) {
+  const lines: string[] = []
+  const scalar = (key: string, value: string) => { if (value.trim()) lines.push(`${key}: ${quote(value.trim())}`) }
+  scalar('port', values.port); scalar('serverPort', values.serverPort); scalar('input', values.input); scalar('login', values.login); scalar('url', values.url)
+  if (values.fullReceive) lines.push(`is_full_receive: ${values.fullReceive}`)
+  lines.push(...mapLines('master_id', values.masterID), ...mapLines('master_key', values.masterKey), ...mapLines('bot_id', values.botID), ...mapLines('bot_key', values.botKey))
+  scalar('disabled_text_regular', values.disabledRegular); lines.push(...mapLines('disabled_selects', values.disabledSelects), ...mapLines('disabled_user_id', values.disabledUserID), ...mapLines('disabled_user_key', values.disabledUserKey))
+  scalar('redirect_text_regular', values.redirectRegular); scalar('redirect_text_target', values.redirectTarget)
+  if (values.mappingRegular.trim() && values.mappingTarget.trim()) lines.push('mapping_text:', `  - regular: ${quote(values.mappingRegular.trim())}`, `    target: ${quote(values.mappingTarget.trim())}`)
+  if (values.repeatedEventTime.trim() || values.repeatedUserTime.trim()) { lines.push('processor:'); if (values.repeatedEventTime.trim()) lines.push(`  repeated_event_time: ${values.repeatedEventTime.trim()}`); if (values.repeatedUserTime.trim()) lines.push(`  repeated_user_time: ${values.repeatedUserTime.trim()}`) }
+  if (values.apps.trim()) lines.push(...mapLines('apps', values.apps))
+  const cbp = [['timeout', values.cbpTimeout], ['reconnectInterval', values.cbpReconnect], ['heartbeatInterval', values.cbpHeartbeat], ['healthCheckInterval', values.cbpHealthCheck]] as const
+  if (cbp.some(([, value]) => value.trim()) || values.cbpUserAgent.trim() || values.cbpDeviceID.trim() || values.cbpFullReceive) { lines.push('cbp:'); cbp.forEach(([key, value]) => { if (value.trim()) lines.push(`  ${key}: ${value.trim()}`) }); if (values.cbpUserAgent.trim() || values.cbpDeviceID.trim() || values.cbpFullReceive) { lines.push('  headers:'); if (values.cbpUserAgent.trim()) lines.push(`    user-agent: ${quote(values.cbpUserAgent.trim())}`); if (values.cbpDeviceID.trim()) lines.push(`    x-device-id: ${quote(values.cbpDeviceID.trim())}`); if (values.cbpFullReceive) lines.push(`    x-full-receive: ${quote(values.cbpFullReceive)}`) } }
+  return lines.length ? `${lines.join('\n')}\n` : ''
+}
+
+export function RobotConfigForm({ busy, onSave }: Props) {
+  const [values, setValues] = useState<Values>(empty)
+  const set = (key: string, value: string) => setValues((current) => ({ ...current, [key]: value }))
+  const field = (key: string, label: string, hint = '') => <label>{label}<input value={values[key]} onChange={(event) => set(key, event.target.value)} placeholder={hint} /></label>
+  return <section className="config-form official-config-form"><header className="config-form-header"><p className="config-note">所有项均为可选；留空不会写入配置文件。</p><button className="primary-button" disabled={busy} onClick={() => onSave(toYaml(values))}>保存配置</button></header><fieldset><legend>基础配置</legend><div className="form-grid">{field('port', 'CBP 端口', '17117')}{field('serverPort', '应用端口', '18110')}{field('input', '应用入口', 'lib/index.js')}{field('login', '登录平台', 'discord')}{field('url', 'CBP 地址', 'ws://127.0.0.1:17117')}<label>全量接收<select value={values.fullReceive} onChange={(event) => set('fullReceive', event.target.value)}><option value="">不设置</option><option value="true">开启</option><option value="false">关闭</option></select></label></div></fieldset><fieldset><legend>权限与机器人标识</legend><div className="form-grid">{field('masterID', '主人 ID', '多个用逗号分隔')}{field('masterKey', '主人 Key', '多个用逗号分隔')}{field('botID', '机器人 ID', '多个用逗号分隔')}{field('botKey', '机器人 Key', '多个用逗号分隔')}</div></fieldset><fieldset><legend>消息控制</legend><div className="form-grid">{field('disabledRegular', '禁用文本正则', '/闭关')}{field('disabledSelects', '禁用事件', 'message.create, private.message.create')}{field('disabledUserID', '禁用用户 ID', '多个用逗号分隔')}{field('disabledUserKey', '禁用用户 Key', '多个用逗号分隔')}{field('redirectRegular', '重定向正则', '^#')}{field('redirectTarget', '重定向目标', '/')}{field('mappingRegular', '映射匹配文本', '/帮助')}{field('mappingTarget', '映射替换文本', '/help')}</div></fieldset><fieldset><legend>处理器与模块</legend><div className="form-grid">{field('repeatedEventTime', '重复事件窗口（毫秒）', '60000')}{field('repeatedUserTime', '重复用户窗口（毫秒）', '1000')}{field('apps', '启用模块', 'alemonjs-openai, alemonjs-xianyu')}</div></fieldset><fieldset><legend>CBP 连接</legend><div className="form-grid">{field('cbpTimeout', '连接超时（毫秒）', '180000')}{field('cbpReconnect', '重连间隔（毫秒）', '6000')}{field('cbpHeartbeat', '心跳间隔（毫秒）', '18000')}{field('cbpHealthCheck', '健康检查间隔（毫秒）', '30000')}{field('cbpUserAgent', 'User-Agent', 'platform')}{field('cbpDeviceID', '设备 ID', 'auto-generated')}<label>CBP 全量接收<select value={values.cbpFullReceive} onChange={(event) => set('cbpFullReceive', event.target.value)}><option value="">不设置</option><option value="1">开启（1）</option><option value="0">关闭（0）</option></select></label></div></fieldset></section>
+}

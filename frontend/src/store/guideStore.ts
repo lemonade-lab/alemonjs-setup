@@ -13,7 +13,7 @@ type GuideState = { developer: DeveloperConfig; project: ProjectDraft }
 
 const initialState: GuideState = {
   developer: { language: 'js', eslint: 'no', git: 'yes', pm2: 'no', manager: 'yarn', image: 'none', style: 'css', skills: 'yes' },
-  project: { name: 'my-alemonjs-app', destinationMode: 'current', destination: '' },
+  project: { name: 'alemonb', destinationMode: 'current', destination: '' },
 }
 
 const guideSlice = createSlice({

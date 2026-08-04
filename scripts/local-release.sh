@@ -22,7 +22,9 @@ ok()    { echo -e "${GREEN}[OK]${NC} $*"; }
 
 # ============== 切换到项目根目录 ==============
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+PROJECT_ROOT="${PROJECT_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
+[[ -d "$PROJECT_ROOT" ]] || error "项目目录不存在: $PROJECT_ROOT"
+PROJECT_ROOT="$(cd "$PROJECT_ROOT" && pwd)"
 cd "$PROJECT_ROOT"
 info "项目根目录: $PROJECT_ROOT"
 
@@ -62,10 +64,12 @@ if [[ -n "$(git status --porcelain)" ]]; then
   warn "工作区存在未提交的更改:"
   git status --short
   echo ""
-  read -p "是否继续？(y/N) " -n 1 -r
-  echo
-  if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-    error "已取消操作"
+  if [[ "${RELEASE_AUTO_CONFIRM:-}" != "1" ]]; then
+    read -p "是否继续？(y/N) " -n 1 -r
+    echo
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+      error "已取消操作"
+    fi
   fi
 fi
 
@@ -125,10 +129,12 @@ echo -e "  本次发布版本号: ${GREEN}${VERSION}${NC}"
 echo -e "============================================"
 echo ""
 
-read -p "确认发布该版本？(y/N) " -n 1 -r
-echo
-if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-  error "已取消发布"
+if [[ "${RELEASE_AUTO_CONFIRM:-}" != "1" ]]; then
+  read -p "确认发布该版本？(y/N) " -n 1 -r
+  echo
+  if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+    error "已取消发布"
+  fi
 fi
 
 # ============== 安装依赖 ==============

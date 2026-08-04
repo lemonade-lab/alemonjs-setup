@@ -6,9 +6,9 @@
   "type": "module",
   "scripts": {
     "app": "node index.js",
-    "dev": "npx lvy app.ts",
-    "view": "npx lvy app.ts --jsxp",
-    "build": "npx lvy build",
+    "dev": "lvy app.ts",
+    "view": "lvy app.ts --jsxp",
+    "build": "lvy build",
     "review": "npx alemonc start",
     "start": "npx pm2 startOrRestart pm2.config.cjs",
     "stop": "npx pm2 stop pm2.config.cjs",

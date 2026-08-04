@@ -48,7 +48,7 @@ yarn dev
 ## 构建与测试
 
 ```bash
-make frontend-build
+make build-fe
 make test
 make lint
 make build

@@ -1,4 +1,4 @@
-.PHONY: help dev build test format lint frontend-dev
+.PHONY: help dev build test format lint dev-fe
 
 .DEFAULT_GOAL := help
 
@@ -9,7 +9,7 @@ dev: ## Start the setup guide
 	go run .
 
 build: ## Build the production binary
-	$(MAKE) frontend-build
+	$(MAKE) build-fe
 	go build -o app .
 
 test: ## Run Go tests
@@ -21,8 +21,8 @@ format: ## Format Go files
 lint: ## Run Go vet
 	go vet ./internal/...
 
-frontend-dev: ## Start the Vite development server
+dev-fe: ## Start the Vite development server
 	cd frontend && yarn dev
 
-frontend-build: ## Build the frontend into dist/
+build-fe: ## Build the frontend into dist/
 	cd frontend && yarn build

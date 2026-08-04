@@ -1,11 +1,22 @@
-type GuideHeaderProps = { onBack: () => void; onClose: () => void }
+type GuideHeaderProps = { onBack: () => void; onClose: () => void; showBack: boolean }
 
-export function GuideHeader({ onBack, onClose }: GuideHeaderProps) {
+const links = [
+  ['⌂', '官网', 'https://alemonjs.com/'],
+  ['⌘', '框架仓库', 'https://github.com/lemonade-lab/alemonjs'],
+  ['▣', '桌面版仓库', 'https://github.com/lemonade-lab/alemondesk'],
+  ['▤', '手机版仓库', 'https://github.com/lemonade-lab/alemonapp'],
+  ['◎', 'Web 版仓库', 'https://github.com/lemonade-lab/alemongo'],
+]
+
+export function HeaderLinks() {
+  return <nav className="header-links" aria-label="AlemonJS 快捷链接">{links.map(([icon, label, href]) => <a href={href} key={label} target="_blank" rel="noreferrer" aria-label={label} title={label}>{icon}</a>)}</nav>
+}
+
+export function GuideHeader({ onBack, onClose, showBack }: GuideHeaderProps) {
   return (
     <header className="guide-bar">
-      <button className="top-back" onClick={onBack}>
-        ← 返回
-      </button>
+      {showBack ? <button className="top-back" onClick={onBack}>← 返回</button> : <span />}
+      <HeaderLinks />
       <button
         className="window-close"
         aria-label="关闭引导"

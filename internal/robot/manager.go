@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -37,7 +38,7 @@ func (Manager) Write(root, name, content string) (Result, error) {
 	}
 	return Result{Path: path, Output: "已保存。"}, nil
 }
-func (Manager) Run(root, action, message, packageName string) (Result, error) {
+func (Manager) Run(root, action, message, packageName, version, tag string) (Result, error) {
 	if err := project(root); err != nil {
 		return Result{}, err
 	}
@@ -51,8 +52,32 @@ func (Manager) Run(root, action, message, packageName string) (Result, error) {
 	case "install":
 		name, args = manager, []string{"install"}
 	case "build":
+		if err := fixLegacyLvyScript(root); err != nil {
+			return Result{}, err
+		}
 		name, args = manager, []string{"run", "build"}
+	case "npm-publish":
+		if !regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`).MatchString(tag) {
+			return Result{}, errors.New("npm 标签格式无效")
+		}
+		name, args = "npm", []string{"publish", "--tag", tag}
+	case "git-release":
+		if version != "" && !regexp.MustCompile(`^v?\d+\.\d+\.\d+$`).MatchString(version) {
+			return Result{}, errors.New("版本号应为 v1.2.3 或 1.2.3")
+		}
+		script, err := filepath.Abs(filepath.Join("scripts", "local-release.sh"))
+		if err != nil {
+			return Result{}, fmt.Errorf("无法定位本地发布脚本：%w", err)
+		}
+		if _, err := os.Stat(script); err != nil {
+			return Result{}, errors.New("未找到本地发布脚本")
+		}
+		output, err := runWithEnv(root, map[string]string{"PROJECT_ROOT": root, "RELEASE_AUTO_CONFIRM": "1"}, "bash", script, version)
+		return Result{Path: root, Output: output}, err
 	case "dev":
+		if err := fixLegacyLvyScript(root); err != nil {
+			return Result{}, err
+		}
 		name, args = manager, []string{"run", "dev"}
 	case "commit":
 		if strings.TrimSpace(message) == "" {
@@ -80,7 +105,10 @@ func (Manager) Run(root, action, message, packageName string) (Result, error) {
 	return Result{Path: root, Output: output}, err
 }
 func allowedPackage(name string) bool {
-	for _, item := range []string{"alemonjs", "@alemonjs/bubble", "@alemonjs/db", "@alemonjs/discord", "@alemonjs/onebot", "@alemonjs/qq-bot"} {
+	if strings.HasPrefix(name, "git+https://github.com/") || strings.HasPrefix(name, "git+https://gitee.com/") {
+		return true
+	}
+	for _, item := range []string{"alemonjs", "@alemonjs/bubble", "@alemonjs/db", "@alemonjs/discord", "@alemonjs/onebot", "@alemonjs/qq-bot", "@alemonjs/kook", "@alemonjs/telegram"} {
 		if name == item {
 			return true
 		}
@@ -116,9 +144,41 @@ func file(root, name string) (string, error) {
 	}
 	return filepath.Join(root, name), nil
 }
+
+// fixLegacyLvyScript upgrades templates created before lvy was called directly.
+func fixLegacyLvyScript(root string) error {
+	path := filepath.Join(root, "package.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("无法读取 package.json：%w", err)
+	}
+	fixed := strings.ReplaceAll(string(data), "npx lvy ", "lvy ")
+	if fixed == string(data) {
+		return nil
+	}
+	if err := os.WriteFile(path, []byte(fixed), 0644); err != nil {
+		return fmt.Errorf("无法更新开发脚本：%w", err)
+	}
+	return nil
+}
 func run(root, name string, args ...string) (string, error) {
 	cmd := exec.Command(name, args...)
 	cmd.Dir = root
+	output, err := cmd.CombinedOutput()
+	text := strings.TrimSpace(string(output))
+	if err != nil {
+		return text, fmt.Errorf("%s：%w", text, err)
+	}
+	return text, nil
+}
+
+func runWithEnv(root string, values map[string]string, name string, args ...string) (string, error) {
+	cmd := exec.Command(name, args...)
+	cmd.Dir = root
+	cmd.Env = os.Environ()
+	for key, value := range values {
+		cmd.Env = append(cmd.Env, key+"="+value)
+	}
 	output, err := cmd.CombinedOutput()
 	text := strings.TrimSpace(string(output))
 	if err != nil {

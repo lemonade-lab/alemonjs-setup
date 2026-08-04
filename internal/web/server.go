@@ -53,8 +53,8 @@ var goals = []goal{
 	{ID: "manage", Title: "管理机器人", Description: "管理已有机器人项目的配置、依赖与运行方式。", Steps: []string{"打开机器人管理"}},
 	{ID: "develop", Title: "开发机器人", Description: "创建一个可按需配置的 AlemonJS 开发项目。", Steps: []string{"环境检查", "项目名称", "开发语言", "代码规范", "版本管理", "本地运行", "包管理器", "图片开发", "样式方案", "开发技能", "确认创建"}},
 	{ID: "desktop", Title: "安装桌面版", Description: "下载 AlemonDesk。", Steps: []string{"选择下载镜像", "下载桌面版"}, Mirrors: githubMirrors("alemondesk")},
-	{ID: "mobile", Title: "安装手机版", Description: "下载 AlemonApp。", Steps: []string{"选择下载镜像", "下载手机版"}, Mirrors: githubMirrors("alemonapp")},
-	{ID: "web", Title: "部署 Web 版", Description: "部署 AlemonGo。", Steps: []string{"选择部署方式", "环境检查", "快速启动"}, DownloadURL: "https://github.com/lemonade-lab/alemongo/releases/tag/v0.0.52"},
+	{ID: "mobile", Title: "安装手机版", Description: "下载 AlemonApp Android 安装包。", Steps: []string{"下载 Android 安装包"}, DownloadURL: "https://download.alemonjs.com/application/alemonapp/app-universal-release.apk"},
+	{ID: "web", Title: "部署 Web 版", Description: "部署 AlemonGo。", Steps: []string{"选择部署方式", "环境检查", "快速启动"}, Mirrors: githubMirrors("alemongo")},
 }
 
 func githubMirrors(repository string) []mirror {
@@ -142,6 +142,8 @@ func (s *server) robotHandler(w http.ResponseWriter, r *http.Request) {
 		Action  string `json:"action"`
 		Message string `json:"message"`
 		Package string `json:"package"`
+		Version string `json:"version"`
+		Tag     string `json:"tag"`
 	}
 	if r.Method == http.MethodGet {
 		input.Root = r.URL.Query().Get("root")
@@ -158,7 +160,7 @@ func (s *server) robotHandler(w http.ResponseWriter, r *http.Request) {
 	case http.MethodPut:
 		result, err = s.robots.Write(input.Root, input.File, input.Content)
 	case http.MethodPost:
-		result, err = s.robots.Run(input.Root, input.Action, input.Message, input.Package)
+		result, err = s.robots.Run(input.Root, input.Action, input.Message, input.Package, input.Version, input.Tag)
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "该操作暂不支持。")
 		return
