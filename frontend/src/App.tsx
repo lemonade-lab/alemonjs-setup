@@ -1,0 +1,160 @@
+import { useEffect, useRef, useState } from 'react'
+import { useDispatch, useSelector } from 'react-redux'
+import { useLocation, useNavigate } from 'react-router-dom'
+import { setDeveloper, setProject, type RootState } from './store/guideStore'
+import { GuideHeader } from './components/GuideHeader'
+
+type Mirror = { name: string; url: string }
+type Goal = { id: string; title: string; description: string; steps: string[]; downloadUrl?: string; mirrors?: Mirror[] }
+type Check = { id: string; name: string; status: 'ready' | 'missing' | 'warning'; detail: string; suggestion: string }
+type Report = { ready: boolean; platform: string; checks: Check[]; checkedAt: string }
+type ProjectConfig = { name: string; destinationMode: 'current' | 'custom'; destination: string; language: string; packageManager: string; eslint: boolean; initializeGit: boolean; usePM2: boolean; imageMode: string; styleMode: string; downloadSkills: boolean }
+type Creation = { path?: string; status?: string; logs?: string[] }
+const icons: Record<string, string> = { develop: '⌘', desktop: '▣', mobile: '▤', web: '◎', build: '↗' }
+
+async function request<T>(url: string, init?: RequestInit): Promise<T> { const response = await fetch(url, init); const data = await response.json() as T & { error?: string }; if (!response.ok) throw new Error(data.error ?? '请求未完成，请稍后重试。'); return data }
+
+export default function App() {
+  const navigate = useNavigate()
+  const location = useLocation()
+  const [goals, setGoals] = useState<Goal[]>([])
+  const [report, setReport] = useState<Report | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [checking, setChecking] = useState(false)
+  const [error, setError] = useState('')
+  const [creating, setCreating] = useState(false)
+  const [creation, setCreation] = useState<Creation | null>(null)
+  const routeGoal = location.pathname.match(/^\/guide\/([^/]+)/)?.[1]
+  const selectedID = routeGoal ?? null
+  const guideOpen = !location.pathname.startsWith('/dashboard')
+  const activeID = selectedID ?? 'develop'
+  const activeGoal = goals.find((goal) => goal.id === activeID)
+
+  useEffect(() => { request<Goal[]>('/api/v1/goals').then(setGoals).catch((reason: Error) => setError(reason.message)).finally(() => setLoading(false)) }, [])
+  useEffect(() => { if (location.pathname === '/') navigate('/guide', { replace: true }) }, [location.pathname, navigate])
+  function openGuide() { navigate('/guide'); setReport(null); setCreation(null); setError('') }
+  async function checkEnvironment(variant = '') { try { setChecking(true); setError(''); setReport(await request<Report>('/api/v1/checks', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ goalId: activeID, variant }) })) } catch (reason) { setError(reason instanceof Error ? reason.message : '环境检查未完成，请稍后重试。') } finally { setChecking(false) } }
+  async function createProject(config: ProjectConfig) { try { setCreating(true); setError(''); setCreation(null); const response = await fetch('/api/v1/projects', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(config) }); const data = await response.json() as Creation & { error?: string; result?: Creation }; setCreation(data.result ?? data); if (!response.ok) setError(data.error ?? '项目创建未完成，请检查下方日志。') } catch { setError('项目创建请求未完成，请稍后重试。') } finally { setCreating(false) } }
+
+  return <div className="app-shell">
+    {guideOpen ? <GuideHome goals={goals} loading={loading} goal={selectedID ? activeGoal : undefined} report={report} checking={checking} error={error} creating={creating} creation={creation} onSelect={(id) => { navigate(id ? `/guide/${id}/step/0` : '/guide'); setReport(null); setCreation(null); setError('') }} onClose={() => navigate('/dashboard')} onCheck={checkEnvironment} onCreate={createProject} /> : <Dashboard goals={goals} goal={activeGoal} report={report} checking={checking} error={error} onSelect={(id) => { navigate(`/guide/${id}/step/0`); setReport(null); setError('') }} onOpenGuide={openGuide} onCheck={checkEnvironment} />}
+  </div>
+}
+
+function GuideHome({ goals, loading, goal, report, checking, error, creating, creation, onSelect, onClose, onCheck, onCreate }: { goals: Goal[]; loading: boolean; goal?: Goal; report: Report | null; checking: boolean; error: string; creating: boolean; creation: Creation | null; onSelect: (id: string | null) => void; onClose: () => void; onCheck: (variant?: string) => void; onCreate: (config: ProjectConfig) => void }) {
+  const backAction = useRef<() => void>(() => {})
+  return <main className="guide-shell"><section className="guide-window"><GuideHeader onBack={() => backAction.current()} onClose={onClose} />{error && <p className="error" role="alert">{error}</p>}<FlowView goals={goals} loading={loading} goal={goal} report={report} checking={checking} creating={creating} creation={creation} onSelect={onSelect} onCheck={onCheck} onCreate={onCreate} registerBack={(handler) => { backAction.current = handler }} /></section></main>
+}
+
+function FlowView({ goals, loading, goal, report, checking, creating, creation, onSelect, onCheck, onCreate, registerBack }: { goals: Goal[]; loading: boolean; goal?: Goal; report: Report | null; checking: boolean; creating: boolean; creation: Creation | null; onSelect: (id: string | null) => void; onCheck: (variant?: string) => void; onCreate: (config: ProjectConfig) => void; registerBack: (handler: () => void) => void }) {
+  const navigate = useNavigate()
+  const location = useLocation()
+  const dispatch = useDispatch()
+  const config = useSelector((state: RootState) => state.guide.developer)
+  const project = useSelector((state: RootState) => state.guide.project)
+  const routedStep = Number(location.pathname.match(/\/step\/(\d+)/)?.[1] ?? 0)
+  const [step, setStep] = useState(routedStep)
+  const [webEdition, setWebEdition] = useState<'clean' | 'docker' | null>(null)
+  const [buildMode, setBuildMode] = useState<'npm' | 'git' | null>(null)
+  const [downloadURL, setDownloadURL] = useState<string | null>(null)
+  const automaticCheck = useRef<string | null>(null)
+  const currentStepElement = useRef<HTMLDivElement | null>(null)
+  const isDeveloper = goal?.id === 'develop'
+  const webSteps = webEdition === 'clean' ? ['选择部署方式', '检查 Node.js 与 Git', '启动 AlemonGo'] : webEdition === 'docker' ? ['选择部署方式', '检查 Docker', 'Docker Compose 快速启动'] : ['选择部署方式']
+  const buildSteps = buildMode === 'npm' ? ['选择构建方式', '检查 npm 环境', 'NPM 构建'] : buildMode === 'git' ? ['选择构建方式', '检查 Git 环境', 'Git 化构建'] : ['选择构建方式']
+  const downloadSteps = downloadURL ? ['选择下载镜像', '下载应用'] : ['选择下载镜像']
+  const totalSteps = goal ? ['选择目的', ...(goal.id === 'web' ? webSteps : goal.id === 'build' ? buildSteps : (goal.id === 'desktop' || goal.id === 'mobile') ? downloadSteps : goal.steps)] : ['选择目的']
+  const flowStep = step - 1
+  const setFlowStep = (value: number) => { const nextStep = Math.max(0, Math.min(value, totalSteps.length - 1)); setStep(nextStep); if (goal) navigate(`/guide/${goal.id}/step/${nextStep}`) }
+  const next = () => setFlowStep(step + 1)
+  const back = () => setFlowStep(step - 1)
+  const choose = (key: keyof typeof config, value: string) => dispatch(setDeveloper({ [key]: value }))
+  useEffect(() => { if (routedStep !== step) setStep(routedStep) }, [routedStep, step])
+  useEffect(() => {
+    const variant = goal?.id === 'web' ? webEdition : goal?.id === 'build' ? buildMode : undefined
+    const isCheckStep = goal?.id === 'develop' ? flowStep === 0 : (goal?.id === 'web' || goal?.id === 'build') && Boolean(variant) && flowStep === 1
+    if ((goal?.id === 'develop' || variant) && isCheckStep && automaticCheck.current !== `${goal?.id}:${variant ?? ''}`) {
+      automaticCheck.current = `${goal?.id}:${variant ?? ''}`
+      onCheck(variant ?? undefined)
+    }
+  }, [buildMode, flowStep, goal?.id, onCheck, webEdition])
+  useEffect(() => {
+    currentStepElement.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  }, [step])
+  const developerPage = () => {
+    const choices = (title: string, items: Array<[string, string, string]>, key: keyof typeof config) => <><h1>{title}</h1><div className="choice-list">{items.map(([value, label, note]) => <button className={String(config[key]) === value ? 'choice selected' : 'choice'} key={value} onClick={() => choose(key, value)}><strong>{label}</strong><small>{note}</small></button>)}</div></>
+    switch (flowStep) {
+      case 0: return <><h1>检查开发环境</h1><p>{checking || !report ? '正在检查 Node.js 与 Git…' : report.ready ? '检查通过。确认后继续下一步。' : '发现需要处理的环境问题。'}</p>{report ? <div className="compact-checks">{report.checks.map((check) => <span className={check.status} key={check.id}>{check.status === 'ready' ? '✓' : '!'} {check.name}：{check.detail}</span>)}</div> : <span className="checking-indicator" />}{report && !report.ready && <button className="primary-button" onClick={() => onCheck()} disabled={checking}>重新检查</button>}</>
+      case 1: return <><h1>给项目起个名字</h1><p>会在你选择的保存位置中新建一个同名文件夹。</p><div className="project-fields"><label>项目名称<input value={project.name} onChange={(event) => dispatch(setProject({ name: event.target.value }))} placeholder="my-alemonjs-app" /></label><div className="location-options"><button className={project.destinationMode === 'current' ? 'choice selected' : 'choice'} onClick={() => dispatch(setProject({ destinationMode: 'current' }))}><strong>当前运行目录（推荐）</strong><small>直接在启动 alemonjs-setup 的文件夹里创建。</small></button><button className={project.destinationMode === 'custom' ? 'choice selected' : 'choice'} onClick={() => dispatch(setProject({ destinationMode: 'custom' }))}><strong>指定文件夹</strong><small>在你输入的完整本机路径中创建。</small></button></div>{project.destinationMode === 'custom' && <label>保存位置<input value={project.destination} onChange={(event) => dispatch(setProject({ destination: event.target.value }))} placeholder="例如 /Users/你的用户名/Desktop" /></label>}</div></>
+      case 2: return choices('你想用哪种语言？', [['js', 'JavaScript（推荐新手）', '写法更简单，先把机器人跑起来。'], ['ts', 'TypeScript', '会在写代码时提前提醒常见错误。']], 'language')
+      case 3: return choices('需要代码小助手吗？', [['yes', '需要', 'ESLint 像拼写检查，会提醒容易写错的地方。'], ['no', '暂时不要（默认）', '项目更简单，以后随时可以加。']], 'eslint')
+      case 4: return choices('要给项目留存档吗？', [['yes', '要（推荐）', 'Git 会记录每次修改，写错了也方便回退。'], ['no', '暂时不要', '不会创建版本记录。']], 'git')
+      case 5: return choices('要让机器人在后台运行吗？', [['yes', '要，使用 PM2', 'PM2 是帮你守着机器人的小管家：关掉终端后，它仍会继续运行。'], ['no', '暂时不要（默认）', '开发时在终端里直接运行，更容易看懂。']], 'pm2')
+      case 6: return choices('用什么安装项目依赖？', [['yarn', 'Yarn（推荐）', '如果电脑里没有 Yarn，创建项目时会先帮你安装。'], ['npm', 'npm', 'Node.js 自带，不需要额外安装。'], ['pnpm', 'pnpm', '更省磁盘空间，需要电脑已经安装。']], 'manager')
+      case 7: return <><h1>需要做图片功能吗？</h1><div className="choice-list">{[['none', '不需要', '机器人只发送文字、按钮和普通消息。'], ['html', '纯 HTML', '用简单的网页标签制作图片内容。'], ['react', 'React / JSX', '把图片拆成小组件，适合复杂画面。']].map(([value, label, note]) => <button className={config.image === value ? 'choice selected' : 'choice'} key={value} onClick={() => choose('image', value)}><strong>{label}</strong><small>{note}</small></button>)}</div></>
+      case 8: return config.image === 'react' ? choices('图片用什么方式做样式？', [['css', '原生 CSS（推荐）', '最容易理解，不需要再学额外工具。'], ['tailwind', 'Tailwind CSS', '通过组合短类名快速调整外观。'], ['sass', 'Sass / SCSS', '在 CSS 上增加更方便的写法。'], ['less', 'Less', '另一种增强 CSS 的写法。']], 'style') : <><h1>不需要样式工具</h1><p>你没有选择 React / JSX 图片开发，所以这一步不需要额外配置。</p></>
+      case 9: return <><h1>下载开发技能吗？</h1><p>开发技能像一本 AlemonJS 的使用说明。安装后，Codex 等工具更容易按推荐方式帮你写代码。</p><div className="choice-list"><button className={config.skills === 'yes' ? 'choice selected' : 'choice'} onClick={() => choose('skills', 'yes')}><strong>下载（推荐）</strong><small>下载 alemonjs-dev-skill，后续可随时更新。</small></button><button className={config.skills === 'no' ? 'choice selected' : 'choice'} onClick={() => choose('skills', 'no')}><strong>暂时不下载</strong><small>不会影响机器人运行，以后也可以安装。</small></button></div><a className="download-link" href="https://github.com/lemonade-lab/alemonjs-dev-skill" target="_blank" rel="noreferrer">查看开发技能说明</a><button className="primary-button" onClick={next}>继续</button></>
+      case 10: return <><h1>{creation?.status === 'ready' ? '项目已创建' : '确认创建项目'}</h1>{creation?.status === 'ready' ? <p>项目已保存至：{creation.path}</p> : <div className="config-summary"><span>位置：{project.destinationMode === 'current' ? `当前运行目录/${project.name}` : project.destination ? `${project.destination}/${project.name}` : '请返回填写保存位置'}</span><span>语言：{config.language === 'ts' ? 'TypeScript' : 'JavaScript'}</span><span>包管理器：{config.manager}</span><span>代码小助手：{config.eslint === 'yes' ? '启用' : '不启用'}</span><span>项目存档：{config.git === 'yes' ? '初始化 Git' : '跳过'}</span><span>后台运行：{config.pm2 === 'yes' ? '使用 PM2' : '不使用'}</span><span>开发技能：{config.skills === 'yes' ? '下载' : '不下载'}</span></div>}{creation?.logs && <div className="creation-logs">{creation.logs.map((log, index) => <p key={index}>{log}</p>)}</div>}{creation?.status !== 'ready' && <button className="primary-button" onClick={() => onCreate(createConfig())} disabled={creating}>{creating ? '正在创建…' : '确认创建'}</button>}</>
+      default: return null
+    }
+  }
+  const webPage = () => {
+    if (flowStep === 0) return <><h1>选择部署方式</h1><div className="choice-list"><button className={webEdition === 'clean' ? 'choice selected' : 'choice'} onClick={() => { setWebEdition('clean'); automaticCheck.current = null }}><strong>纯净版</strong><small>检查 Node.js 与 Git 后启动 AlemonGo</small></button><button className={webEdition === 'docker' ? 'choice selected' : 'choice'} onClick={() => { setWebEdition('docker'); automaticCheck.current = null }}><strong>Docker 版</strong><small>检查 Docker 后使用 Docker Compose 快速启动</small></button></div></>
+    if (flowStep === 1) return <><h1>{webEdition === 'clean' ? '检查运行环境' : '检查 Docker'}</h1><p>{checking || !report ? '正在检查…' : report.ready ? '检查通过。确认后继续下一步。' : '发现需要处理的环境问题。'}</p>{report ? <div className="compact-checks">{report.checks.map((check) => <span className={check.status} key={check.id}>{check.status === 'ready' ? '✓' : '!'} {check.name}：{check.detail}</span>)}</div> : <span className="checking-indicator" />}{report && !report.ready && <>{webEdition === 'docker' && <a className="download-link" href="https://www.docker.com/products/docker-desktop/" target="_blank" rel="noreferrer">下载 Docker Desktop</a>}<button className="primary-button" onClick={() => onCheck(webEdition ?? undefined)} disabled={checking}>重新检查</button></>}</>
+    return <><h1>{webEdition === 'docker' ? 'Docker Compose 快速启动' : '启动 AlemonGo'}</h1><p>{webEdition === 'docker' ? '下一步会生成 docker-compose.yml 并启动服务。' : '前往 AlemonGo 仓库完成纯净版启动。'}</p></>
+  }
+  const buildPage = () => {
+    if (flowStep === 0) return <><h1>选择构建方式</h1><div className="choice-list"><button className={buildMode === 'npm' ? 'choice selected' : 'choice'} onClick={() => { setBuildMode('npm'); automaticCheck.current = null }}><strong>NPM 构建</strong><small>使用 npm 生成应用构建产物</small></button><button className={buildMode === 'git' ? 'choice selected' : 'choice'} onClick={() => { setBuildMode('git'); automaticCheck.current = null }}><strong>Git 化构建</strong><small>遵循 main、release 分支与版本标签标准</small></button></div></>
+    if (flowStep === 1) return <><h1>检查构建环境</h1><p>{checking || !report ? '正在检查…' : report.ready ? '检查通过。确认后继续下一步。' : '发现需要处理的构建环境问题。'}</p>{report ? <div className="compact-checks">{report.checks.map((check) => <span className={check.status} key={check.id}>{check.status === 'ready' ? '✓' : '!'} {check.name}：{check.detail}</span>)}</div> : <span className="checking-indicator" />}{report && !report.ready && <button className="primary-button" onClick={() => onCheck(buildMode ?? undefined)} disabled={checking}>重新检查</button>}</>
+    return <><h1>{buildMode === 'git' ? 'Git 化构建' : 'NPM 构建'}</h1><p>{buildMode === 'git' ? '构建产物将按标准整理至 release 分支，并创建对应版本标签。' : '将构建应用并生成可分发产物。'}</p></>
+  }
+  const downloadPage = () => {
+    if (flowStep === 0) return <><h1>选择下载镜像</h1><div className="choice-list">{goal?.mirrors?.map((mirror) => <button className={downloadURL === mirror.url ? 'choice selected' : 'choice'} key={mirror.url} onClick={() => setDownloadURL(mirror.url)}><strong>{mirror.name}</strong><small>{mirror.url}</small></button>)}</div></>
+    return <><h1>准备下载</h1><p>已选择下载镜像。点击右下角开始下载。</p></>
+  }
+  const selectPurpose = (id: string) => { automaticCheck.current = null; setDownloadURL(null); onSelect(id) }
+  const goBack = () => { if (step === 1) { onSelect(null); setStep(0); return }; back() }
+  const resetPurpose = () => { onSelect(null); setStep(0) }
+  registerBack(step > 0 ? goBack : () => {})
+  const createConfig = (): ProjectConfig => ({ name: project.name, destinationMode: project.destinationMode, destination: project.destination, language: config.language, packageManager: config.manager, eslint: config.eslint === 'yes', initializeGit: config.git === 'yes', usePM2: config.pm2 === 'yes', imageMode: config.image, styleMode: config.image === 'react' ? config.style : 'css', downloadSkills: config.skills === 'yes' })
+  const isDownloadFlow = goal?.id === 'desktop' || goal?.id === 'mobile'
+  const isWeb = goal?.id === 'web'
+  const isBuild = goal?.id === 'build'
+  return <section className="wizard"><aside className="wizard-steps"><p>{goal?.title ?? '开始'}</p>{totalSteps.map((label, index) => <div ref={index === step ? currentStepElement : null} key={label} className={index < step ? 'done' : index === step ? 'current' : ''} onClick={index === 0 && step > 0 ? resetPurpose : undefined}><span>{index < step ? '✓' : index + 1}</span>{label}</div>)}</aside><section className="wizard-page"><div className="wizard-content">{!goal || step === 0 ? <div className="guide-question"><p className="eyebrow">第 1 步</p><h1>你现在想做什么？</h1><div className="question-options">{loading ? <p>正在准备选项…</p> : goals.map((item) => <button className={item.id === goal?.id ? 'selected' : ''} key={item.id} onClick={() => selectPurpose(item.id)}><i>{icons[item.id] ?? '·'}</i><span>{item.title}</span><b>→</b></button>)}</div></div> : isDeveloper ? developerPage() : isWeb ? webPage() : isBuild ? buildPage() : isDownloadFlow ? downloadPage() : <><h1>{totalSteps[step]}</h1><p>{goal.description}</p></>} </div><footer className="wizard-actions">{step === 0 && goal && <button className="next-button" onClick={next}>继续</button>}{isDeveloper && flowStep === 0 && report?.ready && <button className="next-button" onClick={next}>继续</button>}{isDeveloper && flowStep > 0 && flowStep < 9 && <button className="next-button" onClick={next}>继续</button>}{isDeveloper && flowStep === 9 && creation?.status !== 'ready' && <button className="next-button" onClick={() => onCreate(createConfig())} disabled={creating}>{creating ? '正在创建…' : '确认创建'}</button>}{isWeb && flowStep === 0 && webEdition && <button className="next-button" onClick={next}>继续</button>}{isWeb && flowStep === 1 && report?.ready && <button className="next-button" onClick={next}>继续</button>}{isWeb && flowStep === 2 && webEdition === 'clean' && goal && <a className="next-button" href={goal.downloadUrl} target="_blank" rel="noreferrer">打开 AlemonGo</a>}{isWeb && flowStep === 2 && webEdition === 'docker' && <button className="next-button" disabled>生成并启动</button>}{isBuild && flowStep === 0 && buildMode && <button className="next-button" onClick={next}>继续</button>}{isBuild && flowStep === 1 && report?.ready && <button className="next-button" onClick={next}>继续</button>}{isBuild && flowStep === 2 && <button className="next-button" disabled>开始构建</button>}{!isDeveloper && !isWeb && !isBuild && !isDownloadFlow && goal && <button className="next-button" onClick={next}>继续</button>}{isDownloadFlow && flowStep === 0 && downloadURL && <button className="next-button" onClick={next}>继续</button>}{isDownloadFlow && flowStep === 1 && downloadURL && <a className="next-button" href={downloadURL} target="_blank" rel="noreferrer">开始下载</a>}</footer></section></section>
+}
+
+function LegacyDashboard({ goals, goal, report, checking, error, onSelect, onOpenGuide, onCheck }: { goals: Goal[]; goal?: Goal; report: Report | null; checking: boolean; error: string; onSelect: (id: string) => void; onOpenGuide: () => void; onCheck: () => void }) {
+  const readyCount = report?.checks.filter((check) => check.status === 'ready').length ?? 0
+  return <main className="dashboard-shell">
+    <header className="dashboard-bar"><div className="brand dark"><span>λ</span><div><strong>AlemonJS Setup</strong><small>后台中心</small></div></div><button className="primary-button" onClick={onOpenGuide}>打开引导</button></header>
+    <section className="dashboard-heading"><div><p className="eyebrow">后台中心</p><h1>管理已创建的流程</h1><p>在这里手动检查环境、查看准备状态；需要新建或继续引导时，随时重新打开引导。</p></div></section>
+    {error && <p className="error" role="alert">{error}</p>}
+    <section className="console-goals">{goals.map((item) => <button className={item.id === goal?.id ? 'console-goal active' : 'console-goal'} key={item.id} onClick={() => onSelect(item.id)}><i>{icons[item.id] ?? '·'}</i><div><strong>{item.title}</strong><small>{item.description}</small></div></button>)}</section>
+    {goal && <section className="dashboard-detail">
+      <div className="detail-heading"><div><p className="eyebrow">当前功能</p><h2>{goal.title}</h2><p>{goal.description}</p></div><button className="primary-button" onClick={onCheck} disabled={checking}>{checking ? '检查中…' : '手动检查环境'}</button></div>
+      <section className="summary-grid">
+        <article><span>当前状态</span><strong className={report?.ready ? 'success' : ''}>{report ? (report.ready ? '已准备' : '需要处理') : '未检查'}</strong><small>{report ? `检测于 ${new Date(report.checkedAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}` : '可在此手动检查'}</small></article>
+        <article><span>环境通过项</span><strong>{report ? `${readyCount} / ${report.checks.length}` : '—'}</strong><small>{report?.platform ?? '等待检测本机信息'}</small></article>
+        <article><span>引导状态</span><strong>可重新打开</strong><small>关闭引导不会影响已有项目或环境</small></article>
+      </section>
+      <section className="content-card"><h2>环境准备情况</h2>{report ? <div className="check-list">{report.checks.map((check) => <article className={`check-row ${check.status}`} key={check.id}><span className="check-state">{check.status === 'ready' ? '✓' : '!'}</span><div><strong>{check.name}</strong><p>{check.detail}</p></div>{check.suggestion && <small>{check.suggestion}</small>}</article>)}</div> : <div className="empty-state"><span>◌</span><p>尚未进行环境检查</p><small>点击“手动检查环境”即可查看本机准备状态。</small></div>}</section>
+    </section>}
+  </main>
+}
+
+void LegacyDashboard
+
+function Dashboard({ report, checking, error, onOpenGuide, onCheck }: { goals: Goal[]; goal?: Goal; report: Report | null; checking: boolean; error: string; onSelect: (id: string) => void; onOpenGuide: () => void; onCheck: () => void }) {
+  const [page, setPage] = useState<string>('environment')
+  const [root, setRoot] = useState('.')
+  const [file, setFile] = useState('.npmrc')
+  const [content, setContent] = useState('')
+  const [output, setOutput] = useState('')
+  const [message, setMessage] = useState('chore: update robot')
+  const [busy, setBusy] = useState(false)
+  const api = async (method: string, data: Record<string, string>) => { setBusy(true); try { const query = method === 'GET' ? `?${new URLSearchParams(data)}` : ''; const response = await fetch(`/api/v1/robot${query}`, method === 'GET' ? {} : { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) }); const json = await response.json() as { output?: string; error?: string }; if (!response.ok) throw new Error(json.error); setOutput(json.output ?? '操作完成。'); if (method === 'GET') setContent(json.output ?? '') } catch (reason) { setOutput(reason instanceof Error ? reason.message : '操作未完成。') } finally { setBusy(false) } }
+  const editorFile = (next: string) => { setFile(next); api('GET', { root, file: next }) }
+  const operations: Array<[string, string, string]> = [['install', '重载依赖', '重新安装项目需要的包。'], ['dev', '开发模式启动', '在开发模式运行机器人。'], ['build', '构建应用', '生成可发布的构建产物。'], ['pm2', '后台模式启动', '先构建，再交给 PM2 在后台守护运行。']]
+  const catalogs = page === 'plugins' ? [['alemonjs', 'AlemonJS 核心', '机器人框架核心包。'], ['@alemonjs/db', '数据存储', '为机器人增加数据库能力。'], ['@alemonjs/bubble', '气泡服务', '接入气泡相关能力。']] : [['@alemonjs/onebot', 'OneBot 连接', '连接支持 OneBot 协议的平台。'], ['@alemonjs/qq-bot', 'QQ Bot 连接', '连接 QQ 官方机器人平台。'], ['@alemonjs/discord', 'Discord 连接', '连接 Discord 平台。']]
+  return <main className="guide-shell"><section className="guide-window dashboard-window"><header className="guide-bar"><span className="console-title">后台中心</span><button className="primary-button" onClick={onOpenGuide}>打开引导</button></header><section className="console-layout"><aside className="console-nav"><button onClick={onOpenGuide}>引导首页</button><button className={page === 'environment' ? 'active' : ''} onClick={() => setPage('environment')}>环境管理</button><button className={page === 'robot' ? 'active' : ''} onClick={() => setPage('robot')}>机器人管理</button><button className={page === 'plugins' ? 'active' : ''} onClick={() => setPage('plugins')}>插件管理</button><button className={page === 'connections' ? 'active' : ''} onClick={() => setPage('connections')}>连接管理</button></aside><section className="console-page">{page === 'environment' ? <><p className="eyebrow">环境管理</p><h1>检查当前电脑的开发环境</h1><p>这里会检查 Node.js、Git 等机器人需要的工具。</p><button className="primary-button" onClick={onCheck} disabled={checking}>{checking ? '检查中…' : '开始检查'}</button>{report && <div className="compact-checks">{report.checks.map((check) => <span className={check.status} key={check.id}>{check.status === 'ready' ? '✓' : '!'} {check.name}：{check.detail}</span>)}</div>}</> : <><p className="eyebrow">{page === 'plugins' ? '插件管理' : page === 'connections' ? '连接管理' : '机器人管理'}</p><h1>{page === 'plugins' ? '安装机器人能力' : page === 'connections' ? '安装平台连接包' : '管理你的机器人项目'}</h1>{page !== 'robot' && page !== 'environment' && <section className="package-catalog">{catalogs.map(([pkg, title, note]) => <article key={pkg}><strong>{title}</strong><small>{note}</small><code>{pkg}</code><button className="primary-button" disabled={busy} onClick={() => api('POST', { root, action: 'install-package', package: pkg })}>安装</button></article>)}</section>}<div className="robot-root"><button className={root === '.' ? 'choice selected' : 'choice'} onClick={() => setRoot('.')}><strong>当前运行目录</strong><small>管理启动本工具所在的机器人项目。</small></button><button className={root !== '.' ? 'choice selected' : 'choice'} onClick={() => setRoot('')}><strong>指定机器人目录</strong><small>输入包含 package.json 的机器人文件夹。</small></button>{root !== '.' && <input value={root} onChange={(event) => setRoot(event.target.value)} placeholder="/完整/机器人/目录" />}</div>{page === 'robot' && <><div className="robot-tabs">{[['.npmrc', '镜像设置'], ['alemon.config.yaml', 'AlemonJS 配置'], ['README.md', 'README']].map(([name, label]) => <button className={file === name ? 'active' : ''} key={name} onClick={() => editorFile(name)}>{label}</button>)}</div><div className="file-editor"><textarea value={content} onChange={(event) => setContent(event.target.value)} placeholder="点击上方标签读取文件内容" /><button className="primary-button" disabled={busy} onClick={() => api('PUT', { root, file, content })}>保存 {file}</button></div><section className="robot-actions">{operations.map(([action, title, note]) => <button key={action} disabled={busy} onClick={() => api('POST', { root, action })}><strong>{title}</strong><small>{note}</small></button>)}<div className="commit-action"><input value={message} onChange={(event) => setMessage(event.target.value)} placeholder="提交说明" /><button disabled={busy} onClick={() => api('POST', { root, action: 'commit', message })}>提交代码</button></div></section></>}{(output || error) && <pre className="robot-output">{output || error}</pre>}</>}</section></section></section></main>
+}

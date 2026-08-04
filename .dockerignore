@@ -1,0 +1,6 @@
+.git
+.env
+dist
+frontend/node_modules
+frontend/.vite
+app

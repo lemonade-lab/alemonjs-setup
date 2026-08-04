@@ -1,0 +1,46 @@
+# Logs
+logs
+log
+*.log
+*.logs
+
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+dist-electron
+release
+app
+*.local
+
+# Editor directories and files
+.vscode/.debug.env
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+#lockfile
+package-lock.json
+pnpm-lock.yaml
+/test-results/
+/playwright-report/
+/playwright/.cache/
+.env
+
+/auth.db
+/auth
+/.env.secrets
+/auth.tar
+/auth.tar.gz

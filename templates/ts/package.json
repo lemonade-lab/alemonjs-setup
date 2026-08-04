@@ -1,0 +1,39 @@
+{
+  "name": "alemonjs-app",
+  "version": "1.0.0",
+  "description": "template app",
+  "main": "lib/index.js",
+  "type": "module",
+  "scripts": {
+    "app": "node index.js",
+    "dev": "npx lvy app.ts",
+    "view": "npx lvy app.ts --jsxp",
+    "build": "npx lvy build",
+    "review": "npx alemonc start",
+    "start": "npx pm2 startOrRestart pm2.config.cjs",
+    "stop": "npx pm2 stop pm2.config.cjs",
+    "delete": "npx pm2 delete pm2.config.cjs"
+  },
+  "exports": {
+    ".": "./lib/index.js",
+    "./package": "./package.json"
+  },
+  "devDependencies": {
+    "@alemonjs/bubble": "^2.1.11",
+    "@alemonjs/db": "^0.0.17",
+    "@alemonjs/discord": "^2.1.23",
+    "@alemonjs/onebot": "^2.1.16",
+    "@alemonjs/qq-bot": "^2.1.23",
+    "@types/node": "^22",
+    "alemonjs": "2.1.84",
+    "cssnano": "^7",
+    "jsxp": "1.4.0",
+    "lvyjs": "^0.3.0-alpha.2",
+    "pm2": "^5",
+    "tailwindcss": "3"
+  },
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org",
+    "access": "public"
+  }
+}
