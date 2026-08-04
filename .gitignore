@@ -18,6 +18,8 @@ dist
 dist-ssr
 dist-electron
 release
+!internal/release/
+!internal/release/**
 app
 *.local
 

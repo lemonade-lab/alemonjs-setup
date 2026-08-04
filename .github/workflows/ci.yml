@@ -20,10 +20,11 @@ jobs:
           node-version: 22
           cache: yarn
           cache-dependency-path: frontend/yarn.lock
+      - run: corepack enable
       - uses: actions/setup-go@v5
         with:
           go-version: '1.21.x'
-      - run: yarn install --frozen-lockfile
+      - run: yarn install --frozen-lockfile --non-interactive
         working-directory: frontend
       - run: yarn lint && yarn build
         working-directory: frontend
@@ -47,10 +48,11 @@ jobs:
           node-version: 22
           cache: yarn
           cache-dependency-path: frontend/yarn.lock
+      - run: corepack enable
       - uses: actions/setup-go@v5
         with:
           go-version: '1.21.x'
-      - run: yarn install --frozen-lockfile && yarn build
+      - run: yarn install --frozen-lockfile --non-interactive && yarn build
         working-directory: frontend
       - run: mkdir -p release && CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build -trimpath -ldflags "-s -w -X main.Version=${GITHUB_REF_NAME}" -o "release/${{ matrix.filename }}" .
       - uses: actions/upload-artifact@v4
