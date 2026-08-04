@@ -10,7 +10,7 @@ import (
 
 	"alemonjs-setup/internal/catalog"
 	"alemonjs-setup/internal/project"
-	"alemonjs-setup/internal/release"
+	"alemonjs-setup/internal/releases"
 	"alemonjs-setup/internal/robot"
 	"alemonjs-setup/internal/system"
 )
@@ -126,7 +126,7 @@ func (s *server) releasesHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "该操作暂不支持。")
 		return
 	}
-	items, err := release.List(r.URL.Query().Get("app"))
+	items, err := releases.List(r.URL.Query().Get("app"))
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
