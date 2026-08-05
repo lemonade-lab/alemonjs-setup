@@ -8,8 +8,6 @@
 - 开发者：运行前后端、修改控制中心或项目模板。
 - 维护者：构建跨平台二进制、验证变更和发布版本。
 
-产品界面中，“系统插件”属于 Setup 自身的扩展能力；机器人目录中的连接和插件则只作用于相应机器人项目。两者在实现与数据边界上应保持分离。
-
 ## 获取与运行
 
 在 [Releases](../../releases) 下载对应系统的二进制：
@@ -21,13 +19,28 @@
 | macOS Intel | `alemonjs-setup-darwin-amd64` |
 | Linux | `alemonjs-setup-linux-amd64` |
 
-运行二进制后，访问终端显示的地址；默认是 `http://localhost:17390`。
+
+Windows 可直接双击 `.exe`。
+
+其他系统，运行二进制后，访问终端显示的地址；默认是 `http://localhost:17390`。
 
 ```bash
 ./alemonjs-setup-darwin-arm64 install --port 17390
 ```
 
-Windows 可直接双击 `.exe`。
+如果安装输出提示 `~/.local/bin` 不在 `PATH` 中，请先按终端提示加入 `PATH`，再重新打开终端。完成后直接使用 `albs` 管理本机服务或自动化发布：
+
+```bash
+albs open
+albs status
+albs start
+albs stop
+albs restart
+albs uninstall --yes
+albs --cwd /xxx/robot npm publish
+albs --cwd /xxx/alemonb git publish --yes
+```
+
 
 ## 本地开发
 
@@ -86,28 +99,4 @@ scripts/     本地发布与维护脚本
 ```bash
 git tag v0.1.0
 git push origin v0.1.0
-```
-
-首次安装时，请由下载的二进制执行 `install`。它会：
-
-1. 将当前二进制复制为 `albs` 命令；macOS/Linux 的默认位置是 `~/.local/bin/albs`，Windows 是 `%LOCALAPPDATA%\albs\albs.exe`。
-2. 注册并启动当前系统的后台服务：macOS LaunchAgent、Linux systemd 用户服务或 Windows 登录计划任务。
-
-例如，macOS Apple Silicon：
-
-```bash
-./alemonjs-setup-darwin-arm64 install
-```
-
-如果安装输出提示 `~/.local/bin` 不在 `PATH` 中，请先按终端提示加入 `PATH`，再重新打开终端。完成后直接使用 `albs` 管理本机服务或自动化发布：
-
-```bash
-albs open
-albs status
-albs start
-albs stop
-albs restart
-albs uninstall --yes
-albs --cwd /xxx/robot npm publish
-albs --cwd /xxx/alemonb git publish --yes
 ```
