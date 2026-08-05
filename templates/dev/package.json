@@ -1,6 +1,6 @@
 {
   "name": "alemonjs-app",
-  "version": "1.0.0",
+  "version": "1.0.2",
   "description": "template app",
   "main": "lib/index.js",
   "type": "module",

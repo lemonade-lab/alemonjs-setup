@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"alemonjs-setup/internal/system"
 )
 
 type Config struct {
@@ -57,8 +59,19 @@ func (c *Creator) Create(config Config) (Result, error) {
 	} else if !os.IsNotExist(err) {
 		return Result{}, fmt.Errorf("无法检查目标文件夹：%w", err)
 	}
-	if info, err := os.Stat(config.Destination); err != nil || !info.IsDir() {
+	if info, err := os.Stat(config.Destination); err != nil {
+		if isPermissionError(err) {
+			return c.createWithPrivileges(config)
+		}
 		return Result{}, errors.New("保存位置不存在或不是文件夹，请重新选择")
+	} else if !info.IsDir() {
+		return Result{}, errors.New("保存位置不存在或不是文件夹，请重新选择")
+	}
+	if err := ensureWritableDirectory(config.Destination); err != nil {
+		if isPermissionError(err) {
+			return c.createWithPrivileges(config)
+		}
+		return Result{}, err
 	}
 
 	result := Result{Path: path, Status: "failed"}
@@ -77,17 +90,24 @@ func (c *Creator) Create(config Config) (Result, error) {
 	}
 	log("已按你的选择配置项目。")
 
+	packageCommand := config.PackageManager
 	if config.PackageManager == "yarn" {
 		if _, err := exec.LookPath("yarn"); err != nil {
-			log("未找到 Yarn，正在通过 npm 安装 Yarn…")
-			if err := run(path, &result.Logs, "npm", "install", "--global", "yarn"); err != nil {
-				return result, fmt.Errorf("安装 Yarn 失败：%w", err)
-			}
+			// Global npm installation commonly fails for non-admin users. Use an
+			// ephemeral npx invocation instead, leaving the user's system intact.
+			log("未找到 Yarn，临时使用 npm 下载 Yarn；不会修改电脑的全局安装。")
+			packageCommand = "npx"
 		}
 	}
 	log("正在安装项目依赖…")
 	install := map[string][]string{"yarn": {"install"}, "npm": {"install"}, "pnpm": {"install"}}[config.PackageManager]
-	if err := run(path, &result.Logs, config.PackageManager, install...); err != nil {
+	if packageCommand == "npx" {
+		install = append([]string{"--yes", "yarn@1.22.22"}, install...)
+	}
+	if err := run(path, &result.Logs, packageCommand, install...); err != nil {
+		if packageCommand == "npx" {
+			return result, fmt.Errorf("临时使用 Yarn 安装依赖失败；请返回“包管理器”步骤选择 npm 后重试：%w", err)
+		}
 		return result, fmt.Errorf("安装项目依赖失败：%w", err)
 	}
 
@@ -108,6 +128,64 @@ func (c *Creator) Create(config Config) (Result, error) {
 	result.Status = "ready"
 	log("项目创建完成。")
 	return result, nil
+}
+
+type elevatedResult struct {
+	Result Result `json:"result"`
+	Error  string `json:"error,omitempty"`
+}
+
+// createWithPrivileges hands the complete creation flow to the same executable
+// after the OS has authenticated it.  This is necessary because copying a
+// template involves many filesystem writes, not just a single shell command.
+func (c *Creator) createWithPrivileges(config Config) (Result, error) {
+	executable, err := os.Executable()
+	if err != nil {
+		return Result{}, fmt.Errorf("无法申请系统权限：%w", err)
+	}
+	configFile, err := os.CreateTemp("", "albs-create-request-*.json")
+	if err != nil {
+		return Result{}, fmt.Errorf("无法准备权限申请：%w", err)
+	}
+	configPath := configFile.Name()
+	defer os.Remove(configPath)
+	resultFile, err := os.CreateTemp("", "albs-create-result-*.json")
+	if err != nil {
+		return Result{}, fmt.Errorf("无法准备权限申请：%w", err)
+	}
+	resultPath := resultFile.Name()
+	defer os.Remove(resultPath)
+	if err := resultFile.Chmod(0666); err != nil {
+		return Result{}, fmt.Errorf("无法准备权限申请：%w", err)
+	}
+	if err := resultFile.Close(); err != nil {
+		return Result{}, fmt.Errorf("无法准备权限申请：%w", err)
+	}
+	data, err := json.Marshal(config)
+	if err != nil {
+		return Result{}, fmt.Errorf("无法准备权限申请：%w", err)
+	}
+	if _, err := configFile.Write(data); err != nil {
+		return Result{}, fmt.Errorf("无法准备权限申请：%w", err)
+	}
+	if err := configFile.Close(); err != nil {
+		return Result{}, fmt.Errorf("无法准备权限申请：%w", err)
+	}
+	if _, err := system.RunWithPrivileges("", nil, executable, "--privileged-create", configPath, resultPath); err != nil {
+		return Result{}, err
+	}
+	data, err = os.ReadFile(resultPath)
+	if err != nil {
+		return Result{}, fmt.Errorf("权限操作未返回结果：%w", err)
+	}
+	var response elevatedResult
+	if err := json.Unmarshal(data, &response); err != nil {
+		return Result{}, fmt.Errorf("权限操作返回格式无法识别：%w", err)
+	}
+	if response.Error != "" {
+		return response.Result, errors.New(response.Error)
+	}
+	return response.Result, nil
 }
 
 func validate(c Config) error {
@@ -228,7 +306,43 @@ func run(directory string, logs *[]string, name string, args ...string) error {
 		*logs = append(*logs, line)
 	}
 	if err != nil {
+		if os.IsPermission(err) || strings.Contains(strings.ToLower(line), "eacces") || strings.Contains(strings.ToLower(line), "permission denied") {
+			elevated, elevatedErr := system.RunWithPrivileges(directory, nil, name, args...)
+			if elevatedErr == nil {
+				if elevated = strings.TrimSpace(elevated); elevated != "" {
+					*logs = append(*logs, elevated)
+				}
+				return nil
+			}
+			if elevated != "" {
+				*logs = append(*logs, strings.TrimSpace(elevated))
+			}
+			return fmt.Errorf("%s %s：当前用户权限不足，系统权限申请未完成：%w", name, strings.Join(args, " "), elevatedErr)
+		}
 		return fmt.Errorf("%s %s：%w", name, strings.Join(args, " "), err)
 	}
 	return nil
+}
+
+func ensureWritableDirectory(directory string) error {
+	file, err := os.CreateTemp(directory, ".alemonjs-setup-write-check-")
+	if err != nil {
+		if os.IsPermission(err) {
+			return errors.New("保存位置当前不可写，需要申请系统权限")
+		}
+		return fmt.Errorf("无法写入保存位置：%w", err)
+	}
+	name := file.Name()
+	if err := file.Close(); err != nil {
+		_ = os.Remove(name)
+		return fmt.Errorf("无法确认保存位置写入权限：%w", err)
+	}
+	if err := os.Remove(name); err != nil {
+		return fmt.Errorf("无法清理保存位置检查文件：%w", err)
+	}
+	return nil
+}
+
+func isPermissionError(err error) bool {
+	return os.IsPermission(err) || strings.Contains(strings.ToLower(err.Error()), "permission denied") || strings.Contains(strings.ToLower(err.Error()), "eacces")
 }

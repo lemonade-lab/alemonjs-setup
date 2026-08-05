@@ -90,7 +90,12 @@ func NewServer(version string, staticFiles fs.FS, templateFiles ...fs.FS) http.H
 	mux.HandleFunc("/api/v1/releases", s.releasesHandler)
 	mux.HandleFunc("/api/v1/directories/select", s.directoryHandler)
 	mux.HandleFunc("/api/v1/catalog", s.catalogHandler)
+	mux.HandleFunc("/api/v1/catalog/document", s.catalogDocumentHandler)
+	mux.HandleFunc("/api/v1/catalog/package-config", s.catalogPackageConfigHandler)
 	mux.HandleFunc("/api/v1/robot", s.robotHandler)
+	mux.HandleFunc("/api/v1/robot/packages", s.robotPackagesHandler)
+	mux.HandleFunc("/api/v1/robot/package-config", s.robotPackageConfigHandler)
+	mux.HandleFunc("/api/v1/robot/git-init", s.robotGitInitHandler)
 	mux.HandleFunc("/api/v1/publish/npm/status", s.npmPublishStatusHandler)
 	mux.HandleFunc("/api/v1/publish/npm/pack", s.npmPackPreviewHandler)
 	mux.HandleFunc("/api/v1/publish/git/status", s.gitPublishStatusHandler)
@@ -148,6 +153,32 @@ func (s *server) catalogHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, groups)
+}
+
+func (s *server) catalogDocumentHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "该操作暂不支持。")
+		return
+	}
+	document, err := catalog.LoadDocument(r.URL.Query().Get("url"))
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, document)
+}
+
+func (s *server) catalogPackageConfigHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "该操作暂不支持。")
+		return
+	}
+	config, err := catalog.LoadPackageConfig(r.URL.Query().Get("url"))
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, config)
 }
 
 func (s *server) directoryHandler(w http.ResponseWriter, r *http.Request) {
@@ -209,6 +240,75 @@ func (s *server) robotHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "该操作暂不支持。")
 		return
 	}
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *server) robotPackagesHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "该操作暂不支持。")
+		return
+	}
+	items, err := s.robots.LocalPackages(r.URL.Query().Get("root"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+func (s *server) robotPackageConfigHandler(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		Root    string            `json:"root"`
+		Package string            `json:"package"`
+		Values  map[string]string `json:"values"`
+	}
+	if r.Method == http.MethodGet {
+		input.Root = r.URL.Query().Get("root")
+		input.Package = r.URL.Query().Get("package")
+	} else if r.Method == http.MethodPut {
+		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+			writeError(w, http.StatusBadRequest, "请求内容无法识别。")
+			return
+		}
+	} else {
+		writeError(w, http.StatusMethodNotAllowed, "该操作暂不支持。")
+		return
+	}
+	if r.Method == http.MethodGet {
+		config, err := s.robots.PackageConfig(input.Root, input.Package)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, config)
+		return
+	}
+	result, err := s.robots.SavePackageConfig(input.Root, input.Package, input.Values)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *server) robotGitInitHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "该操作暂不支持。")
+		return
+	}
+	var input struct {
+		Root string `json:"root"`
+		robot.GitInitConfig
+	}
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		writeError(w, http.StatusBadRequest, "请求内容无法识别。")
+		return
+	}
+	result, err := robot.InitializeGit(input.Root, input.GitInitConfig)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return

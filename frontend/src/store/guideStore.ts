@@ -1,5 +1,7 @@
 import { configureStore, createSlice, type PayloadAction } from '@reduxjs/toolkit'
 import { persistReducer, persistStore } from 'redux-persist'
+import { workspaceApi } from './workspaceApi'
+import { persistedWorkspace } from './workspaceStore'
 
 const storage = {
   getItem: (key: string) => Promise.resolve(window.localStorage.getItem(key)),
@@ -25,7 +27,7 @@ const guideSlice = createSlice({
 })
 
 const persistedGuide = persistReducer({ key: 'alemonjs-setup-guide', storage, whitelist: ['developer', 'project'] }, guideSlice.reducer)
-export const store = configureStore({ reducer: { guide: persistedGuide }, middleware: (getDefault) => getDefault({ serializableCheck: false }) })
+export const store = configureStore({ reducer: { guide: persistedGuide, workspace: persistedWorkspace, [workspaceApi.reducerPath]: workspaceApi.reducer }, middleware: (getDefault) => getDefault({ serializableCheck: false }).concat(workspaceApi.middleware) })
 export const persistor = persistStore(store)
 export const { setDeveloper, setProject } = guideSlice.actions
 export type RootState = ReturnType<typeof store.getState>

@@ -16,6 +16,7 @@ var gitVersionPattern = regexp.MustCompile(`^v\d+\.\d+\.\d+$`)
 // publishing the built Node package to the project's release branch, not
 // building alemonjs-setup itself.
 type GitStatus struct {
+	Root               string   `json:"root,omitempty"`
 	Repository         string   `json:"repository,omitempty"`
 	Branch             string   `json:"branch,omitempty"`
 	PackageName        string   `json:"packageName,omitempty"`
@@ -34,12 +35,19 @@ type GitStatus struct {
 	Issues             []string `json:"issues"`
 }
 
+type GitInitConfig struct {
+	AuthorName  string `json:"authorName"`
+	AuthorEmail string `json:"authorEmail"`
+	Repository  string `json:"repository"`
+	Message     string `json:"message"`
+}
+
 func GitReleaseStatus(root string) (GitStatus, error) {
 	path, err := workspacePath(root)
 	if err != nil {
 		return GitStatus{}, err
 	}
-	status := GitStatus{Checks: []string{}, Issues: []string{}, Tags: []string{}, Commits: []string{}, Artifacts: []string{}}
+	status := GitStatus{Root: path, Checks: []string{}, Issues: []string{}, Tags: []string{}, Commits: []string{}, Artifacts: []string{}}
 	pkg, err := readPackage(path)
 	if err != nil {
 		status.Issues = append(status.Issues, "当前目录缺少可用的 package.json，无法按应用包流程发布。")
@@ -59,7 +67,14 @@ func GitReleaseStatus(root string) (GitStatus, error) {
 		status.Issues = append(status.Issues, "当前项目尚未初始化 Git。")
 		return status, nil
 	}
+	// A parent repository must not silently become this project's release
+	// repository. The UI can explicitly initialise an independent repository.
 	status.GitReady = true
+	gitRoot, err := gitRun(path, "rev-parse", "--show-toplevel")
+	if err != nil || !sameWorkspacePath(path, gitRoot) {
+		status.Issues = append(status.Issues, "所选目录不是 Git 仓库根目录；可在此目录初始化独立 Git 仓库。")
+		return status, nil
+	}
 	if status.Repository, err = gitRun(path, "remote", "get-url", "origin"); err != nil {
 		status.Issues = append(status.Issues, "未找到 origin 远程仓库。")
 	} else {
@@ -112,6 +127,64 @@ func GitReleaseStatus(root string) (GitStatus, error) {
 		status.SuggestedVersion = "v" + nextPatch(strings.TrimPrefix(status.LatestVersion, "v"))
 	}
 	return status, nil
+}
+
+// InitializeGit creates an independent repository in the selected project.
+// It only changes identity in this repository, never the user's global Git
+// configuration.
+func InitializeGit(root string, config GitInitConfig) (Result, error) {
+	path, err := workspacePath(root)
+	if err != nil {
+		return Result{}, err
+	}
+	if strings.TrimSpace(config.AuthorName) == "" || strings.TrimSpace(config.AuthorEmail) == "" {
+		return Result{}, errors.New("请填写 Git 提交姓名和邮箱")
+	}
+	if strings.ContainsAny(config.AuthorName+config.AuthorEmail+config.Repository+config.Message, "\r\n") {
+		return Result{}, errors.New("Git 初始化信息不能包含换行")
+	}
+	if config.Repository != "" && !(strings.HasPrefix(config.Repository, "https://") || strings.HasPrefix(config.Repository, "git@") || strings.HasPrefix(config.Repository, "ssh://")) {
+		return Result{}, errors.New("origin 地址应为 HTTPS、SSH 或 Git 地址")
+	}
+	if gitRoot, err := gitRun(path, "rev-parse", "--show-toplevel"); err == nil && sameWorkspacePath(path, gitRoot) {
+		return Result{}, errors.New("当前目录已经是 Git 仓库根目录")
+	}
+	message := strings.TrimSpace(config.Message)
+	if message == "" {
+		message = "chore: initialize project"
+	}
+	logs := []string{}
+	for _, command := range [][]string{{"init"}, {"branch", "-M", "main"}, {"config", "user.name", config.AuthorName}, {"config", "user.email", config.AuthorEmail}, {"add", "."}, {"commit", "-m", message}} {
+		output, err := gitRun(path, command...)
+		if output != "" {
+			logs = append(logs, output)
+		}
+		if err != nil {
+			return Result{Path: path, Output: strings.Join(logs, "\n")}, fmt.Errorf("Git 初始化失败：%w", err)
+		}
+	}
+	if config.Repository != "" {
+		output, err := gitRun(path, "remote", "add", "origin", config.Repository)
+		if output != "" {
+			logs = append(logs, output)
+		}
+		if err != nil {
+			return Result{Path: path, Output: strings.Join(logs, "\n")}, fmt.Errorf("设置 origin 失败：%w", err)
+		}
+	}
+	logs = append(logs, "Git 仓库已初始化。")
+	return Result{Path: path, Output: strings.Join(logs, "\n")}, nil
+}
+
+func sameWorkspacePath(left, right string) bool {
+	left, right = filepath.Clean(left), filepath.Clean(right)
+	if resolved, err := filepath.EvalSymlinks(left); err == nil {
+		left = resolved
+	}
+	if resolved, err := filepath.EvalSymlinks(right); err == nil {
+		right = resolved
+	}
+	return left == right
 }
 
 // GitPublish builds the current Node project, puts only distributable files on
@@ -291,7 +364,13 @@ func workspacePath(root string) (string, error) {
 		return "", errors.New("请选择完整的项目目录")
 	}
 	info, err := os.Stat(root)
-	if err != nil || !info.IsDir() {
+	if err != nil {
+		if permissionError(err) {
+			return "", fmt.Errorf("无法访问项目目录：%w", err)
+		}
+		return "", errors.New("项目目录不存在")
+	}
+	if !info.IsDir() {
 		return "", errors.New("项目目录不存在")
 	}
 	return root, nil
