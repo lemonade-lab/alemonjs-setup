@@ -870,6 +870,10 @@ func (s *server) robotWebViewHandler(w http.ResponseWriter, r *http.Request) {
 	if len(parts) == 3 {
 		requestPath = parts[2]
 	}
+	if strings.HasPrefix(requestPath, "api/") {
+		s.proxyRobotWebViewAPI(w, r, string(rootBytes), parts[1], strings.TrimPrefix(requestPath, "api/"))
+		return
+	}
 	file, err := s.robots.WebViewFile(string(rootBytes), parts[1], requestPath)
 	if err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
@@ -908,6 +912,46 @@ func (s *server) robotWebViewHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.ServeFile(w, r, file)
+}
+
+// proxyRobotWebViewAPI connects a WebView's relative ./api/* requests to the
+// selected robot application. The destination is never supplied by the
+// browser: it is derived from the selected root's configured local app port.
+func (s *server) proxyRobotWebViewAPI(w http.ResponseWriter, r *http.Request, root, id, requestPath string) {
+	if r.Method != http.MethodGet && r.Method != http.MethodPost && r.Method != http.MethodPut && r.Method != http.MethodPatch && r.Method != http.MethodDelete {
+		writeError(w, http.StatusMethodNotAllowed, "插件 API 不支持此请求方式。")
+		return
+	}
+	target, err := s.robots.WebViewAPIURL(root, id, requestPath)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if r.URL.RawQuery != "" {
+		target += "?" + r.URL.RawQuery
+	}
+	request, err := http.NewRequestWithContext(r.Context(), r.Method, target, r.Body)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "插件 API 请求无效。")
+		return
+	}
+	for _, header := range []string{"Accept", "Content-Type"} {
+		if value := r.Header.Get(header); value != "" {
+			request.Header.Set(header, value)
+		}
+	}
+	response, err := (&http.Client{Timeout: 30 * time.Second}).Do(request)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "机器人应用尚未启动或无法连接。请在“运行”中启动开发模式后重试。")
+		return
+	}
+	defer response.Body.Close()
+	if contentType := response.Header.Get("Content-Type"); contentType != "" {
+		w.Header().Set("Content-Type", contentType)
+	}
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.WriteHeader(response.StatusCode)
+	_, _ = io.Copy(w, response.Body)
 }
 
 func (s *server) robotManifestHandler(w http.ResponseWriter, r *http.Request) {

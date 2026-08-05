@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -211,4 +213,30 @@ func (m Manager) WebViewEntry(root, id string) (WebViewEntry, error) {
 		}
 	}
 	return WebViewEntry{}, fmt.Errorf("未找到该机器人插件 Web 页面")
+}
+
+// WebViewAPIURL resolves a plugin's relative ./api contract to the selected
+// robot application. AlemonJS WebViews are often not static-only: their UI
+// expects the robot's Koa API on the configured application port.
+func (m Manager) WebViewAPIURL(root, id, requestPath string) (string, error) {
+	if _, err := m.WebViewEntry(root, id); err != nil {
+		return "", err
+	}
+	project, err := projectPath(root)
+	if err != nil {
+		return "", err
+	}
+	clean := filepath.ToSlash(filepath.Clean("/" + strings.TrimPrefix(requestPath, "/")))
+	if clean == "/" || strings.HasPrefix(clean, "/../") {
+		return "", errors.New("插件 API 路径无效")
+	}
+	port := 18110
+	if data, readErr := os.ReadFile(filepath.Join(project, "alemon.config.yaml")); readErr == nil {
+		if match := regexp.MustCompile(`(?m)^\s*serverPort\s*:\s*['\"]?(\d+)`).FindStringSubmatch(string(data)); len(match) == 2 {
+			if configured, parseErr := strconv.Atoi(match[1]); parseErr == nil && configured > 0 && configured < 65536 {
+				port = configured
+			}
+		}
+	}
+	return "http://127.0.0.1:" + strconv.Itoa(port) + "/api" + clean, nil
 }

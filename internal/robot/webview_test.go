@@ -38,6 +38,11 @@ func TestWebViewsDiscoverCurrentRobotPluginsAndContainFiles(t *testing.T) {
 	if _, err := (Manager{}).WebViewFile(root, local.ID, "../../package.json"); err == nil {
 		t.Fatal("path traversal must be rejected")
 	}
+	writeWebViewFixture(t, filepath.Join(root, "alemon.config.yaml"), "serverPort: 19191\n")
+	apiURL, err := (Manager{}).WebViewAPIURL(root, local.ID, "yunzai/status")
+	if err != nil || apiURL != "http://127.0.0.1:19191/api/yunzai/status" {
+		t.Fatalf("api URL = %q, %v", apiURL, err)
+	}
 }
 
 func writeWebViewFixture(t *testing.T, path, content string) {
