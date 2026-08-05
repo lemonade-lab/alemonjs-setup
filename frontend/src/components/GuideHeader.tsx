@@ -2,10 +2,6 @@ type GuideHeaderProps = { onBack: () => void; onClose: () => void; showBack: boo
 
 const links = [
   ['⌂', '官网', 'https://alemonjs.com/'],
-  ['⌘', '框架仓库', 'https://github.com/lemonade-lab/alemonjs'],
-  ['▣', '桌面版仓库', 'https://github.com/lemonade-lab/alemondesk'],
-  ['▤', '手机版仓库', 'https://github.com/lemonade-lab/alemonapp'],
-  ['◎', 'Web 版仓库', 'https://github.com/lemonade-lab/alemongo'],
 ]
 
 export function HeaderLinks() {

@@ -38,7 +38,10 @@ func (Manager) Write(root, name, content string) (Result, error) {
 	}
 	return Result{Path: path, Output: "已保存。"}, nil
 }
-func (Manager) Run(root, action, message, packageName, version, tag string) (Result, error) {
+func (Manager) Run(root, action, message, packageName, version, tag, token string, confirmed bool) (Result, error) {
+	if action == "git-release" {
+		return GitPublish(root, version, confirmed)
+	}
 	if err := project(root); err != nil {
 		return Result{}, err
 	}
@@ -49,6 +52,21 @@ func (Manager) Run(root, action, message, packageName, version, tag string) (Res
 	var name string
 	var args []string
 	switch action {
+	case "dependency-status":
+		checks := []string{}
+		if _, err := os.Stat(filepath.Join(root, "node_modules")); err == nil {
+			checks = append(checks, "已发现 node_modules，依赖目录已就绪。")
+		} else {
+			checks = append(checks, "未发现 node_modules，需要安装依赖。")
+		}
+		if _, err := os.Stat(filepath.Join(root, "yarn.lock")); err == nil {
+			checks = append(checks, "检测到 yarn.lock，将使用 Yarn 管理依赖。")
+		} else if _, err := os.Stat(filepath.Join(root, "package-lock.json")); err == nil {
+			checks = append(checks, "检测到 package-lock.json，将使用 npm 管理依赖。")
+		} else {
+			checks = append(checks, "未检测到锁定文件，安装时会根据 package.json 生成依赖状态。")
+		}
+		return Result{Path: root, Output: strings.Join(checks, "\n")}, nil
 	case "install":
 		name, args = manager, []string{"install"}
 	case "build":
@@ -60,20 +78,30 @@ func (Manager) Run(root, action, message, packageName, version, tag string) (Res
 		if !regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`).MatchString(tag) {
 			return Result{}, errors.New("npm 标签格式无效")
 		}
-		name, args = "npm", []string{"publish", "--tag", tag}
-	case "git-release":
-		if version != "" && !regexp.MustCompile(`^v?\d+\.\d+\.\d+$`).MatchString(version) {
-			return Result{}, errors.New("版本号应为 v1.2.3 或 1.2.3")
-		}
-		script, err := filepath.Abs(filepath.Join("scripts", "local-release.sh"))
+		status, err := (Manager{}).NPMStatus(root)
 		if err != nil {
-			return Result{}, fmt.Errorf("无法定位本地发布脚本：%w", err)
+			return Result{}, err
 		}
-		if _, err := os.Stat(script); err != nil {
-			return Result{}, errors.New("未找到本地发布脚本")
+		issues := make([]string, 0, len(status.Issues))
+		for _, issue := range status.Issues {
+			if token != "" && strings.HasPrefix(issue, "尚未登录 npm") {
+				continue
+			}
+			issues = append(issues, issue)
 		}
-		output, err := runWithEnv(root, map[string]string{"PROJECT_ROOT": root, "RELEASE_AUTO_CONFIRM": "1"}, "bash", script, version)
-		return Result{Path: root, Output: output}, err
+		if len(issues) > 0 {
+			return Result{}, errors.New("发布前检查未通过：" + strings.Join(issues, "；"))
+		}
+		if token != "" {
+			output, err := publishWithToken(root, tag, token)
+			return Result{Path: root, Output: output}, err
+		}
+		name, args = "npm", []string{"publish", "--tag", tag, "--registry=https://registry.npmjs.org"}
+	case "npm-version":
+		if !regexp.MustCompile(`^\d+\.\d+\.\d+$`).MatchString(version) {
+			return Result{}, errors.New("版本号应为 1.2.3")
+		}
+		name, args = "npm", []string{"version", version, "--no-git-tag-version"}
 	case "dev":
 		if err := fixLegacyLvyScript(root); err != nil {
 			return Result{}, err
@@ -98,6 +126,11 @@ func (Manager) Run(root, action, message, packageName, version, tag string) (Res
 			return Result{}, errors.New("不支持的 AlemonJS 包")
 		}
 		name, args = manager, []string{"add", "-D", packageName}
+	case "git-init":
+		if _, err := run(root, "git", "init"); err != nil {
+			return Result{}, err
+		}
+		name, args = "git", []string{"branch", "-M", "main"}
 	default:
 		return Result{}, errors.New("未知的机器人操作")
 	}
@@ -116,24 +149,29 @@ func allowedPackage(name string) bool {
 	return false
 }
 func project(root string) error {
+	_, err := projectPath(root)
+	return err
+}
+
+func projectPath(root string) (string, error) {
 	if root == "." {
 		current, err := os.Getwd()
 		if err != nil {
-			return errors.New("无法读取当前运行目录")
+			return "", errors.New("无法读取当前运行目录")
 		}
 		root = current
 	}
 	if !filepath.IsAbs(root) {
-		return errors.New("请选择完整的机器人文件夹路径")
+		return "", errors.New("请选择完整的机器人文件夹路径")
 	}
 	info, err := os.Stat(root)
 	if err != nil || !info.IsDir() {
-		return errors.New("机器人文件夹不存在")
+		return "", errors.New("机器人文件夹不存在")
 	}
 	if _, err := os.Stat(filepath.Join(root, "package.json")); err != nil {
-		return errors.New("该文件夹不是可管理的 Node.js 机器人项目（缺少 package.json）")
+		return "", errors.New("该文件夹不是可管理的 Node.js 机器人项目（缺少 package.json）")
 	}
-	return nil
+	return root, nil
 }
 func file(root, name string) (string, error) {
 	if err := project(root); err != nil {

@@ -91,8 +91,50 @@ func NewServer(version string, staticFiles fs.FS, templateFiles ...fs.FS) http.H
 	mux.HandleFunc("/api/v1/directories/select", s.directoryHandler)
 	mux.HandleFunc("/api/v1/catalog", s.catalogHandler)
 	mux.HandleFunc("/api/v1/robot", s.robotHandler)
+	mux.HandleFunc("/api/v1/publish/npm/status", s.npmPublishStatusHandler)
+	mux.HandleFunc("/api/v1/publish/npm/pack", s.npmPackPreviewHandler)
+	mux.HandleFunc("/api/v1/publish/git/status", s.gitPublishStatusHandler)
 	mux.Handle("/", s.spa())
 	return s.withHeaders(mux)
+}
+
+func (s *server) npmPublishStatusHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "该操作暂不支持。")
+		return
+	}
+	status, err := s.robots.NPMStatus(r.URL.Query().Get("root"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, status)
+}
+
+func (s *server) npmPackPreviewHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "该操作暂不支持。")
+		return
+	}
+	preview, err := s.robots.NPMPackPreview(r.URL.Query().Get("root"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, preview)
+}
+
+func (s *server) gitPublishStatusHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "该操作暂不支持。")
+		return
+	}
+	status, err := robot.GitReleaseStatus(r.URL.Query().Get("root"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, status)
 }
 
 func (s *server) catalogHandler(w http.ResponseWriter, r *http.Request) {
@@ -113,12 +155,12 @@ func (s *server) directoryHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "该操作暂不支持。")
 		return
 	}
-	path, err := system.ChooseDirectory()
+	paths, err := system.ChooseDirectories()
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"path": path})
+	writeJSON(w, http.StatusOK, map[string]any{"paths": paths})
 }
 
 func (s *server) releasesHandler(w http.ResponseWriter, r *http.Request) {
@@ -144,6 +186,8 @@ func (s *server) robotHandler(w http.ResponseWriter, r *http.Request) {
 		Package string `json:"package"`
 		Version string `json:"version"`
 		Tag     string `json:"tag"`
+		Token   string `json:"token"`
+		Confirm string `json:"confirm"`
 	}
 	if r.Method == http.MethodGet {
 		input.Root = r.URL.Query().Get("root")
@@ -160,7 +204,7 @@ func (s *server) robotHandler(w http.ResponseWriter, r *http.Request) {
 	case http.MethodPut:
 		result, err = s.robots.Write(input.Root, input.File, input.Content)
 	case http.MethodPost:
-		result, err = s.robots.Run(input.Root, input.Action, input.Message, input.Package, input.Version, input.Tag)
+		result, err = s.robots.Run(input.Root, input.Action, input.Message, input.Package, input.Version, input.Tag, input.Token, input.Confirm == "true")
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "该操作暂不支持。")
 		return

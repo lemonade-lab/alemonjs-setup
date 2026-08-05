@@ -1,18 +1,18 @@
 # AlemonJS Setup
 
-AlemonJS Setup 是面向新手的 AlemonJS 本地引导工具。它用浏览器界面完成环境检查、项目创建、应用安装和机器人管理，尽量不要求用户记住命令。
+构建一个本地 Web 控制中心，用于创建、发现和维护多个 AlemonJS 机器人项目。
 
-## 主要功能
+仓库面向三类读者：
 
-- 逐步创建 AlemonJS 项目：项目名称、JavaScript / TypeScript、Git、Yarn、图片能力和开发技能均可选择。
-- 自动检查 Node.js、Git、Docker 等环境，并给出中文解决建议。
-- 下载 AlemonDesk 桌面版、AlemonApp 手机版，或引导部署 AlemonGo Web 版。
-- 后台中心：管理当前目录或指定目录的机器人，编辑 `.npmrc`、`alemon.config.yaml`、`README.md`，重装依赖、开发启动、构建、提交代码和 PM2 后台启动。
-- 插件与连接管理：界面化安装支持的 AlemonJS 能力包及 OneBot、QQ Bot、Discord 连接包。
+- 使用者：下载已构建的桌面二进制，管理本机机器人目录。
+- 开发者：运行前后端、修改控制中心或项目模板。
+- 维护者：构建跨平台二进制、验证变更和发布版本。
 
-## 下载与运行
+产品界面中，“系统插件”属于 Setup 自身的扩展能力；机器人目录中的连接和插件则只作用于相应机器人项目。两者在实现与数据边界上应保持分离。
 
-在项目 [Releases](../../releases) 页面下载对应系统的文件：
+## 获取与运行
+
+在 [Releases](../../releases) 下载对应系统的二进制：
 
 | 系统 | 文件 |
 | --- | --- |
@@ -21,63 +21,93 @@ AlemonJS Setup 是面向新手的 AlemonJS 本地引导工具。它用浏览器�
 | macOS Intel | `alemonjs-setup-darwin-amd64` |
 | Linux | `alemonjs-setup-linux-amd64` |
 
-运行后访问终端中显示的本地地址，默认是 `http://localhost:17390`。
+运行二进制后，访问终端显示的地址；默认是 `http://localhost:17390`。
 
 ```bash
-./alemonjs-setup-darwin-arm64
+./alemonjs-setup-darwin-arm64 install --port 17390
 ```
 
 Windows 可直接双击 `.exe`。
 
 ## 本地开发
 
-需要 Go 1.21+、Node.js 22+ 与 Yarn。
+前置要求：Go 1.21+、Node.js 22+、Yarn 1.x。
 
 ```bash
-# 终端一：启动 API
+# 终端一：启动 Go API
 go run .
 
-# 终端二：启动前端
+# 终端二：启动 Vite 前端
 cd frontend
 yarn install
 yarn dev
 ```
 
-前端开发地址：`http://localhost:5173`；Go 服务地址：`http://localhost:17390`。
+- 前端：`http://localhost:5173`
+- Go 服务：`http://localhost:17390`
 
-## 构建与测试
+## 常用命令
 
 ```bash
-make build-fe
-make test
-make lint
-make build
+make build-fe  # 构建前端到 dist/
+make test      # 运行 Go 测试
+make lint      # 检查前端代码
+make build     # 嵌入前端和模板，构建最终单文件
 ```
 
-`make build` 会把前端 `dist/` 与本地 `templates/` 一起嵌入最终单文件，不需要用户额外下载模板。
+前端也可单独验证：
 
-## 自动发布
+```bash
+cd frontend
+yarn build
+```
 
-GitHub Actions 会在 main 分支推送和 Pull Request 上执行前端 lint/build、Go 测试、静态检查与编译。
+## 仓库结构
 
-推送 `v*` 标签时，会自动构建 Windows、macOS（Apple Silicon / Intel）与 Linux 单文件，并创建 GitHub Release：
+```text
+frontend/    React + Vite 控制中心
+internal/    HTTP API、环境检查、项目创建、目录及发布管理
+templates/   嵌入二进制的 JS / TS AlemonJS 项目模板
+scripts/     本地发布与维护脚本
+.github/     CI 与跨平台发布工作流
+```
+
+## 维护约定
+
+- 机器人操作只接受包含 `package.json` 的本地 Node.js 项目目录。
+- 安装机器人插件和连接包时必须使用后端白名单，不能开放任意命令执行。
+- 系统能力与单个机器人目录能力应保持独立：前者不得隐式修改机器人项目。
+- 修改前端后运行 `yarn build`；修改 Go 代码后运行 `go test ./...`。
+
+## 发布
+
+推送 `v*` 标签会触发 GitHub Actions，构建 Windows、macOS（Apple Silicon / Intel）和 Linux 二进制，并创建 GitHub Release。
 
 ```bash
 git tag v0.1.0
 git push origin v0.1.0
 ```
 
-## 项目结构
+首次安装时，请由下载的二进制执行 `install`。它会：
 
-```text
-frontend/    React + Vite 界面
-internal/    环境检查、项目创建与机器人管理 API
-templates/   随二进制携带的 JS / TS 项目模板
-.github/     GitHub Actions 流水线
+1. 将当前二进制复制为 `albs` 命令；macOS/Linux 的默认位置是 `~/.local/bin/albs`，Windows 是 `%LOCALAPPDATA%\albs\albs.exe`。
+2. 注册并启动当前系统的后台服务：macOS LaunchAgent、Linux systemd 用户服务或 Windows 登录计划任务。
+
+例如，macOS Apple Silicon：
+
+```bash
+./alemonjs-setup-darwin-arm64 install
 ```
 
-## 安全边界
+如果安装输出提示 `~/.local/bin` 不在 `PATH` 中，请先按终端提示加入 `PATH`，再重新打开终端。完成后直接使用 `albs` 管理本机服务或自动化发布：
 
-- 不覆盖已有项目目录。
-- 机器人管理只接受包含 `package.json` 的本地目录。
-- 插件与连接安装通过后端白名单控制，不执行任意命令。
+```bash
+albs open
+albs status
+albs start
+albs stop
+albs restart
+albs uninstall --yes
+albs --cwd /xxx/robot npm publish
+albs --cwd /xxx/alemonb git publish --yes
+```
