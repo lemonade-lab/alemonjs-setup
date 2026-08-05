@@ -85,7 +85,7 @@ func Fetch(kind string) ([]Group, error) {
 			continue
 		}
 		name, link := markdownLink(strings.TrimSpace(columns[1]))
-		if name == "" {
+		if name == "" || isCatalogTableHeader(name) {
 			continue
 		}
 		groups[current].Items = append(groups[current].Items, Item{Name: name, URL: link, Description: strings.TrimSpace(columns[2])})
@@ -107,6 +107,14 @@ func Fetch(kind string) ([]Group, error) {
 		}
 	}
 	return groups, nil
+}
+
+// isCatalogTableHeader keeps Markdown column labels out of the selectable
+// ecosystem entries. The environment catalog uses “项目”, while older pages
+// used “项目名”; both must be treated as table structure, not a package.
+func isCatalogTableHeader(name string) bool {
+	name = strings.ToLower(strings.TrimSpace(name))
+	return name == "项目" || name == "项目名" || name == "project" || name == "package"
 }
 
 func repositoryURL(source string) string {

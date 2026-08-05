@@ -1,6 +1,7 @@
 import { useState, type ReactNode } from 'react'
 import { ChevronDown, File, Folder, RefreshCw, X } from 'lucide-react'
 import { useNpmStatusQuery, useLazyNpmPackQuery } from '../store/workspaceApi'
+import { ErrorNotice } from './ErrorNotice'
 
 type NPMStatus = { name: string; localVersion: string; latestVersion?: string; published: boolean; private: boolean; loggedIn: boolean; username?: string; suggestedVersion?: string; scripts: string[]; issues: string[] }
 type PackPreview = { name?: string; version?: string; filename?: string; fileCount: number; unpackedSize: number; files: string[] }
@@ -54,7 +55,7 @@ export function NpmPublishPanel({ root, busy, onRun }: Props) {
     {status.suggestedVersion && status.suggestedVersion !== status.localVersion && <section className="version-suggestion"><strong>建议 v{status.suggestedVersion}</strong><button className="secondary-button" disabled={busy} onClick={() => void applySuggestedVersion()}>采用</button></section>}
     {loginRequired && <section className="npm-auth-card"><div className="npm-auth-copy"><i>!</i><div><strong>先登录 npm</strong><span>登录后刷新此页，即可继续发布。</span></div></div><div className="npm-auth-actions"><a className="secondary-button" href="https://www.npmjs.com/login" target="_blank" rel="noreferrer">打开登录页</a><button className="text-button" onClick={() => setTokenMode((value) => !value)}>{tokenMode ? '改用网页登录' : '使用发布令牌'}</button><a className="text-button" href="https://www.npmjs.com/settings/tokens" target="_blank" rel="noreferrer">创建令牌</a></div>{tokenMode && <label className="npm-token-field">发布令牌<input type="password" value={token} onChange={(event) => { setToken(event.target.value); setConfirming(false) }} autoComplete="off" placeholder="npm_…" /></label>}</section>}
     {otherIssues.length > 0 && <section className="publish-issues"><ul>{otherIssues.map((issue) => <li key={issue}>{issue}</li>)}</ul></section>}
-    <section className="pack-preview"><div><strong>{preview ? '打包已就绪' : '确认打包内容'}</strong><span>{preview ? `${preview.filename} · ${preview.fileCount} 个文件 · ${size(preview.unpackedSize)}` : '先生成预览，确认实际会上传的文件。'}</span></div><button className="secondary-button" disabled={busy || previewing} onClick={() => void createPreview()}>{previewing ? '预览中…' : preview ? '重新预览' : '查看打包内容'}</button>{previewError && <p className="error">{previewError}</p>}{preview && <details className="publish-scripts"><summary>查看文件清单</summary><PackFileTree files={preview.files} /></details>}</section>
+    <section className="pack-preview"><div><strong>{preview ? '打包已就绪' : '确认打包内容'}</strong><span>{preview ? `${preview.filename} · ${preview.fileCount} 个文件 · ${size(preview.unpackedSize)}` : '先生成预览，确认实际会上传的文件。'}</span></div><button className="secondary-button" disabled={busy || previewing} onClick={() => void createPreview()}>{previewing ? '预览中…' : preview ? '重新预览' : '查看打包内容'}</button>{previewError && <ErrorNotice message={previewError} onClose={() => setPreviewError('')} />}{preview && <details className="publish-scripts"><summary>查看文件清单</summary><PackFileTree files={preview.files} /></details>}</section>
     {scripts.length > 0 && <details className="publish-scripts"><summary>发布时 npm 会运行的脚本</summary>{scripts.map((script) => <code key={script}>{script}</code>)}</details>}
   </section>
 }

@@ -110,6 +110,12 @@ func GitReleaseStatus(root string) (GitStatus, error) {
 		if _, err := gitRun(path, "ls-remote", "--exit-code", "--heads", "origin", "release"); err == nil {
 			status.ReleaseBranch = true
 			status.Checks = append(status.Checks, "已找到 release 分支")
+			// Release history belongs to the release branch, not the current
+			// development branch. Fetching only this ref keeps the status view
+			// accurate without changing the user's worktree.
+			if _, err := gitRun(path, "fetch", "origin", "release"); err == nil {
+				status.Commits = gitLines(path, "log", "origin/release", "--oneline", "-8")
+			}
 		}
 	}
 	for _, item := range []struct{ path, label string }{{"lib", "lib（构建产物）"}, {"README.md", "README.md"}, {".puppeteerrc.cjs", ".puppeteerrc.cjs"}} {
@@ -120,7 +126,7 @@ func GitReleaseStatus(root string) (GitStatus, error) {
 	if _, err := os.Stat(filepath.Join(path, "lib")); err != nil {
 		status.Issues = append(status.Issues, "尚未发现 lib 构建产物；发布时会先执行 build。")
 	}
-	status.Tags, status.Commits = gitLines(path, "tag", "--list", "v*", "--sort=-v:refname"), gitLines(path, "log", "--oneline", "-8")
+	status.Tags = gitLines(path, "tag", "--list", "v*", "--sort=-v:refname")
 	status.LatestVersion = latestGitVersion(path)
 	status.SuggestedVersion = "v0.0.1"
 	if status.LatestVersion != "" {

@@ -27,3 +27,14 @@ func TestRepositoryFileCandidatesKeepURLDirectory(t *testing.T) {
 		}
 	}
 }
+
+func TestCatalogTableHeadersAreNotCatalogItems(t *testing.T) {
+	for _, name := range []string{"项目", "项目名", "Project", "package"} {
+		if !isCatalogTableHeader(name) {
+			t.Errorf("%q should be recognised as a table header", name)
+		}
+	}
+	if isCatalogTableHeader("@alemonjs/qq-bot") {
+		t.Fatal("a real package must not be recognised as a table header")
+	}
+}

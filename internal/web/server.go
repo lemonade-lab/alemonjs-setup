@@ -121,6 +121,7 @@ func NewServer(version string, staticFiles fs.FS, templateFiles ...fs.FS) http.H
 	mux.HandleFunc("/api/v1/setup/plugins", s.setupPluginsHandler)
 	mux.HandleFunc("/api/v1/setup/plugins/", s.setupPluginActionHandler)
 	mux.HandleFunc("/api/v1/robot", s.robotHandler)
+	mux.HandleFunc("/api/v1/robot/console", s.robotConsoleHandler)
 	mux.HandleFunc("/api/v1/robot/tasks", s.robotTasksHandler)
 	mux.HandleFunc("/api/v1/robot/packages", s.robotPackagesHandler)
 	mux.HandleFunc("/api/v1/robot/package-config", s.robotPackageConfigHandler)
@@ -444,6 +445,19 @@ func (s *server) robotHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.Method == http.MethodPost {
 		log.Printf("[ROBOT 同步] 完成 action=%s root=%q output=%dB", input.Action, input.Root, len(result.Output))
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *server) robotConsoleHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "该操作暂不支持。")
+		return
+	}
+	result, err := s.robots.Console(r.URL.Query().Get("root"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
 	}
 	writeJSON(w, http.StatusOK, result)
 }

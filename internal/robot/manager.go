@@ -157,6 +157,53 @@ func (Manager) LocalPackages(root string) ([]LocalPackage, error) {
 	return items, nil
 }
 
+// Console returns a fixed, read-only project snapshot. There is deliberately
+// no command argument: the web UI can present terminal-like context without
+// exposing a browser shell that accepts arbitrary input.
+func (Manager) Console(root string) (Result, error) {
+	path, err := projectPath(root)
+	if err != nil {
+		return Result{}, err
+	}
+	lines := []string{"$ pwd", path}
+	var manifest struct {
+		Name    string            `json:"name"`
+		Version string            `json:"version"`
+		Scripts map[string]string `json:"scripts"`
+	}
+	if data, readErr := os.ReadFile(filepath.Join(path, "package.json")); readErr == nil && json.Unmarshal(data, &manifest) == nil {
+		lines = append(lines, "", "$ package.json", fmt.Sprintf("%s@%s", manifest.Name, manifest.Version))
+		keys := make([]string, 0, len(manifest.Scripts))
+		for key := range manifest.Scripts {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		if len(keys) > 0 {
+			lines = append(lines, "", "$ scripts")
+			for _, key := range keys {
+				lines = append(lines, key+" · "+manifest.Scripts[key])
+			}
+		}
+	}
+	lines = append(lines, "", "$ git status --short")
+	if output, gitErr := run(path, "git", "status", "--short"); gitErr == nil {
+		if output == "" {
+			lines = append(lines, "工作区干净")
+		} else {
+			lines = append(lines, output)
+		}
+	} else {
+		lines = append(lines, "当前目录尚未初始化 Git，或 Git 不可用。")
+	}
+	lines = append(lines, "", "$ node --version")
+	if output, nodeErr := run(path, "node", "--version"); nodeErr == nil {
+		lines = append(lines, output)
+	} else {
+		lines = append(lines, "未检测到 Node.js。")
+	}
+	return Result{Path: path, Output: strings.Join(lines, "\n")}, nil
+}
+
 type privilegedRequest struct {
 	Operation   string `json:"operation"`
 	Root        string `json:"root"`

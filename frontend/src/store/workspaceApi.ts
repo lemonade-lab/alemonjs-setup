@@ -29,6 +29,7 @@ export const workspaceApi = createApi({
     localPackages: build.query<LocalPackages, string>({ query: (root) => `robot/packages?${new URLSearchParams({ root })}`, providesTags: (_result, _error, root) => [{ type: 'LocalPackages', id: root }] }),
     packageManifest: build.query<PackageManifest, string>({ query: (root) => `robot/manifest?${new URLSearchParams({ root })}`, providesTags: (_result, _error, root) => [{ type: 'PackageManifest', id: root }] }),
     robotTasks: build.query<RobotTask[], void>({ query: () => 'robot/tasks' }),
+    robotConsole: build.query<RobotResult, string>({ query: (root) => `robot/console?${new URLSearchParams({ root })}` }),
     robotFile: build.query<RobotResult, { root: string; file: string }>({ query: ({ root, file }) => `robot?${new URLSearchParams({ root, file })}`, providesTags: (_result, _error, arg) => [{ type: 'RobotFile', id: `${arg.root}:${arg.file}` }] }),
     gitStatus: build.query<Record<string, unknown>, string>({ query: (root) => `publish/git/status?${new URLSearchParams({ root })}`, providesTags: (_result, _error, root) => [{ type: 'GitStatus', id: root }] }),
     npmStatus: build.query<Record<string, unknown>, string>({ query: (root) => `publish/npm/status?${new URLSearchParams({ root })}`, providesTags: (_result, _error, root) => [{ type: 'NpmStatus', id: root }] }),
@@ -57,4 +58,4 @@ export const workspaceApi = createApi({
   }),
 })
 
-export const { useGoalsQuery, useLazyEnvironmentReportQuery, useReleasesQuery, useLazySetupUpdateQuery, useSetupPluginsQuery, useSetSetupPluginEnabledMutation, useStartSetupPluginTaskMutation, useCatalogQuery, useCatalogDocumentQuery, useCatalogPackageConfigQuery, usePackageConfigQuery, useLocalPackagesQuery, usePackageManifestQuery, useRobotTasksQuery, useLazyRobotFileQuery, useGitStatusQuery, useNpmStatusQuery, useLazyNpmPackQuery, useRobotOperationMutation, useStartRobotTaskMutation, useWriteRobotFileMutation, useWritePackageManifestMutation, useWritePackageConfigMutation, useInitializeGitMutation } = workspaceApi
+export const { useGoalsQuery, useLazyEnvironmentReportQuery, useReleasesQuery, useLazySetupUpdateQuery, useSetupPluginsQuery, useSetSetupPluginEnabledMutation, useStartSetupPluginTaskMutation, useCatalogQuery, useCatalogDocumentQuery, useCatalogPackageConfigQuery, usePackageConfigQuery, useLocalPackagesQuery, usePackageManifestQuery, useRobotTasksQuery, useLazyRobotConsoleQuery, useLazyRobotFileQuery, useGitStatusQuery, useNpmStatusQuery, useLazyNpmPackQuery, useRobotOperationMutation, useStartRobotTaskMutation, useWriteRobotFileMutation, useWritePackageManifestMutation, useWritePackageConfigMutation, useInitializeGitMutation } = workspaceApi
