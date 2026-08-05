@@ -1,23 +1,5 @@
 {
-  "name": "alemonjs-app",
-  "version": "1.0.2",
   "description": "template app",
-  "main": "lib/index.js",
-  "type": "module",
-  "scripts": {
-    "app": "node index.js",
-    "dev": "lvy app.ts",
-    "view": "lvy app.ts --jsxp",
-    "build": "lvy build",
-    "review": "npx alemonc start",
-    "start": "npx pm2 startOrRestart pm2.config.cjs",
-    "stop": "npx pm2 stop pm2.config.cjs",
-    "delete": "npx pm2 delete pm2.config.cjs"
-  },
-  "exports": {
-    ".": "./lib/index.js",
-    "./package": "./package.json"
-  },
   "devDependencies": {
     "@alemonjs/bubble": "^2.1.11",
     "@alemonjs/db": "^0.0.17",
@@ -32,8 +14,28 @@
     "pm2": "^5",
     "tailwindcss": "3"
   },
+  "exports": {
+    ".": "./lib/index.js",
+    "./package": "./package.json"
+  },
+  "homepage": "",
+  "license": "",
+  "main": "lib/index.js",
+  "name": "alemonjs-xiuxian",
+  "private": false,
   "publishConfig": {
-    "registry": "https://registry.npmjs.org",
-    "access": "public"
-  }
+    "registry": "https://registry.npmjs.org"
+  },
+  "scripts": {
+    "app": "node index.js",
+    "build": "lvy build",
+    "delete": "npx pm2 delete pm2.config.cjs",
+    "dev": "lvy app.ts",
+    "review": "npx alemonc start",
+    "start": "npx pm2 startOrRestart pm2.config.cjs",
+    "stop": "npx pm2 stop pm2.config.cjs",
+    "view": "lvy app.ts --jsxp"
+  },
+  "type": "module",
+  "version": "1.0.2"
 }

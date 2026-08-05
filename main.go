@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"alemonjs-setup/internal/mcp"
 	"alemonjs-setup/internal/project"
 	"alemonjs-setup/internal/releases"
 	"alemonjs-setup/internal/robot"
@@ -45,6 +46,10 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	mcpPort, arguments, err := option(arguments, "--mcp-port", env("MCP_PORT", "17391"))
+	if err != nil {
+		log.Fatal(err)
+	}
 	cwd, arguments, err := option(arguments, "--cwd", ".")
 	if err != nil {
 		log.Fatal(err)
@@ -56,6 +61,26 @@ func main() {
 	}
 	if len(arguments) > 0 {
 		switch arguments[0] {
+		case "mcp-http":
+			if len(arguments) != 1 {
+				usage()
+				return
+			}
+			token := os.Getenv("MCP_TOKEN")
+			if token == "" {
+				log.Fatal("请设置 MCP_TOKEN 后再启动 HTTP MCP 服务")
+			}
+			serveMCPHTTP(mcpPort, token, mcpPolicy())
+			return
+		case "mcp":
+			if len(arguments) != 1 {
+				usage()
+				return
+			}
+			if err := mcp.NewServerWithPolicy(Version, templateFiles, mcpPolicy()).Serve(os.Stdin, os.Stdout); err != nil {
+				log.Printf("MCP 服务已停止：%v", err)
+			}
+			return
 		case "serve":
 			if len(arguments) != 1 {
 				usage()
@@ -207,6 +232,32 @@ func serve(port string) {
 	}
 }
 
+func serveMCPHTTP(port, token string, policy mcp.Policy) {
+	server := &http.Server{
+		Addr:              "127.0.0.1:" + port,
+		Handler:           mcp.NewServerWithPolicy(Version, templateFiles, policy).HTTPHandler(token),
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+	log.Printf("AlemonJS MCP HTTP 已启动：http://127.0.0.1:%s/mcp", port)
+	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		log.Fatal(err)
+	}
+}
+
+func mcpPolicy() mcp.Policy {
+	value := strings.TrimSpace(os.Getenv("MCP_ALLOWED_ROOTS"))
+	if value == "" {
+		return mcp.Policy{}
+	}
+	roots := make([]string, 0)
+	for _, root := range strings.Split(value, string(os.PathListSeparator)) {
+		if root = strings.TrimSpace(root); root != "" {
+			roots = append(roots, root)
+		}
+	}
+	return mcp.Policy{AllowedRoots: roots}
+}
+
 func publish(root, action string, confirmed bool) {
 	result, err := (robot.Manager{}).Run(root, action, "", "", "", "latest", "", confirmed)
 	if result.Output != "" {
@@ -266,6 +317,9 @@ func flagPresent(arguments []string, name string) (bool, []string) {
 func usage() {
 	fmt.Println(`用法:
   albs [serve] --port 17390           启动浏览器引导
+
+  albs mcp                            启动本机 stdio MCP 服务
+  MCP_TOKEN=... albs mcp-http         启动受保护的本机 HTTP MCP 服务
   albs install --port 17390           注册为后台常驻服务
   albs open [--port 17390]            打开浏览器
   albs update                         检查并更新 albs

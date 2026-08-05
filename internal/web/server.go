@@ -4,9 +4,13 @@ package web
 import (
 	"encoding/json"
 	"io/fs"
+	"log"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
+
+	"github.com/gin-gonic/gin"
 
 	"alemonjs-setup/internal/catalog"
 	"alemonjs-setup/internal/project"
@@ -37,15 +41,28 @@ type task struct {
 	CreatedAt time.Time `json:"createdAt"`
 }
 
+type operationTask struct {
+	ID         string     `json:"id"`
+	Root       string     `json:"root"`
+	Action     string     `json:"action"`
+	Status     string     `json:"status"`
+	Output     string     `json:"output,omitempty"`
+	Error      string     `json:"error,omitempty"`
+	CreatedAt  time.Time  `json:"createdAt"`
+	FinishedAt *time.Time `json:"finishedAt,omitempty"`
+}
+
 type server struct {
-	version string
-	assets  fs.FS
-	static  http.Handler
-	checker *system.Checker
-	creator *project.Creator
-	robots  robot.Manager
-	mu      sync.RWMutex
-	tasks   []task
+	version    string
+	assets     fs.FS
+	static     http.Handler
+	checker    *system.Checker
+	creator    *project.Creator
+	robots     robot.Manager
+	mu         sync.RWMutex
+	tasks      []task
+	operations []operationTask
+	requestID  atomic.Uint64
 }
 
 var goals = []goal{
@@ -94,14 +111,22 @@ func NewServer(version string, staticFiles fs.FS, templateFiles ...fs.FS) http.H
 	mux.HandleFunc("/api/v1/catalog/document", s.catalogDocumentHandler)
 	mux.HandleFunc("/api/v1/catalog/package-config", s.catalogPackageConfigHandler)
 	mux.HandleFunc("/api/v1/robot", s.robotHandler)
+	mux.HandleFunc("/api/v1/robot/tasks", s.robotTasksHandler)
 	mux.HandleFunc("/api/v1/robot/packages", s.robotPackagesHandler)
 	mux.HandleFunc("/api/v1/robot/package-config", s.robotPackageConfigHandler)
+	mux.HandleFunc("/api/v1/robot/manifest", s.robotManifestHandler)
 	mux.HandleFunc("/api/v1/robot/git-init", s.robotGitInitHandler)
 	mux.HandleFunc("/api/v1/publish/npm/status", s.npmPublishStatusHandler)
 	mux.HandleFunc("/api/v1/publish/npm/pack", s.npmPackPreviewHandler)
 	mux.HandleFunc("/api/v1/publish/git/status", s.gitPublishStatusHandler)
 	mux.Handle("/", s.spa())
-	return s.withHeaders(mux)
+	gin.SetMode(gin.ReleaseMode)
+	router := gin.New()
+	router.Use(gin.Recovery(), s.ginHeaders(), s.ginRequestLog())
+	// The Gin engine owns every request. Existing handlers remain standard
+	// net/http functions, preserving their API contracts during migration.
+	router.Any("/*path", gin.WrapH(mux))
+	return router
 }
 
 func (s *server) npmPublishStatusHandler(w http.ResponseWriter, r *http.Request) {
@@ -241,6 +266,9 @@ func (s *server) robotHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "请求内容无法识别。")
 		return
 	}
+	if r.Method == http.MethodPost {
+		log.Printf("[ROBOT 同步] 开始 action=%s root=%q", input.Action, input.Root)
+	}
 	var result robot.Result
 	var err error
 	switch r.Method {
@@ -255,10 +283,90 @@ func (s *server) robotHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
+		if r.Method == http.MethodPost {
+			log.Printf("[ROBOT 同步] 失败 action=%s root=%q error=%s", input.Action, input.Root, err)
+		}
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if r.Method == http.MethodPost {
+		log.Printf("[ROBOT 同步] 完成 action=%s root=%q output=%dB", input.Action, input.Root, len(result.Output))
+	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *server) robotTasksHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		id := r.URL.Query().Get("id")
+		s.mu.RLock()
+		defer s.mu.RUnlock()
+		if id == "" {
+			writeJSON(w, http.StatusOK, s.operations)
+			return
+		}
+		for _, item := range s.operations {
+			if item.ID == id {
+				writeJSON(w, http.StatusOK, item)
+				return
+			}
+		}
+		writeError(w, http.StatusNotFound, "操作任务不存在或已过期。")
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "该操作暂不支持。")
+		return
+	}
+	var input struct {
+		Root    string `json:"root"`
+		Action  string `json:"action"`
+		Message string `json:"message"`
+		Package string `json:"package"`
+		Version string `json:"version"`
+		Tag     string `json:"tag"`
+		Token   string `json:"token"`
+		Confirm string `json:"confirm"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		writeError(w, http.StatusBadRequest, "请求内容无法识别。")
+		return
+	}
+	if input.Root == "" || input.Action == "" {
+		writeError(w, http.StatusBadRequest, "请选择机器人目录和操作。")
+		return
+	}
+	created := operationTask{ID: "robot-" + time.Now().Format("20060102150405.000000000"), Root: input.Root, Action: input.Action, Status: "running", CreatedAt: time.Now()}
+	log.Printf("[ROBOT %s] 开始 action=%s root=%q", created.ID, created.Action, created.Root)
+	s.mu.Lock()
+	s.operations = append([]operationTask{created}, s.operations...)
+	if len(s.operations) > 40 {
+		s.operations = s.operations[:40]
+	}
+	s.mu.Unlock()
+	go func() {
+		result, err := s.robots.Run(input.Root, input.Action, input.Message, input.Package, input.Version, input.Tag, input.Token, input.Confirm == "true")
+		finished := time.Now()
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		for index := range s.operations {
+			if s.operations[index].ID == created.ID {
+				s.operations[index].Status = "completed"
+				s.operations[index].Output = result.Output
+				s.operations[index].FinishedAt = &finished
+				if err != nil {
+					s.operations[index].Status = "failed"
+					s.operations[index].Error = err.Error()
+				}
+				break
+			}
+		}
+		if err != nil {
+			log.Printf("[ROBOT %s] 失败 action=%s root=%q error=%s", created.ID, created.Action, created.Root, err)
+			return
+		}
+		log.Printf("[ROBOT %s] 完成 action=%s root=%q output=%dB", created.ID, created.Action, created.Root, len(result.Output))
+	}()
+	writeJSON(w, http.StatusAccepted, created)
 }
 
 func (s *server) robotPackagesHandler(w http.ResponseWriter, r *http.Request) {
@@ -272,6 +380,36 @@ func (s *server) robotPackagesHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+func (s *server) robotManifestHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		manifest, err := s.robots.PackageManifest(r.URL.Query().Get("root"))
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, manifest)
+		return
+	}
+	if r.Method != http.MethodPut {
+		writeError(w, http.StatusMethodNotAllowed, "该操作暂不支持。")
+		return
+	}
+	var input struct {
+		Root string `json:"root"`
+		robot.PackageManifest
+	}
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		writeError(w, http.StatusBadRequest, "请求内容无法识别。")
+		return
+	}
+	result, err := s.robots.SavePackageManifest(input.Root, input.PackageManifest)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (s *server) robotPackageConfigHandler(w http.ResponseWriter, r *http.Request) {
@@ -458,12 +596,28 @@ func findGoal(id string) (goal, bool) {
 	return goal{}, false
 }
 
-func (s *server) withHeaders(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("X-Content-Type-Options", "nosniff")
-		w.Header().Set("X-Frame-Options", "DENY")
-		next.ServeHTTP(w, r)
-	})
+func (s *server) ginHeaders() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Header("X-Content-Type-Options", "nosniff")
+		c.Header("X-Frame-Options", "DENY")
+		c.Next()
+	}
+}
+
+func (s *server) ginRequestLog() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		id := s.requestID.Add(1)
+		started := time.Now()
+		c.Set("requestID", id)
+		log.Printf("[GIN %06d] 开始 %s %s", id, c.Request.Method, c.Request.URL.Path)
+		c.Next()
+		status := c.Writer.Status()
+		label := "完成"
+		if status >= http.StatusBadRequest {
+			label = "失败"
+		}
+		log.Printf("[GIN %06d] %s status=%d duration=%s response=%dB", id, label, status, time.Since(started).Round(time.Millisecond), c.Writer.Size())
+	}
 }
 
 func writeJSON(w http.ResponseWriter, status int, data any) {

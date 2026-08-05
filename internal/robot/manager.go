@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 
 	"alemonjs-setup/internal/system"
@@ -22,8 +23,104 @@ type Result struct {
 
 // LocalPackage is a bundled plugin found in the robot's packages directory.
 type LocalPackage struct {
-	Name string `json:"name"`
-	Path string `json:"path"`
+	Name        string `json:"name"`
+	Version     string `json:"version,omitempty"`
+	Description string `json:"description,omitempty"`
+	Path        string `json:"path"`
+	Valid       bool   `json:"valid"`
+}
+
+const maxMCPFileSize = 1024 * 1024
+
+// ListProjectFiles returns source and configuration files that an MCP client
+// may inspect. Dependency trees, Git metadata, secrets, and symlinks are
+// intentionally excluded even though they may live under the project root.
+func (Manager) ListProjectFiles(root string) ([]string, error) {
+	path, err := projectPath(root)
+	if err != nil {
+		return nil, err
+	}
+	files := make([]string, 0)
+	err = filepath.WalkDir(path, func(current string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if current == path {
+			return nil
+		}
+		relative, err := filepath.Rel(path, current)
+		if err != nil {
+			return err
+		}
+		if blockedProjectPath(relative) || entry.Type()&os.ModeSymlink != 0 {
+			if entry.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		if !entry.Type().IsRegular() {
+			return nil
+		}
+		files = append(files, filepath.ToSlash(relative))
+		if len(files) > 1000 {
+			return errors.New("项目文件过多；请缩小项目目录后重试")
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("读取项目文件列表失败：%w", err)
+	}
+	sort.Strings(files)
+	return files, nil
+}
+
+// ReadProjectFile reads a non-sensitive, regular file below a managed robot
+// project. It is separate from Read so the UI's narrow configuration-file
+// contract remains unchanged.
+func (Manager) ReadProjectFile(root, name string) (Result, error) {
+	path, err := managedProjectFile(root, name)
+	if err != nil {
+		return Result{}, err
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return Result{}, fmt.Errorf("读取失败：%w", err)
+	}
+	if info.Size() > maxMCPFileSize {
+		return Result{}, errors.New("文件超过 1 MiB，MCP 不会读取")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return Result{}, fmt.Errorf("读取失败：%w", err)
+	}
+	return Result{Path: path, Output: string(data)}, nil
+}
+
+// WriteProjectFile writes a non-sensitive source/configuration file within a
+// managed project. It does not create directories and rejects symlinks.
+func (Manager) WriteProjectFile(root, name, content string) (Result, error) {
+	if len(content) > maxMCPFileSize {
+		return Result{}, errors.New("文件内容超过 1 MiB，MCP 不会写入")
+	}
+	path, err := managedProjectFile(root, name)
+	if err != nil {
+		return Result{}, err
+	}
+	if _, err := os.Stat(filepath.Dir(path)); err != nil {
+		return Result{}, errors.New("目标目录不存在；MCP 不会自动创建目录")
+	}
+	if info, err := os.Lstat(path); err == nil && (!info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0) {
+		return Result{}, errors.New("只能写入普通项目文件")
+	} else if err != nil && !os.IsNotExist(err) {
+		return Result{}, fmt.Errorf("无法检查目标文件：%w", err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		return Result{}, fmt.Errorf("保存失败：%w", err)
+	}
+	return Result{Path: path, Output: "已保存。"}, nil
 }
 
 func (Manager) LocalPackages(root string) ([]LocalPackage, error) {
@@ -42,7 +139,19 @@ func (Manager) LocalPackages(root string) ([]LocalPackage, error) {
 	items := make([]LocalPackage, 0, len(entries))
 	for _, entry := range entries {
 		if entry.IsDir() && !strings.HasPrefix(entry.Name(), ".") {
-			items = append(items, LocalPackage{Name: entry.Name(), Path: filepath.Join(directory, entry.Name())})
+			item := LocalPackage{Name: entry.Name(), Path: filepath.Join(directory, entry.Name())}
+			data, readErr := os.ReadFile(filepath.Join(item.Path, "package.json"))
+			if readErr == nil {
+				var manifest struct {
+					Name        string `json:"name"`
+					Version     string `json:"version"`
+					Description string `json:"description"`
+				}
+				if json.Unmarshal(data, &manifest) == nil && manifest.Name != "" {
+					item.Name, item.Version, item.Description, item.Valid = manifest.Name, manifest.Version, manifest.Description, true
+				}
+			}
+			items = append(items, item)
 		}
 	}
 	return items, nil
@@ -94,10 +203,10 @@ func (m Manager) Write(root, name, content string) (Result, error) {
 	}
 	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
 		if !os.IsPermission(err) {
-			return Result{}, err
+			return Result{}, fmt.Errorf("保存 %s 失败：%w", filepath.Base(path), err)
 		}
 		if elevatedErr := system.WriteFileWithPrivileges(path, []byte(content)); elevatedErr != nil {
-			return Result{}, fmt.Errorf("保存失败：%w", elevatedErr)
+			return Result{}, fmt.Errorf("当前用户没有写入 %s 的权限。请先允许系统权限提示；若这是服务器目录，请把项目交给当前用户管理后重试。详情：%w", filepath.Base(path), elevatedErr)
 		}
 	}
 	return Result{Path: path, Output: "已保存。"}, nil
@@ -351,6 +460,47 @@ func projectPath(root string) (string, error) {
 		return "", errors.New("该文件夹不是可管理的 Node.js 机器人项目（缺少 package.json）")
 	}
 	return root, nil
+}
+
+func managedProjectFile(root, name string) (string, error) {
+	projectRoot, err := projectPath(root)
+	if err != nil {
+		return "", err
+	}
+	relative := filepath.Clean(name)
+	if relative == "." || filepath.IsAbs(relative) || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || blockedProjectPath(relative) {
+		return "", errors.New("不允许访问该项目文件")
+	}
+	target := filepath.Join(projectRoot, relative)
+	directory := filepath.Dir(target)
+	directoryRelative, err := filepath.Rel(projectRoot, directory)
+	if err != nil {
+		return "", errors.New("目标文件不在机器人项目中")
+	}
+	current := projectRoot
+	for _, part := range strings.Split(filepath.Clean(directoryRelative), string(filepath.Separator)) {
+		if part != "." {
+			current = filepath.Join(current, part)
+		}
+		info, err := os.Lstat(current)
+		if err != nil {
+			return "", fmt.Errorf("无法检查项目路径：%w", err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return "", errors.New("不允许通过符号链接访问项目文件")
+		}
+	}
+	return target, nil
+}
+
+func blockedProjectPath(name string) bool {
+	for _, part := range strings.Split(filepath.ToSlash(name), "/") {
+		lower := strings.ToLower(part)
+		if lower == ".git" || lower == "node_modules" || lower == ".npmrc" || lower == ".env" || strings.HasPrefix(lower, ".env.") || strings.HasSuffix(lower, ".pem") || strings.HasSuffix(lower, ".key") || strings.HasSuffix(lower, ".p12") || strings.HasSuffix(lower, ".pfx") {
+			return true
+		}
+	}
+	return false
 }
 
 func permissionError(err error) bool {

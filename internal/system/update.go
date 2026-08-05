@@ -70,11 +70,16 @@ func ReplaceExecutable(downloadURL, assetName string) (string, error) {
 	if err := copyExecutable(binary, next); err != nil {
 		return "", err
 	}
+	backup := executable + ".previous-" + time.Now().Format("20060102150405")
+	if err := copyExecutable(executable, backup); err != nil {
+		_ = os.Remove(next)
+		return "", fmt.Errorf("无法保存旧版本备份：%w", err)
+	}
 	if err := os.Rename(next, executable); err != nil {
 		_ = os.Remove(next)
 		return "", fmt.Errorf("无法替换当前 albs：%w", err)
 	}
-	return "已更新 albs：" + executable + "。请重新执行命令；后台服务会在下次重启后使用新版本。", nil
+	return "已更新 albs：" + executable + "。旧版本备份为 " + backup + "；请重新执行命令，后台服务会在下次重启后使用新版本。", nil
 }
 
 func copyExecutable(source, target string) error {

@@ -41,10 +41,29 @@ albs --cwd /xxx/robot npm publish
 albs --cwd /xxx/alemonb git publish --yes
 ```
 
+## 让 AI 助手管理本机机器人（MCP）
+
+`albs mcp` 启动本地 stdio MCP 服务。将其作为 AI 客户端的本地 MCP 命令配置，即可让支持 MCP 的助手检查项目状态、列出和读写项目源码、管理本地包、创建项目和执行受限管理操作：
+
+```json
+{
+  "mcpServers": {
+    "alemonjs-setup": {
+      "command": "albs",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+服务仅走标准输入输出，不监听网络端口。它不提供任意 shell 或任意路径读写：`.env`、`.npmrc`、密钥文件、Git 元数据、依赖目录和符号链接均不可访问。会写入文件、安装依赖或执行项目脚本的工具都要求客户端在用户明确同意后传 `confirm: true`。
+
+控制范围、任务轮询与未来远程接入的约定见 [MCP 控制面文档](docs/mcp.md)。
+
 
 ## 本地开发
 
-前置要求：Go 1.21+、Node.js 22+、Yarn 1.x。
+前置要求：Go 1.23+、Node.js 22+、Yarn 1.x。
 
 ```bash
 # 终端一：启动 Go API

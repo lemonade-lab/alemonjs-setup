@@ -2,6 +2,7 @@ package system
 
 import (
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -34,6 +35,9 @@ func RunWithPrivileges(directory string, values map[string]string, name string, 
 	output, err := command.CombinedOutput()
 	text := strings.TrimSpace(string(output))
 	if err != nil {
+		if runtime.GOOS == "linux" && errors.Is(err, exec.ErrNotFound) {
+			return "此 Linux 系统没有可用的 pkexec 权限服务。请将机器人项目放到当前用户拥有的目录（例如 ~/alemonjs），或安装并启用 polkit/pkexec 后重试。", fmt.Errorf("Linux 缺少 pkexec：%w", err)
+		}
 		if text == "" {
 			text = "用户取消了系统权限授权，或系统拒绝了本次提升。"
 		}
