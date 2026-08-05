@@ -40,6 +40,46 @@ type LocalPackage struct {
 	Valid       bool   `json:"valid"`
 }
 
+// RuntimeOverview is the small, stable set of project facts needed by the
+// dashboard's run page. Packages are checked on disk, not only in
+// package.json: declaring a platform is not the same as having installed it.
+type RuntimeOverview struct {
+	Name           string           `json:"name"`
+	Version        string           `json:"version"`
+	PackageManager string           `json:"packageManager"`
+	HasAppScript   bool             `json:"hasAppScript"`
+	HasDevScript   bool             `json:"hasDevScript"`
+	HasBuildScript bool             `json:"hasBuildScript"`
+	HasStartScript bool             `json:"hasStartScript"`
+	PM2Configured  bool             `json:"pm2Configured"`
+	Platforms      []RuntimePackage `json:"platforms"`
+}
+
+type RuntimePackage struct {
+	ID        string `json:"id"`
+	Label     string `json:"label"`
+	Package   string `json:"package"`
+	Declared  bool   `json:"declared"`
+	Installed bool   `json:"installed"`
+	Version   string `json:"version,omitempty"`
+}
+
+type RuntimePreflight struct {
+	Login   string   `json:"login"`
+	Package string   `json:"package,omitempty"`
+	Missing []string `json:"missing"`
+	Summary []string `json:"summary"`
+}
+
+var runtimePlatforms = []struct{ id, label, pkg string }{
+	{"onebot", "OneBot", "@alemonjs/onebot"},
+	{"qq-bot", "QQ Bot", "@alemonjs/qq-bot"},
+	{"discord", "Discord", "@alemonjs/discord"},
+	{"bubble", "Bubble", "@alemonjs/bubble"},
+	{"kook", "KOOK", "@alemonjs/kook"},
+	{"telegram", "Telegram", "@alemonjs/telegram"},
+}
+
 const maxMCPFileSize = 1024 * 1024
 
 // ListProjectFiles returns source and configuration files that an MCP client
@@ -167,6 +207,97 @@ func (Manager) LocalPackages(root string) ([]LocalPackage, error) {
 	return items, nil
 }
 
+func (Manager) RuntimeOverview(root string) (RuntimeOverview, error) {
+	path, err := projectPath(root)
+	if err != nil {
+		return RuntimeOverview{}, err
+	}
+	var manifest struct {
+		Name            string            `json:"name"`
+		Version         string            `json:"version"`
+		PackageManager  string            `json:"packageManager"`
+		Scripts         map[string]string `json:"scripts"`
+		Dependencies    map[string]string `json:"dependencies"`
+		DevDependencies map[string]string `json:"devDependencies"`
+	}
+	data, err := os.ReadFile(filepath.Join(path, "package.json"))
+	if err != nil || json.Unmarshal(data, &manifest) != nil {
+		return RuntimeOverview{}, errors.New("无法读取 package.json")
+	}
+	overview := RuntimeOverview{Name: manifest.Name, Version: manifest.Version, PackageManager: projectPackageManager(path), HasAppScript: manifest.Scripts["app"] != "", HasDevScript: manifest.Scripts["dev"] != "", HasBuildScript: manifest.Scripts["build"] != "", HasStartScript: manifest.Scripts["start"] != ""}
+	if manifest.PackageManager != "" {
+		overview.PackageManager = strings.Split(manifest.PackageManager, "@")[0]
+	}
+	if _, err := os.Stat(filepath.Join(path, "pm2.config.cjs")); err == nil {
+		overview.PM2Configured = true
+	}
+	for _, platform := range runtimePlatforms {
+		item := RuntimePackage{ID: platform.id, Label: platform.label, Package: platform.pkg}
+		_, dependency := manifest.Dependencies[item.Package]
+		_, devDependency := manifest.DevDependencies[item.Package]
+		item.Declared = dependency || devDependency
+		packageFile := filepath.Join(path, "node_modules", filepath.FromSlash(item.Package), "package.json")
+		if packageData, readErr := os.ReadFile(packageFile); readErr == nil {
+			var installed struct {
+				Version string `json:"version"`
+			}
+			if json.Unmarshal(packageData, &installed) == nil {
+				item.Installed = true
+				item.Version = installed.Version
+			}
+		}
+		overview.Platforms = append(overview.Platforms, item)
+	}
+	return overview, nil
+}
+
+// RuntimePreflight describes the effective, non-secret connection settings
+// before a command is allowed to start. Values are deliberately reduced to
+// “configured / missing” so tokens never enter the browser response.
+func (m Manager) RuntimePreflight(root string) (RuntimePreflight, error) {
+	path, err := projectPath(root)
+	if err != nil {
+		return RuntimePreflight{}, err
+	}
+	content, err := os.ReadFile(filepath.Join(path, "alemon.config.yaml"))
+	if err != nil && !os.IsNotExist(err) {
+		return RuntimePreflight{}, fmt.Errorf("无法读取机器人运行配置：%w", err)
+	}
+	preflight := RuntimePreflight{Missing: []string{}, Summary: []string{}}
+	match := regexp.MustCompile(`(?m)^login:\s*['\"]?([^'\"\r\n#]+)`).FindStringSubmatch(string(content))
+	if len(match) < 2 || strings.TrimSpace(match[1]) == "" {
+		preflight.Summary = append(preflight.Summary, "登录连接：未配置（可选择无 login 启动）")
+		return preflight, nil
+	}
+	preflight.Login = strings.TrimSpace(match[1])
+	preflight.Summary = append(preflight.Summary, "登录连接："+preflight.Login)
+	for _, platform := range runtimePlatforms {
+		if platform.id != preflight.Login {
+			continue
+		}
+		preflight.Package = platform.pkg
+		definition, configErr := m.PackageConfig(root, platform.pkg)
+		if configErr != nil {
+			preflight.Missing = append(preflight.Missing, "连接包 "+platform.pkg+" 未安装或无法读取")
+			return preflight, nil
+		}
+		for _, field := range definition.Fields {
+			label := field.Description
+			if label == "" {
+				label = field.Name
+			}
+			configured := strings.TrimSpace(definition.Values[field.Name]) != ""
+			if field.Required && !configured {
+				preflight.Missing = append(preflight.Missing, label)
+			}
+			preflight.Summary = append(preflight.Summary, label+map[bool]string{true: "：已填写", false: "：未填写"}[configured])
+		}
+		return preflight, nil
+	}
+	preflight.Summary = append(preflight.Summary, "自定义登录对象：未声明可校验字段")
+	return preflight, nil
+}
+
 // Console returns a fixed, read-only project snapshot. There is deliberately
 // no command argument: the web UI can present terminal-like context without
 // exposing a browser shell that accepts arbitrary input.
@@ -218,16 +349,86 @@ func (Manager) Console(root string) (Result, error) {
 // the web server to supervise. Its stdout and stderr stay attached to the
 // operation record, so the UI can show progress without exposing a shell.
 func (Manager) DevelopmentCommand(root string) (*exec.Cmd, error) {
+	return (Manager{}).scriptCommand(root, "dev")
+}
+
+// ForegroundCommand runs the project's declared `app` script under the same
+// supervised terminal used for development mode.
+func (Manager) ForegroundCommand(root string) (*exec.Cmd, error) {
+	return (Manager{}).scriptCommand(root, "app")
+}
+
+func (Manager) scriptCommand(root, script string) (*exec.Cmd, error) {
 	if err := project(root); err != nil {
 		return nil, err
 	}
-	if err := fixLegacyLvyScript(root); err != nil {
-		return nil, err
+	if script == "dev" {
+		if err := fixLegacyLvyScript(root); err != nil {
+			return nil, err
+		}
 	}
 	manager := projectPackageManager(root)
-	command := exec.Command(manager, "run", "dev")
+	command := exec.Command(manager, "run", script)
 	command.Dir = root
 	return command, nil
+}
+
+func (Manager) RepairRuntime(root, mode string) (Result, error) {
+	path, err := projectPath(root)
+	if err != nil {
+		return Result{}, err
+	}
+	data, err := os.ReadFile(filepath.Join(path, "package.json"))
+	if err != nil {
+		return Result{}, err
+	}
+	var manifest map[string]any
+	if json.Unmarshal(data, &manifest) != nil {
+		return Result{}, errors.New("无法读取 package.json")
+	}
+	scripts, _ := manifest["scripts"].(map[string]any)
+	if scripts == nil {
+		scripts = map[string]any{}
+		manifest["scripts"] = scripts
+	}
+	dependencies, _ := manifest["devDependencies"].(map[string]any)
+	if dependencies == nil {
+		dependencies = map[string]any{}
+		manifest["devDependencies"] = dependencies
+	}
+	if mode == "dev" {
+		if _, ok := scripts["app"]; !ok {
+			scripts["app"] = "node index.js"
+		}
+		if _, ok := scripts["dev"]; !ok {
+			scripts["dev"] = scripts["app"]
+		}
+	}
+	if mode == "pm2" {
+		scripts["start"] = "npx pm2 startOrRestart pm2.config.cjs"
+		scripts["stop"] = "npx pm2 stop pm2.config.cjs"
+		dependencies["pm2"] = "^5"
+		dependencies["yaml"] = "^2.6.0"
+		config := filepath.Join(path, "pm2.config.cjs")
+		pm2Config := "const pm2 = globalThis.pm2;\n\nmodule.exports = pm2 || {\n  apps: [\n    {\n      name: 'alemonb',\n      script: 'node index.js',\n      env: {\n        NODE_ENV: 'production'\n      }\n    }\n  ]\n};\n"
+		if err := os.WriteFile(config, []byte(pm2Config), 0644); err != nil {
+			return Result{}, fmt.Errorf("无法写入 PM2 配置：%w", err)
+		}
+		entry := filepath.Join(path, "index.js")
+		if _, statErr := os.Stat(entry); os.IsNotExist(statErr) {
+			if err := os.WriteFile(entry, []byte("import { start } from 'alemonjs';\n\nstart();\n"), 0644); err != nil {
+				return Result{}, fmt.Errorf("无法写入生产入口：%w", err)
+			}
+		}
+	}
+	encoded, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		return Result{}, err
+	}
+	if err := os.WriteFile(filepath.Join(path, "package.json"), append(encoded, '\n'), 0644); err != nil {
+		return Result{}, err
+	}
+	return Result{Path: path, Output: "已补齐运行脚本与配置，请安装依赖后重试。"}, nil
 }
 
 type privilegedRequest struct {
@@ -262,7 +463,7 @@ func (m Manager) Read(root, name string) (Result, error) {
 		// These two files are editable project configuration. A new robot
 		// project legitimately may not have created either one yet; present an
 		// empty document so the editor can create it on save.
-		if errors.Is(err, os.ErrNotExist) && (name == "alemon.config.yaml" || name == ".npmrc") {
+		if errors.Is(err, os.ErrNotExist) && (name == "alemon.config.yaml" || name == ".npmrc" || name == ".env") {
 			return Result{Path: path, Output: ""}, nil
 		}
 		if permissionError(err) {
@@ -352,6 +553,12 @@ func (m Manager) Run(root, action, message, packageName, version, tag, token str
 			return Result{}, err
 		}
 		name, args = manager, []string{"run", "dev"}
+	case "app":
+		name, args = manager, []string{"run", "app"}
+	case "repair-dev":
+		return (Manager{}).RepairRuntime(root, "dev")
+	case "repair-pm2":
+		return (Manager{}).RepairRuntime(root, "pm2")
 	case "commit":
 		if strings.TrimSpace(message) == "" {
 			return Result{}, errors.New("请填写本次提交说明")
@@ -362,12 +569,9 @@ func (m Manager) Run(root, action, message, packageName, version, tag, token str
 		}
 		name, args = "git", []string{"commit", "-m", message}
 	case "pm2":
-		if _, err := run(root, manager, "run", "build"); err != nil {
-			return Result{}, err
-		}
-		name, args = "npx", []string{"pm2", "startOrRestart", "pm2.config.cjs"}
+		name, args = manager, []string{"run", "start"}
 	case "pm2-stop":
-		name, args = "npx", []string{"pm2", "stop", "pm2.config.cjs"}
+		name, args = manager, []string{"run", "stop"}
 	case "pm2-status":
 		name, args = "npx", []string{"pm2", "list"}
 	case "install-package":
@@ -380,6 +584,18 @@ func (m Manager) Run(root, action, message, packageName, version, tag, token str
 			return Result{}, errors.New("不支持的 AlemonJS 包")
 		}
 		return removeLocalPackage(root, packageName)
+	case "remove-local-package":
+		return removeLocalPackageByName(root, packageName)
+	case "install-connection":
+		if !allowedInstallPackage(packageName) {
+			return Result{}, errors.New("连接包名无效")
+		}
+		return installConnectionPackage(root, packageName)
+	case "uninstall-connection":
+		if !allowedPackage(packageName) {
+			return Result{}, errors.New("连接包名无效")
+		}
+		return removeConnectionPackage(root, packageName)
 	case "git-init":
 		if _, err := run(root, "git", "init"); err != nil {
 			return Result{}, err
@@ -489,12 +705,10 @@ func allowedPackage(name string) bool {
 	if strings.HasPrefix(name, "git+https://github.com/") || strings.HasPrefix(name, "git+https://gitee.com/") {
 		return true
 	}
-	for _, item := range []string{"alemonjs", "@alemonjs/bubble", "@alemonjs/db", "@alemonjs/discord", "@alemonjs/onebot", "@alemonjs/qq-bot", "@alemonjs/kook", "@alemonjs/telegram"} {
-		if name == item {
-			return true
-		}
-	}
-	return false
+	// Packages are executed through the selected package manager without a
+	// shell. Accept a normal npm name so a user can register a custom platform,
+	// but reject flags, paths and arbitrary command text.
+	return regexp.MustCompile(`^(?:@[a-z0-9][a-z0-9._-]*/)?[a-z0-9][a-z0-9._-]*$`).MatchString(name)
 }
 func project(root string) error {
 	_, err := projectPath(root)
@@ -583,7 +797,7 @@ func file(root, name string) (string, error) {
 	if err := project(root); err != nil {
 		return "", err
 	}
-	if name != ".npmrc" && name != "alemon.config.yaml" && name != "README.md" {
+	if name != ".npmrc" && name != ".env" && name != "alemon.config.yaml" && name != "README.md" {
 		return "", errors.New("不支持的文件")
 	}
 	return filepath.Join(root, name), nil

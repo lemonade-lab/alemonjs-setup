@@ -71,3 +71,29 @@ func TestReadMissingEditableConfigurationAsEmptyDocument(t *testing.T) {
 		t.Fatal("Read missing README.md should still report a missing file")
 	}
 }
+
+func TestRepairPM2CreatesRunnableProductionEntryAndConfig(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "package.json"), []byte(`{"name":"example"}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (Manager{}).RepairRuntime(root, "pm2"); err != nil {
+		t.Fatal(err)
+	}
+	entry, err := os.ReadFile(filepath.Join(root, "index.js"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := string(entry), "import { start } from 'alemonjs';\n\nstart();\n"; got != want {
+		t.Fatalf("index.js = %q, want %q", got, want)
+	}
+	config, err := os.ReadFile(filepath.Join(root, "pm2.config.cjs"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{"module.exports = pm2 ||", "name: 'alemonb'", "script: 'node index.js'", "NODE_ENV: 'production'"} {
+		if !strings.Contains(string(config), expected) {
+			t.Errorf("pm2 config does not contain %q:\n%s", expected, config)
+		}
+	}
+}

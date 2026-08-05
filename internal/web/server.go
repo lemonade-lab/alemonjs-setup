@@ -3,6 +3,7 @@ package web
 
 import (
 	"bufio"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -134,9 +135,14 @@ func NewServer(version string, staticFiles fs.FS, templateFiles ...fs.FS) http.H
 	mux.HandleFunc("/api/v1/robot", s.robotHandler)
 	mux.HandleFunc("/api/v1/robot/validate", s.robotValidateHandler)
 	mux.HandleFunc("/api/v1/robot/console", s.robotConsoleHandler)
+	mux.HandleFunc("/api/v1/robot/runtime", s.robotRuntimeHandler)
+	mux.HandleFunc("/api/v1/robot/runtime/preflight", s.robotRuntimePreflightHandler)
 	mux.HandleFunc("/api/v1/robot/tasks", s.robotTasksHandler)
 	mux.HandleFunc("/api/v1/robot/packages", s.robotPackagesHandler)
+	mux.HandleFunc("/api/v1/robot/webviews", s.robotWebViewsHandler)
+	mux.HandleFunc("/api/v1/robot/webview/", s.robotWebViewHandler)
 	mux.HandleFunc("/api/v1/robot/package-config", s.robotPackageConfigHandler)
+	mux.HandleFunc("/api/v1/robot/login", s.robotLoginHandler)
 	mux.HandleFunc("/api/v1/robot/manifest", s.robotManifestHandler)
 	mux.HandleFunc("/api/v1/robot/git-init", s.robotGitInitHandler)
 	mux.HandleFunc("/api/v1/publish/npm/status", s.npmPublishStatusHandler)
@@ -492,16 +498,48 @@ func (s *server) robotConsoleHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if output, status := s.operationOutput(root, "dev"); output != "" {
-		label := "最近一次开发模式输出"
+	output, status := s.operationOutput(root, "app")
+	mode := "前台运行"
+	if output == "" {
+		output, status = s.operationOutput(root, "dev")
+		mode = "开发模式"
+	}
+	if output != "" {
+		label := "最近一次" + mode + "输出"
 		if status == "running" {
-			label = "开发模式实时输出"
+			label = mode + "实时输出"
 		}
 		result.Output += "\n\n$ " + label + "\n" + output
 	} else {
-		result.Output += "\n\n$ 开发模式实时输出\n当前没有正在运行的开发进程。"
+		result.Output += "\n\n$ 运行终端\n当前没有正在运行的前台或开发进程。"
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *server) robotRuntimeHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "该操作暂不支持。")
+		return
+	}
+	overview, err := s.robots.RuntimeOverview(r.URL.Query().Get("root"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, overview)
+}
+
+func (s *server) robotRuntimePreflightHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "该操作暂不支持。")
+		return
+	}
+	preflight, err := s.robots.RuntimePreflight(r.URL.Query().Get("root"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, preflight)
 }
 
 func (s *server) robotValidateHandler(w http.ResponseWriter, r *http.Request) {
@@ -579,28 +617,31 @@ func (s *server) robotTasksHandler(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusAccepted, created)
 		return
 	}
-	if input.Action == "dev" {
+	if input.Action == "dev" || input.Action == "app" {
 		if s.developmentRunning(input.Root) {
 			writeError(w, http.StatusConflict, "当前目录的开发模式正在运行；请先停止后再启动。")
 			return
 		}
 		command, err := s.robots.DevelopmentCommand(input.Root)
+		if input.Action == "app" {
+			command, err = s.robots.ForegroundCommand(input.Root)
+		}
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
 		stdout, err := command.StdoutPipe()
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "无法连接开发模式输出："+err.Error())
+			writeError(w, http.StatusInternalServerError, "无法连接运行输出："+err.Error())
 			return
 		}
 		stderr, err := command.StderrPipe()
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "无法连接开发模式错误输出："+err.Error())
+			writeError(w, http.StatusInternalServerError, "无法连接运行错误输出："+err.Error())
 			return
 		}
 		if err := command.Start(); err != nil {
-			writeError(w, http.StatusBadRequest, "开发模式启动失败："+err.Error())
+			writeError(w, http.StatusBadRequest, "运行启动失败："+err.Error())
 			return
 		}
 		if !s.registerDevelopment(input.Root, created.ID, command) {
@@ -608,9 +649,9 @@ func (s *server) robotTasksHandler(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, "当前目录的开发模式正在运行；请先停止后再启动。")
 			return
 		}
-		created.Output = "开发模式已启动，正在等待进程输出…\n"
+		created.Output = map[bool]string{true: "开发模式已启动，正在等待进程输出…\n", false: "前台运行已启动，正在等待进程输出…\n"}[input.Action == "dev"]
 		s.addOperation(created)
-		log.Printf("[ROBOT %s] 开始 action=dev root=%q", created.ID, created.Root)
+		log.Printf("[ROBOT %s] 开始 action=%s root=%q", created.ID, input.Action, created.Root)
 		go s.watchDevelopmentTask(created.ID, input.Root, command, stdout, stderr)
 		writeJSON(w, http.StatusAccepted, created)
 		return
@@ -788,6 +829,87 @@ func (s *server) robotPackagesHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
+func (s *server) robotWebViewsHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "该操作暂不支持。")
+		return
+	}
+	items, err := s.robots.WebViews(r.URL.Query().Get("root"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
+func (s *server) robotWebViewHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		writeError(w, http.StatusMethodNotAllowed, "该操作暂不支持。")
+		return
+	}
+	const prefix = "/api/v1/robot/webview/"
+	rest := strings.TrimPrefix(r.URL.Path, prefix)
+	parts := strings.SplitN(rest, "/", 3)
+	if len(parts) < 2 || parts[0] == "" || parts[1] == "" {
+		writeError(w, http.StatusBadRequest, "缺少插件 Web 页面标识。")
+		return
+	}
+	// Treat the entry URL as a directory. Vite commonly emits ./assets/...;
+	// without this redirect a caller omitting the final slash resolves those
+	// files one level above the registered WebView id.
+	if len(parts) == 2 && !strings.HasSuffix(r.URL.Path, "/") {
+		http.Redirect(w, r, r.URL.Path+"/", http.StatusTemporaryRedirect)
+		return
+	}
+	rootBytes, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "机器人目录标识无效。")
+		return
+	}
+	requestPath := ""
+	if len(parts) == 3 {
+		requestPath = parts[2]
+	}
+	file, err := s.robots.WebViewFile(string(rootBytes), parts[1], requestPath)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	// The page is loaded in a sandboxed iframe. It receives no setup cookies,
+	// Redux state or privileged APIs; plugin actions must go through a later,
+	// explicit message bridge.
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	// A robot plugin UI may talk to its own local bot API and WebSocket. It is
+	// still sandboxed by the parent iframe and receives no setup bridge or
+	// system-command capability.
+	w.Header().Set("Content-Security-Policy", "default-src 'self' data: blob:; connect-src 'self' https: http://127.0.0.1:* http://localhost:* ws://127.0.0.1:* ws://localhost:*; img-src 'self' data: blob: https: http:; style-src 'self' 'unsafe-inline'; frame-ancestors 'self'; base-uri 'none'")
+	// WebView assets are static and path-guarded. Keep this header for modules
+	// and assets that a plugin may load from a sandboxed or alternate browser
+	// origin; it does not grant a setup command bridge.
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	// Vite's default production output commonly uses /assets/... absolute URLs.
+	// Inside a plugin mount that would otherwise point at setup's own assets.
+	// Keep ordinary external URLs untouched and only make local bundle paths
+	// relative to this plugin's registered WebView route.
+	if filepath.Ext(file) == ".html" {
+		data, readErr := os.ReadFile(file)
+		if readErr != nil {
+			writeError(w, http.StatusNotFound, "插件 Web 页面不存在。")
+			return
+		}
+		content := strings.NewReplacer(
+			`src="/assets/`, `src="assets/`,
+			`href="/assets/`, `href="assets/`,
+			`src='/assets/`, `src='assets/`,
+			`href='/assets/`, `href='assets/`,
+		).Replace(string(data))
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = io.WriteString(w, content)
+		return
+	}
+	http.ServeFile(w, r, file)
+}
+
 func (s *server) robotManifestHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
 		manifest, err := s.robots.PackageManifest(r.URL.Query().Get("root"))
@@ -837,7 +959,13 @@ func (s *server) robotPackageConfigHandler(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	if r.Method == http.MethodGet {
-		config, err := s.robots.PackageConfig(input.Root, input.Package)
+		var config robot.PackageConfig
+		var err error
+		if input.Package == "" {
+			config, err = s.robots.CurrentPackageConfig(input.Root)
+		} else {
+			config, err = s.robots.PackageConfig(input.Root, input.Package)
+		}
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
@@ -845,7 +973,35 @@ func (s *server) robotPackageConfigHandler(w http.ResponseWriter, r *http.Reques
 		writeJSON(w, http.StatusOK, config)
 		return
 	}
-	result, err := s.robots.SavePackageConfig(input.Root, input.Package, input.Values)
+	var result robot.Result
+	var err error
+	if input.Package == "" {
+		result, err = s.robots.SaveCurrentPackageConfig(input.Root, input.Values)
+	} else {
+		result, err = s.robots.SavePackageConfig(input.Root, input.Package, input.Values)
+	}
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *server) robotLoginHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "该操作暂不支持。")
+		return
+	}
+	var input struct {
+		Root    string `json:"root"`
+		Login   string `json:"login"`
+		Package string `json:"package"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		writeError(w, http.StatusBadRequest, "请求内容无法识别。")
+		return
+	}
+	result, err := s.robots.SaveLogin(input.Root, input.Login, input.Package)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return

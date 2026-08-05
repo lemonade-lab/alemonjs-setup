@@ -1,7 +1,0 @@
-# 具体见 pm2.config.cjs
-pm2:
-  apps:
-    - name: 'alemonb'
-      script: 'node index.js'
-      env:
-        NODE_ENV: 'production'

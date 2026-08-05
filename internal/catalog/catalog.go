@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"path"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -83,8 +84,8 @@ func Fetch(kind string) ([]Group, error) {
 			}
 			if strings.HasPrefix(item.Name, "@alemonjs/") || item.Name == "alemonjs" {
 				item.Install = item.Name
-			} else if repository := repositoryURL(item.URL); repository != "" {
-				item.Install = "git+" + repository + ".git"
+			} else if repository := repositoryInstallURL(item.URL); repository != "" {
+				item.Install = "git+" + repository
 			}
 		}
 	}
@@ -220,6 +221,32 @@ func repositoryURL(source string) string {
 	return "https://" + parsed.Host + "/" + parts[0] + "/" + strings.TrimSuffix(parts[1], ".git")
 }
 
+// repositoryInstallURL retains a tree/blob ref from the official catalog. A
+// link such as /tree/v1.2.3/packages/foo must install v1.2.3, not silently
+// clone the repository's moving default branch.
+func repositoryInstallURL(source string) string {
+	base := repositoryURL(source)
+	if base == "" {
+		return ""
+	}
+	parsed, err := url.Parse(source)
+	if err != nil {
+		return base
+	}
+	parts := strings.Split(strings.Trim(parsed.Path, "/"), "/")
+	if len(parts) >= 4 && (parts[2] == "tree" || parts[2] == "blob") && validGitRef(parts[3]) {
+		return base + ".git#" + parts[3]
+	}
+	return base + ".git"
+}
+
+func validGitRef(value string) bool {
+	if value == "" || strings.HasPrefix(value, "-") || strings.Contains(value, "..") || strings.ContainsAny(value, "\\~^:?*[ \t\r\n") {
+		return false
+	}
+	return true
+}
+
 // Document loads an online README only from the repository hosts represented
 // by the official catalog. This keeps the local API from becoming a general
 // network proxy while still allowing catalog entries to render their docs.
@@ -231,11 +258,15 @@ func LoadDocument(source string) (Document, error) {
 	return Document{Source: candidate, Markdown: string(data)}, nil
 }
 
-// LoadPackageVersions reads public npm metadata for an installable npm package.
-// Repository-backed catalog entries intentionally do not use this endpoint:
-// their version belongs to their Git repository rather than the npm registry.
+// LoadPackageVersions returns installable versions for a catalog entry. npm
+// packages use registry versions; repository-backed plugins use published
+// Release tags. A source checkout without a Release must never be presented as
+// a versioned plugin.
 func LoadPackageVersions(name string) (PackageVersions, error) {
 	name = strings.TrimSpace(name)
+	if strings.HasPrefix(name, "git+") {
+		return loadRepositoryReleases(strings.TrimPrefix(name, "git+"))
+	}
 	if name == "" || (!strings.HasPrefix(name, "@alemonjs/") && name != "alemonjs") {
 		return PackageVersions{}, fmt.Errorf("该目录条目不是可查询版本的 npm 包")
 	}
@@ -266,6 +297,91 @@ func LoadPackageVersions(name string) (PackageVersions, error) {
 		versions = append([]string{latest}, versions...)
 	}
 	return PackageVersions{Latest: metadata.DistTags["latest"], Versions: uniqueStrings(versions)}, nil
+}
+
+// loadRepositoryReleases deliberately reads release tag_name values rather
+// than the repository's complete Git tag list. A Git repository often carries
+// experimental tags; only a published Release is an installable plugin version.
+func loadRepositoryReleases(source string) (PackageVersions, error) {
+	parsed, err := url.Parse(strings.SplitN(source, "#", 2)[0])
+	if err != nil || (parsed.Host != "github.com" && parsed.Host != "gitee.com") {
+		return PackageVersions{}, fmt.Errorf("该插件仓库不支持读取版本 tag")
+	}
+	parts := strings.Split(strings.Trim(strings.TrimSuffix(parsed.Path, ".git"), "/"), "/")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return PackageVersions{}, fmt.Errorf("插件仓库地址无效")
+	}
+	endpoint := ""
+	if parsed.Host == "github.com" {
+		endpoint = "https://api.github.com/repos/" + url.PathEscape(parts[0]) + "/" + url.PathEscape(parts[1]) + "/releases?per_page=100"
+	} else {
+		endpoint = "https://gitee.com/api/v5/repos/" + url.PathEscape(parts[0]) + "/" + url.PathEscape(parts[1]) + "/releases?per_page=100"
+	}
+	client := &http.Client{Timeout: 8 * time.Second}
+	response, err := client.Get(endpoint)
+	if err != nil {
+		return PackageVersions{}, fmt.Errorf("无法读取插件 Release，请检查网络后重试")
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return PackageVersions{}, fmt.Errorf("无法读取插件 Release")
+	}
+	var releases []struct {
+		TagName    string `json:"tag_name"`
+		Draft      bool   `json:"draft"`
+		Prerelease bool   `json:"prerelease"`
+	}
+	if err := json.NewDecoder(io.LimitReader(response.Body, 2<<20)).Decode(&releases); err != nil {
+		return PackageVersions{}, fmt.Errorf("插件 Release 无法识别")
+	}
+	versions := make([]string, 0, len(releases))
+	for _, release := range releases {
+		if release.TagName != "" && !release.Draft && !release.Prerelease {
+			versions = append(versions, release.TagName)
+		}
+	}
+	sort.SliceStable(versions, func(i, j int) bool { return gitTagHigher(versions[i], versions[j]) })
+	versions = uniqueStrings(versions)
+	if len(versions) == 0 {
+		return PackageVersions{Versions: []string{}}, nil
+	}
+	return PackageVersions{Latest: versions[0], Versions: versions}, nil
+}
+
+// gitTagHigher keeps semantic-looking release tags ahead of arbitrary tags,
+// then compares numeric components. It intentionally accepts the common v1.2.3
+// form without introducing a new semantic-version dependency.
+func gitTagHigher(left, right string) bool {
+	parse := func(tag string) ([]int, bool) {
+		tag = strings.TrimPrefix(strings.TrimSpace(tag), "v")
+		core := strings.SplitN(tag, "-", 2)[0]
+		parts := strings.Split(core, ".")
+		if len(parts) < 2 || len(parts) > 3 {
+			return nil, false
+		}
+		values := make([]int, 3)
+		for index, part := range parts {
+			value, err := strconv.Atoi(part)
+			if err != nil || value < 0 {
+				return nil, false
+			}
+			values[index] = value
+		}
+		return values, true
+	}
+	leftValues, leftOK := parse(left)
+	rightValues, rightOK := parse(right)
+	if leftOK != rightOK {
+		return leftOK
+	}
+	if leftOK {
+		for index := range leftValues {
+			if leftValues[index] != rightValues[index] {
+				return leftValues[index] > rightValues[index]
+			}
+		}
+	}
+	return left > right
 }
 
 func uniqueStrings(values []string) []string {

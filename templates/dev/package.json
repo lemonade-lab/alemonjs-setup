@@ -2,7 +2,7 @@
   "description": "template app",
   "devDependencies": {
     "@types/node": "^22",
-    "alemonjs": "2.1.84",
+    "alemonjs": "2.1.92",
     "lvyjs": "^0.3.0-alpha.2"
   },
   "exports": {
@@ -12,7 +12,7 @@
   "homepage": "",
   "license": "",
   "main": "lib/index.js",
-  "name": "alemonjs-xiuxian",
+  "name": "alemonjs-app",
   "private": false,
   "publishConfig": {
     "registry": "https://registry.npmjs.org"

@@ -11,6 +11,6 @@
     "delete": "npx pm2 delete pm2.config.cjs"
   },
   "devDependencies": {
-    "alemonjs": "2.1.84"
+    "alemonjs": "2.1.92"
   }
 }

@@ -29,6 +29,27 @@ func TestRepositoryFileCandidatesKeepURLDirectory(t *testing.T) {
 	}
 }
 
+func TestRepositoryInstallURLKeepsTreeRef(t *testing.T) {
+	if got, want := repositoryInstallURL("https://github.com/example/project/tree/v1.2.3/packages/demo"), "https://github.com/example/project.git#v1.2.3"; got != want {
+		t.Fatalf("install URL = %q, want %q", got, want)
+	}
+	if got, want := repositoryInstallURL("https://gitee.com/example/project"), "https://gitee.com/example/project.git"; got != want {
+		t.Fatalf("default install URL = %q, want %q", got, want)
+	}
+}
+
+func TestGitTagHigherPrefersNewestSemanticTag(t *testing.T) {
+	if !gitTagHigher("v2.1.0", "v1.99.0") {
+		t.Fatal("newer semantic tag should sort first")
+	}
+	if !gitTagHigher("v1.0.0", "main") {
+		t.Fatal("release tag should sort ahead of arbitrary tag")
+	}
+	if gitTagHigher("v1.0.0", "v1.2.0") {
+		t.Fatal("older semantic tag must not sort first")
+	}
+}
+
 func TestCatalogTableHeadersAreNotCatalogItems(t *testing.T) {
 	for _, name := range []string{"项目", "项目名", "Project", "package"} {
 		if !isCatalogTableHeader(name) {
