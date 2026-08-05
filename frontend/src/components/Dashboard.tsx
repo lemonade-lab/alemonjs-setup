@@ -3308,8 +3308,7 @@ function GitReleasePanelNext({
       setSourceCommit(commits[0]?.sha ?? '')
   }, [commits, sourceCommit])
   const issues = status?.issues ?? []
-  const blockingIssues = issues.filter(item => !item.startsWith('尚未发现 lib'))
-  const buildNotes = issues.filter(item => item.startsWith('尚未发现 lib'))
+  const blockingIssues = issues
   const ready = !loading && blockingIssues.length === 0 && !!sourceCommit
   const needsInitialize =
     !status?.gitReady ||
@@ -3494,11 +3493,6 @@ function GitReleasePanelNext({
                 </section>
               )}
             </section>
-          )}
-          {buildNotes.length > 0 && (
-            <p className="release-build-note">
-              构建产物会在打包时自动生成，无需手动处理。
-            </p>
           )}
           {confirmed && (
             <p className="release-confirmation">

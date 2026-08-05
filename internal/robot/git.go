@@ -32,7 +32,6 @@ type GitStatus struct {
 	Commits            []string         `json:"commits"`
 	SourceCommits      []GitCommit      `json:"sourceCommits"`
 	ReleaseMappings    []ReleaseMapping `json:"releaseMappings"`
-	Artifacts          []string         `json:"artifacts"`
 	Checks             []string         `json:"checks"`
 	Issues             []string         `json:"issues"`
 }
@@ -69,7 +68,7 @@ func GitReleaseStatus(root string) (GitStatus, error) {
 	if err != nil {
 		return GitStatus{}, err
 	}
-	status := GitStatus{Root: path, Checks: []string{}, Issues: []string{}, Tags: []string{}, Commits: []string{}, SourceCommits: []GitCommit{}, ReleaseMappings: []ReleaseMapping{}, Artifacts: []string{}}
+	status := GitStatus{Root: path, Checks: []string{}, Issues: []string{}, Tags: []string{}, Commits: []string{}, SourceCommits: []GitCommit{}, ReleaseMappings: []ReleaseMapping{}}
 	pkg, err := readPackage(path)
 	if err != nil {
 		status.Issues = append(status.Issues, "当前目录缺少可用的 package.json，无法按应用包流程发布。")
@@ -113,11 +112,10 @@ func GitReleaseStatus(root string) (GitStatus, error) {
 	} else {
 		status.Checks = append(status.Checks, "当前处于 main 分支")
 	}
-	if dirty, _ := gitRun(path, "status", "--porcelain"); dirty != "" {
-		status.Issues = append(status.Issues, "工作区有未提交修改；请先提交或暂存后再打包。")
-	} else {
-		status.Checks = append(status.Checks, "工作区干净")
-	}
+	// GitPublish creates detached worktrees from the selected commit.  The
+	// caller's working tree is intentionally never read, cleaned, or switched,
+	// so local edits (including generated lib files) must not block a release.
+	status.Checks = append(status.Checks, "将从所选提交独立构建")
 	if status.Repository != "" {
 		if _, err := gitRun(path, "fetch", "origin", "main", "--tags"); err != nil {
 			status.Issues = append(status.Issues, "无法读取远程 main 与版本标签。")
@@ -144,14 +142,6 @@ func GitReleaseStatus(root string) (GitStatus, error) {
 	status.SourceCommits = sourceCommits(path)
 	if len(status.SourceCommits) == 0 && status.GitReady {
 		status.Issues = append(status.Issues, "当前分支还没有可选择的提交。")
-	}
-	for _, item := range []struct{ path, label string }{{"lib", "lib（构建产物）"}, {"README.md", "README.md"}, {".puppeteerrc.cjs", ".puppeteerrc.cjs"}} {
-		if _, err := os.Stat(filepath.Join(path, item.path)); err == nil {
-			status.Artifacts = append(status.Artifacts, item.label)
-		}
-	}
-	if _, err := os.Stat(filepath.Join(path, "lib")); err != nil {
-		status.Issues = append(status.Issues, "尚未发现 lib 构建产物；发布时会先执行 build。")
 	}
 	status.Tags = gitLines(path, "tag", "--list", "v*", "--sort=-v:refname")
 	status.LatestVersion = latestGitVersion(path)
@@ -233,14 +223,8 @@ func GitPublish(root, version, sourceCommit string, confirmed bool) (Result, err
 	if err != nil {
 		return Result{}, err
 	}
-	issues := make([]string, 0, len(status.Issues))
-	for _, issue := range status.Issues {
-		if !strings.HasPrefix(issue, "尚未发现 lib") {
-			issues = append(issues, issue)
-		}
-	}
-	if len(issues) > 0 {
-		return Result{}, errors.New("发布前检查未通过：" + strings.Join(issues, "；"))
+	if len(status.Issues) > 0 {
+		return Result{}, errors.New("发布前检查未通过：" + strings.Join(status.Issues, "；"))
 	}
 	if !regexp.MustCompile(`^[0-9a-fA-F]{7,64}$`).MatchString(sourceCommit) {
 		return Result{}, errors.New("请选择一个已提交的源码版本")

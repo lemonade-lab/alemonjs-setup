@@ -40,7 +40,10 @@ func TestRegistryRunsDeclaredBinaryAction(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(directory, manifestName), []byte(manifest), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(directory, "runner"), []byte("#!/bin/sh\ncat >/dev/null\nprintf '{\\\"output\\\":\\\"已检查\\\"}'\n"), 0755); err != nil {
+	if err := os.WriteFile(filepath.Join(directory, "runner"), []byte(`#!/bin/sh
+cat >/dev/null
+printf '{"output":"已检查"}'
+`), 0755); err != nil {
 		t.Fatal(err)
 	}
 	output, err := NewRegistry(root).Run("fixture", "check", nil, false)
