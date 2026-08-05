@@ -16,18 +16,19 @@ import (
 )
 
 type Config struct {
-	Template        string `json:"template"`
-	Name            string `json:"name"`
-	DestinationMode string `json:"destinationMode"`
-	Destination     string `json:"destination"`
-	Language        string `json:"language"`
-	PackageManager  string `json:"packageManager"`
-	ESLint          bool   `json:"eslint"`
-	InitializeGit   bool   `json:"initializeGit"`
-	UsePM2          bool   `json:"usePM2"`
-	ImageMode       string `json:"imageMode"`
-	StyleMode       string `json:"styleMode"`
-	DownloadSkills  bool   `json:"downloadSkills"`
+	Template            string   `json:"template"`
+	Name                string   `json:"name"`
+	DestinationMode     string   `json:"destinationMode"`
+	Destination         string   `json:"destination"`
+	Language            string   `json:"language"`
+	PackageManager      string   `json:"packageManager"`
+	ESLint              bool     `json:"eslint"`
+	InitializeGit       bool     `json:"initializeGit"`
+	UsePM2              bool     `json:"usePM2"`
+	ImageMode           string   `json:"imageMode"`
+	StyleMode           string   `json:"styleMode"`
+	DownloadSkills      bool     `json:"downloadSkills"`
+	DevelopmentPackages []string `json:"developmentPackages"`
 }
 
 type Result struct {
@@ -87,6 +88,9 @@ func (c *Creator) Create(config Config) (Result, error) {
 	log(fmt.Sprintf("已复制 %s 模板。", map[string]string{"bot": "机器人", "dev": "开发"}[template]))
 	if err := patchPackage(path, config); err != nil {
 		return result, fmt.Errorf("写入项目配置失败：%w", err)
+	}
+	if err := patchDevelopmentSource(path, config); err != nil {
+		return result, fmt.Errorf("调整开发模板失败：%w", err)
 	}
 	log("已按你的选择配置项目。")
 
@@ -213,6 +217,11 @@ func validate(c Config) error {
 	if c.StyleMode != "css" && c.StyleMode != "tailwind" && c.StyleMode != "sass" && c.StyleMode != "less" {
 		return errors.New("样式方案无效")
 	}
+	for _, capability := range c.DevelopmentPackages {
+		if _, ok := developmentPackageCapabilities[capability]; !ok {
+			return errors.New("开发能力包无效")
+		}
+	}
 	return nil
 }
 
@@ -257,6 +266,12 @@ func patchPackage(root string, config Config) error {
 		pkg["scripts"] = scripts
 	}
 	remove := func(name string) { delete(dependencies, name) }
+	for _, dependency := range developmentPackageCapabilities {
+		remove(dependency)
+	}
+	for _, capability := range config.DevelopmentPackages {
+		dependencies[developmentPackageCapabilities[capability]] = developmentPackageVersions[capability]
+	}
 	if !config.UsePM2 {
 		remove("pm2")
 		delete(scripts, "start")
@@ -264,10 +279,17 @@ func patchPackage(root string, config Config) error {
 		delete(scripts, "delete")
 		_ = os.Remove(filepath.Join(root, "pm2.config.cjs"))
 	}
+	if config.UsePM2 {
+		dependencies["pm2"] = "^5"
+		dependencies["yaml"] = "^2.6.0"
+	}
 	if config.ImageMode != "react" {
 		remove("jsxp")
 		_ = os.RemoveAll(filepath.Join(root, "src", "image"))
 		_ = os.Remove(filepath.Join(root, "jsxp.config.tsx"))
+	}
+	if config.ImageMode == "react" {
+		dependencies["jsxp"] = "1.4.0"
 	}
 	if config.ImageMode != "react" || config.StyleMode != "tailwind" {
 		remove("tailwindcss")
@@ -280,6 +302,9 @@ func patchPackage(root string, config Config) error {
 	}
 	if config.ImageMode == "react" && config.StyleMode == "less" {
 		dependencies["less"] = "^4.2.0"
+	}
+	if config.Language == "js" {
+		remove("@types/node")
 	}
 	if config.ESLint {
 		dependencies["eslint"] = "^9.0.0"
@@ -295,6 +320,73 @@ func patchPackage(root string, config Config) error {
 		return err
 	}
 	return os.WriteFile(path, append(encoded, '\n'), 0644)
+}
+
+var developmentPackageCapabilities = map[string]string{
+	"bubble":   "@alemonjs/bubble",
+	"database": "@alemonjs/db",
+	"discord":  "@alemonjs/discord",
+	"onebot":   "@alemonjs/onebot",
+	"qqbot":    "@alemonjs/qq-bot",
+}
+
+var developmentPackageVersions = map[string]string{
+	"bubble":   "^2.1.11",
+	"database": "^0.0.17",
+	"discord":  "^2.1.23",
+	"onebot":   "^2.1.16",
+	"qqbot":    "^2.1.23",
+}
+
+func patchDevelopmentSource(root string, config Config) error {
+	if config.Template != "dev" {
+		return nil
+	}
+	extension := "ts"
+	if config.Language == "js" {
+		extension = "js"
+		for _, name := range []string{"app", "src/index", "src/expose", "src/store", "src/response/hello", "src/response/help"} {
+			from, to := filepath.Join(root, name+".ts"), filepath.Join(root, name+".js")
+			if err := os.Rename(from, to); err != nil && !os.IsNotExist(err) {
+				return err
+			}
+		}
+		_ = os.Remove(filepath.Join(root, "src", "env.d.ts"))
+	}
+	app := filepath.Join(root, "app."+extension)
+	data, err := os.ReadFile(app)
+	if err != nil {
+		return err
+	}
+	data = []byte(strings.ReplaceAll(string(data), "src/index.ts", "src/index."+extension))
+	if err := os.WriteFile(app, data, 0644); err != nil {
+		return err
+	}
+	if config.ImageMode != "react" {
+		help := "import { Format, useMessage } from 'alemonjs';\n\nexport default async () => {\n  const [message] = useMessage();\n  await message.send({ format: Format.create().addText('AlemonJS 开发机器人已就绪。') });\n};\n"
+		if err := os.WriteFile(filepath.Join(root, "src", "response", "help."+extension), []byte(help), 0644); err != nil {
+			return err
+		}
+	}
+	packagePath := filepath.Join(root, "package.json")
+	packageData, err := os.ReadFile(packagePath)
+	if err != nil {
+		return err
+	}
+	var pkg map[string]any
+	if err := json.Unmarshal(packageData, &pkg); err != nil {
+		return err
+	}
+	scripts, _ := pkg["scripts"].(map[string]any)
+	if scripts != nil && config.Language == "js" {
+		scripts["dev"] = "lvy app.js"
+		scripts["view"] = "lvy app.js --jsxp"
+	}
+	encoded, err := json.MarshalIndent(pkg, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(packagePath, append(encoded, '\n'), 0644)
 }
 
 func run(directory string, logs *[]string, name string, args ...string) error {

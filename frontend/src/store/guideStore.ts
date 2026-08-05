@@ -9,12 +9,12 @@ const storage = {
   removeItem: (key: string) => Promise.resolve(window.localStorage.removeItem(key)),
 }
 
-export type DeveloperConfig = { language: string; eslint: string; git: string; pm2: string; manager: string; image: string; style: string; skills: string }
+export type DeveloperConfig = { language: string; eslint: string; git: string; pm2: string; manager: string; image: string; style: string; skills: string; capabilities: string[] }
 export type ProjectDraft = { name: string; destinationMode: 'current' | 'custom'; destination: string }
 type GuideState = { developer: DeveloperConfig; project: ProjectDraft }
 
 const initialState: GuideState = {
-  developer: { language: 'js', eslint: 'no', git: 'yes', pm2: 'no', manager: 'yarn', image: 'none', style: 'css', skills: 'yes' },
+  developer: { language: 'js', eslint: 'no', git: 'yes', pm2: 'no', manager: 'yarn', image: 'none', style: 'css', skills: 'yes', capabilities: [] },
   project: { name: 'alemonb', destinationMode: 'current', destination: '' },
 }
 

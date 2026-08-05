@@ -1,25 +1,19 @@
+import { ArrowLeft, X } from 'lucide-react'
+import { SetupUpdateButton } from './SetupUpdateButton'
+
 type GuideHeaderProps = { onBack: () => void; onClose: () => void; showBack: boolean }
-
-const links = [
-  ['⌂', '官网', 'https://alemonjs.com/'],
-]
-
-export function HeaderLinks() {
-  return <nav className="header-links" aria-label="AlemonJS 快捷链接">{links.map(([icon, label, href]) => <a href={href} key={label} target="_blank" rel="noreferrer" aria-label={label} title={label}>{icon}</a>)}</nav>
-}
 
 export function GuideHeader({ onBack, onClose, showBack }: GuideHeaderProps) {
   return (
     <header className="guide-bar">
-      {showBack ? <button className="top-back" onClick={onBack}>← 返回</button> : <span />}
-      <HeaderLinks />
+      <div className="guide-header-left">{showBack && <button className="top-back icon-button" onClick={onBack} aria-label="返回" title="返回"><ArrowLeft /></button>}<a className="workspace-name" href="https://alemonjs.com/" target="_blank" rel="noreferrer">ALEMONJS</a><SetupUpdateButton /></div>
       <button
         className="window-close"
         aria-label="关闭引导"
         title="关闭引导"
         onClick={onClose}
       >
-        ×
+        <X />
       </button>
     </header>
   )

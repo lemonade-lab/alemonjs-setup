@@ -1,18 +1,9 @@
 {
   "description": "template app",
   "devDependencies": {
-    "@alemonjs/bubble": "^2.1.11",
-    "@alemonjs/db": "^0.0.17",
-    "@alemonjs/discord": "^2.1.23",
-    "@alemonjs/onebot": "^2.1.16",
-    "@alemonjs/qq-bot": "^2.1.23",
     "@types/node": "^22",
     "alemonjs": "2.1.84",
-    "cssnano": "^7",
-    "jsxp": "1.4.0",
-    "lvyjs": "^0.3.0-alpha.2",
-    "pm2": "^5",
-    "tailwindcss": "3"
+    "lvyjs": "^0.3.0-alpha.2"
   },
   "exports": {
     ".": "./lib/index.js",

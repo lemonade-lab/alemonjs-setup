@@ -3,9 +3,14 @@ package web
 
 import (
 	"encoding/json"
+	"fmt"
 	"io/fs"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -16,6 +21,7 @@ import (
 	"alemonjs-setup/internal/project"
 	"alemonjs-setup/internal/releases"
 	"alemonjs-setup/internal/robot"
+	"alemonjs-setup/internal/setupplugin"
 	"alemonjs-setup/internal/system"
 )
 
@@ -53,22 +59,24 @@ type operationTask struct {
 }
 
 type server struct {
-	version    string
-	assets     fs.FS
-	static     http.Handler
-	checker    *system.Checker
-	creator    *project.Creator
-	robots     robot.Manager
-	mu         sync.RWMutex
-	tasks      []task
-	operations []operationTask
-	requestID  atomic.Uint64
+	version        string
+	assets         fs.FS
+	static         http.Handler
+	checker        *system.Checker
+	creator        *project.Creator
+	robots         robot.Manager
+	plugins        setupplugin.Registry
+	mu             sync.RWMutex
+	tasks          []task
+	operations     []operationTask
+	requestID      atomic.Uint64
+	directoryRoots []string
 }
 
 var goals = []goal{
 	{ID: "install", Title: "安装机器人", Description: "用推荐默认配置，快速安装一个可以运行的 AlemonJS 机器人。", Steps: []string{"环境检查", "机器人名称与位置", "确认安装"}},
 	{ID: "manage", Title: "管理机器人", Description: "管理已有机器人项目的配置、依赖与运行方式。", Steps: []string{"打开机器人管理"}},
-	{ID: "develop", Title: "开发机器人", Description: "创建一个可按需配置的 AlemonJS 开发项目。", Steps: []string{"环境检查", "项目名称", "开发语言", "代码规范", "版本管理", "本地运行", "包管理器", "图片开发", "样式方案", "开发技能", "确认创建"}},
+	{ID: "develop", Title: "开发机器人", Description: "创建一个可按需配置的 AlemonJS 开发项目。", Steps: []string{"环境检查", "项目名称", "开发语言", "代码规范", "版本管理", "本地运行", "包管理器", "开发能力包", "图片开发", "样式方案", "开发技能", "确认创建"}},
 	{ID: "desktop", Title: "安装桌面版", Description: "下载 AlemonDesk。", Steps: []string{"选择下载镜像", "下载桌面版"}, Mirrors: githubMirrors("alemondesk")},
 	{ID: "mobile", Title: "安装手机版", Description: "下载 AlemonApp Android 安装包。", Steps: []string{"下载 Android 安装包"}, DownloadURL: "https://download.alemonjs.com/application/alemonapp/app-universal-release.apk"},
 	{ID: "web", Title: "部署 Web 版", Description: "部署 AlemonGo。", Steps: []string{"选择部署方式", "环境检查", "快速启动"}, Mirrors: githubMirrors("alemongo")},
@@ -89,7 +97,7 @@ func NewServer(version string, staticFiles fs.FS, templateFiles ...fs.FS) http.H
 	if err != nil {
 		panic(err)
 	}
-	s := &server{version: version, assets: assets, static: http.FileServer(http.FS(assets)), checker: system.NewChecker()}
+	s := &server{version: version, assets: assets, static: http.FileServer(http.FS(assets)), checker: system.NewChecker(), plugins: setupplugin.NewRegistry(), directoryRoots: managedDirectoryRoots()}
 	if len(templateFiles) > 0 {
 		templates, err := fs.Sub(templateFiles[0], "templates")
 		if err != nil {
@@ -106,10 +114,12 @@ func NewServer(version string, staticFiles fs.FS, templateFiles ...fs.FS) http.H
 	mux.HandleFunc("/api/v1/projects", s.projectsHandler)
 	mux.HandleFunc("/api/v1/releases", s.releasesHandler)
 	mux.HandleFunc("/api/v1/update", s.updateHandler)
-	mux.HandleFunc("/api/v1/directories/select", s.directoryHandler)
+	mux.HandleFunc("/api/v1/directories", s.directoryHandler)
 	mux.HandleFunc("/api/v1/catalog", s.catalogHandler)
 	mux.HandleFunc("/api/v1/catalog/document", s.catalogDocumentHandler)
 	mux.HandleFunc("/api/v1/catalog/package-config", s.catalogPackageConfigHandler)
+	mux.HandleFunc("/api/v1/setup/plugins", s.setupPluginsHandler)
+	mux.HandleFunc("/api/v1/setup/plugins/", s.setupPluginActionHandler)
 	mux.HandleFunc("/api/v1/robot", s.robotHandler)
 	mux.HandleFunc("/api/v1/robot/tasks", s.robotTasksHandler)
 	mux.HandleFunc("/api/v1/robot/packages", s.robotPackagesHandler)
@@ -207,17 +217,160 @@ func (s *server) catalogPackageConfigHandler(w http.ResponseWriter, r *http.Requ
 	writeJSON(w, http.StatusOK, config)
 }
 
-func (s *server) directoryHandler(w http.ResponseWriter, r *http.Request) {
+// setupPluginsHandler rescans plugin directories on each request. Adding or
+// removing a directory is therefore reflected after a normal UI refresh, with
+// no process restart and without running third-party code.
+func (s *server) setupPluginsHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "该操作暂不支持。")
+		return
+	}
+	writeJSON(w, http.StatusOK, s.plugins.All())
+}
+
+func (s *server) setupPluginActionHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "该操作暂不支持。")
 		return
 	}
-	paths, err := system.ChooseDirectories()
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/v1/setup/plugins/"), "/")
+	if len(parts) != 2 || parts[0] == "" {
+		writeError(w, http.StatusNotFound, "未找到 Setup 插件操作。")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"paths": paths})
+	if parts[1] == "enabled" {
+		var input struct {
+			Enabled bool `json:"enabled"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+			writeError(w, http.StatusBadRequest, "请选择插件状态。")
+			return
+		}
+		if err := s.plugins.SetEnabled(parts[0], input.Enabled); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"id": parts[0], "enabled": input.Enabled})
+		return
+	}
+	if parts[1] != "actions" {
+		writeError(w, http.StatusNotFound, "未找到 Setup 插件操作。")
+		return
+	}
+	var input struct {
+		Action  string            `json:"action"`
+		Confirm bool              `json:"confirm"`
+		Params  map[string]string `json:"params"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil || input.Action == "" {
+		writeError(w, http.StatusBadRequest, "请选择要执行的插件操作。")
+		return
+	}
+	created := operationTask{ID: "setup-" + time.Now().Format("20060102150405.000000000"), Root: "", Action: "setup:" + parts[0] + ":" + input.Action, Status: "running", CreatedAt: time.Now()}
+	s.mu.Lock()
+	s.operations = append([]operationTask{created}, s.operations...)
+	if len(s.operations) > 40 {
+		s.operations = s.operations[:40]
+	}
+	s.mu.Unlock()
+	go func() {
+		output, err := s.plugins.Run(parts[0], input.Action, input.Params, input.Confirm)
+		finished := time.Now()
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		for index := range s.operations {
+			if s.operations[index].ID != created.ID {
+				continue
+			}
+			s.operations[index].Status = "completed"
+			s.operations[index].Output = output
+			s.operations[index].FinishedAt = &finished
+			if err != nil {
+				s.operations[index].Status = "failed"
+				s.operations[index].Error = err.Error()
+			}
+			break
+		}
+	}()
+	writeJSON(w, http.StatusAccepted, created)
+}
+
+func (s *server) directoryHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "该操作暂不支持。")
+		return
+	}
+	path, err := s.managedDirectory(r.URL.Query().Get("path"))
+	if err != nil {
+		writeError(w, http.StatusForbidden, err.Error())
+		return
+	}
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "无法读取该目录")
+		return
+	}
+	type directory struct {
+		Name string `json:"name"`
+		Path string `json:"path"`
+	}
+	showHidden := r.URL.Query().Get("hidden") == "true"
+	directories := make([]directory, 0)
+	for _, entry := range entries {
+		if entry.IsDir() && (showHidden || !strings.HasPrefix(entry.Name(), ".")) {
+			directories = append(directories, directory{Name: entry.Name(), Path: filepath.Join(path, entry.Name())})
+		}
+	}
+	sort.Slice(directories, func(i, j int) bool { return directories[i].Name < directories[j].Name })
+	parent := ""
+	for _, root := range s.directoryRoots {
+		if filepath.Clean(path) != filepath.Clean(root) {
+			if next := filepath.Dir(path); isWithinRoot(next, root) {
+				parent = next
+			}
+			break
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"path": path, "parent": parent, "roots": s.directoryRoots, "directories": directories})
+}
+
+func managedDirectoryRoots() []string {
+	value := os.Getenv("ALEMONJS_SETUP_ROOTS")
+	if value == "" {
+		if home, err := os.UserHomeDir(); err == nil {
+			return []string{home}
+		}
+		return []string{"/"}
+	}
+	roots := []string{}
+	for _, item := range filepath.SplitList(value) {
+		if path, err := filepath.Abs(item); err == nil {
+			roots = append(roots, filepath.Clean(path))
+		}
+	}
+	return roots
+}
+
+func (s *server) managedDirectory(requested string) (string, error) {
+	path := requested
+	if path == "" {
+		path = s.directoryRoots[0]
+	}
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	for _, root := range s.directoryRoots {
+		if isWithinRoot(absolute, root) {
+			return absolute, nil
+		}
+	}
+	return "", fmt.Errorf("目录不在允许的管理范围内")
+}
+
+func isWithinRoot(path, root string) bool {
+	relative, err := filepath.Rel(filepath.Clean(root), filepath.Clean(path))
+	return err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
 }
 
 func (s *server) releasesHandler(w http.ResponseWriter, r *http.Request) {
@@ -301,7 +454,11 @@ func (s *server) robotTasksHandler(w http.ResponseWriter, r *http.Request) {
 		s.mu.RLock()
 		defer s.mu.RUnlock()
 		if id == "" {
-			writeJSON(w, http.StatusOK, s.operations)
+			operations := s.operations
+			if operations == nil {
+				operations = []operationTask{}
+			}
+			writeJSON(w, http.StatusOK, operations)
 			return
 		}
 		for _, item := range s.operations {

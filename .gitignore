@@ -18,6 +18,7 @@ dist
 dist-ssr
 dist-electron
 release
+plugins/*/dist/
 app
 *.local
 

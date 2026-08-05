@@ -43,7 +43,9 @@ albs --cwd /xxx/alemonb git publish --yes
 
 ## 让 AI 助手管理本机机器人（MCP）
 
-`albs mcp` 启动本地 stdio MCP 服务。将其作为 AI 客户端的本地 MCP 命令配置，即可让支持 MCP 的助手检查项目状态、列出和读写项目源码、管理本地包、创建项目和执行受限管理操作：
+AlemonJS Setup 支持 MCP 的两种标准接入方式，因此可由 Codex、豆包或其它支持标准 MCP 工具调用的客户端控制。它提供项目检查、源码读写、运行配置、本地包、机器人启动/停止、构建、打包与发布等受控操作。
+
+**STDIO（推荐给 Codex 和桌面客户端）**：客户端启动 `albs` 子进程，无需网络端口。
 
 ```json
 {
@@ -56,7 +58,17 @@ albs --cwd /xxx/alemonb git publish --yes
 }
 ```
 
-服务仅走标准输入输出，不监听网络端口。它不提供任意 shell 或任意路径读写：`.env`、`.npmrc`、密钥文件、Git 元数据、依赖目录和符号链接均不可访问。会写入文件、安装依赖或执行项目脚本的工具都要求客户端在用户明确同意后传 `confirm: true`。
+**Streamable HTTP（适合提供“URL + Token”图形表单的客户端）**：
+
+```bash
+MCP_TOKEN='生成的高强度随机值' albs --mcp-port 17391 mcp-http
+```
+
+填写地址 `http://127.0.0.1:17391/mcp`，认证填写 `Bearer <MCP_TOKEN>`。服务只监听本机 `127.0.0.1`，不可暴露到局域网或公网。
+
+使用前请确认 `albs` 已安装且可从客户端启动环境找到：`command -v albs`。Codex 的图形表单分别选择 `STDIO` 或 `流式 HTTP`；豆包及其它客户端只要提供标准 MCP 的命令配置或 URL/Token 配置，可填写相同字段。各产品的授权弹窗和 UI 名称可能不同，但不能跳过服务端的控制边界。
+
+服务不提供任意 shell 或任意路径读写：`.env`、`.npmrc`、密钥文件、Git 元数据、依赖目录和符号链接均不可访问。会写入文件、安装依赖、启动机器人、构建或发布的工具都要求客户端在用户明确同意后传 `confirm: true`。
 
 控制范围、任务轮询与未来远程接入的约定见 [MCP 控制面文档](docs/mcp.md)。
 

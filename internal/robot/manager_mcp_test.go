@@ -51,3 +51,23 @@ func TestMCPProjectFilesStayWithinSafeProjectWorkspace(t *testing.T) {
 		t.Fatalf("written content = %q, %v", data, err)
 	}
 }
+
+func TestReadMissingEditableConfigurationAsEmptyDocument(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "package.json"), []byte("{}"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	manager := Manager{}
+	for _, name := range []string{"alemon.config.yaml", ".npmrc"} {
+		result, err := manager.Read(root, name)
+		if err != nil {
+			t.Fatalf("Read(%q) returned error: %v", name, err)
+		}
+		if result.Output != "" || result.Path != filepath.Join(root, name) {
+			t.Fatalf("Read(%q) = %#v, want empty document at configuration path", name, result)
+		}
+	}
+	if _, err := manager.Read(root, "README.md"); err == nil {
+		t.Fatal("Read missing README.md should still report a missing file")
+	}
+}

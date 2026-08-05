@@ -41,6 +41,14 @@ func TestGoalsAndTaskCreation(t *testing.T) {
 	}
 }
 
+func TestRobotTasksStartsAsJSONArray(t *testing.T) {
+	response := httptest.NewRecorder()
+	newTestServer().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/robot/tasks", nil))
+	if response.Code != http.StatusOK || response.Body.String() != "[]\n" {
+		t.Fatalf("empty robot tasks = %d %q, want JSON array", response.Code, response.Body.String())
+	}
+}
+
 func TestInvalidTaskGoalReturnsChineseError(t *testing.T) {
 	response := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/tasks", bytes.NewBufferString(`{"goalId":"unknown"}`))

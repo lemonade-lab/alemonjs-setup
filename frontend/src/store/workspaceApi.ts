@@ -7,17 +7,21 @@ type CatalogDocument = { source: string; markdown: string }
 type PackageConfig = { package: string; namespace: string; fields: Array<{ name: string; type: string; required: boolean; description: string }>; values: Record<string, string> }
 type LocalPackages = { items: Array<{ name: string; version?: string; description?: string; path: string; valid: boolean }> }
 type PackageManifest = { name: string; version: string; description: string; homepage: string; repository: string; license: string; private: boolean; access: string }
+export type SetupPlugin = { id: string; name: string; version: string; description?: string; platforms?: string[]; navigation: { label: string; icon?: string; order?: number }; pages: Array<{ id: string; label: string; description?: string }>; actions?: Array<{ id: string; label: string; description?: string; confirm?: boolean; page?: string; fields?: Array<{ key: string; label: string; type: 'select' | 'number' | 'text'; default?: string; options?: Array<{ label: string; value: string }> }> }>; runnable: boolean; enabled: boolean }
 
 export const workspaceApi = createApi({
   reducerPath: 'workspaceApi',
   baseQuery: fetchBaseQuery({ baseUrl: '/api/v1/' }),
   keepUnusedDataFor: 60 * 60,
-  tagTypes: ['RobotFile', 'Catalog', 'GitStatus', 'NpmStatus', 'PackageConfig', 'LocalPackages', 'PackageManifest'],
+  tagTypes: ['RobotFile', 'Catalog', 'GitStatus', 'NpmStatus', 'PackageConfig', 'LocalPackages', 'PackageManifest', 'SetupPlugins'],
   endpoints: (build) => ({
     goals: build.query<unknown[], void>({ query: () => 'goals' }),
     environmentReport: build.query<Record<string, unknown>, { goalId: string; variant: string }>({ query: (body) => ({ url: 'checks', method: 'POST', body }), keepUnusedDataFor: 5 * 60 }),
     releases: build.query<unknown[], string>({ query: (app) => `releases?app=${encodeURIComponent(app)}` }),
     setupUpdate: build.query<{ current: string; latest?: string; available: boolean; releaseUrl?: string; downloadUrl?: string; assetName?: string; platformMatched: boolean }, void>({ query: () => 'update' }),
+    setupPlugins: build.query<SetupPlugin[], void>({ query: () => 'setup/plugins', providesTags: ['SetupPlugins'] }),
+    setSetupPluginEnabled: build.mutation<{ id: string; enabled: boolean }, { pluginID: string; enabled: boolean }>({ query: ({ pluginID, ...body }) => ({ url: `setup/plugins/${encodeURIComponent(pluginID)}/enabled`, method: 'POST', body }), invalidatesTags: ['SetupPlugins'] }),
+    startSetupPluginTask: build.mutation<RobotTask, { pluginID: string; action: string; confirm: boolean; params?: Record<string, string> }>({ query: ({ pluginID, ...body }) => ({ url: `setup/plugins/${encodeURIComponent(pluginID)}/actions`, method: 'POST', body }) }),
     catalog: build.query<CatalogGroup[], 'apps' | 'environment'>({ query: (kind) => `catalog?kind=${kind}`, providesTags: (_result, _error, kind) => [{ type: 'Catalog', id: kind }] }),
     catalogDocument: build.query<CatalogDocument, string>({ query: (url) => `catalog/document?${new URLSearchParams({ url })}` }),
     catalogPackageConfig: build.query<PackageConfig, string>({ query: (url) => `catalog/package-config?${new URLSearchParams({ url })}` }),
@@ -53,4 +57,4 @@ export const workspaceApi = createApi({
   }),
 })
 
-export const { useGoalsQuery, useLazyEnvironmentReportQuery, useReleasesQuery, useLazySetupUpdateQuery, useCatalogQuery, useCatalogDocumentQuery, useCatalogPackageConfigQuery, usePackageConfigQuery, useLocalPackagesQuery, usePackageManifestQuery, useRobotTasksQuery, useLazyRobotFileQuery, useGitStatusQuery, useNpmStatusQuery, useLazyNpmPackQuery, useRobotOperationMutation, useStartRobotTaskMutation, useWriteRobotFileMutation, useWritePackageManifestMutation, useWritePackageConfigMutation, useInitializeGitMutation } = workspaceApi
+export const { useGoalsQuery, useLazyEnvironmentReportQuery, useReleasesQuery, useLazySetupUpdateQuery, useSetupPluginsQuery, useSetSetupPluginEnabledMutation, useStartSetupPluginTaskMutation, useCatalogQuery, useCatalogDocumentQuery, useCatalogPackageConfigQuery, usePackageConfigQuery, useLocalPackagesQuery, usePackageManifestQuery, useRobotTasksQuery, useLazyRobotFileQuery, useGitStatusQuery, useNpmStatusQuery, useLazyNpmPackQuery, useRobotOperationMutation, useStartRobotTaskMutation, useWriteRobotFileMutation, useWritePackageManifestMutation, useWritePackageConfigMutation, useInitializeGitMutation } = workspaceApi

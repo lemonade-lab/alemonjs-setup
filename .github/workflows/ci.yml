@@ -37,10 +37,10 @@ jobs:
     strategy:
       matrix:
         include:
-          - { goos: windows, goarch: amd64, filename: alemonjs-setup-windows-amd64.exe }
-          - { goos: darwin, goarch: arm64, filename: alemonjs-setup-darwin-arm64 }
-          - { goos: darwin, goarch: amd64, filename: alemonjs-setup-darwin-amd64 }
-          - { goos: linux, goarch: amd64, filename: alemonjs-setup-linux-amd64 }
+          - { goos: windows, goarch: amd64, binary: albs.exe, bundle: albs-windows-amd64.zip, plugin_binary: network-firewall-windows-amd64.exe }
+          - { goos: darwin, goarch: arm64, binary: albs, bundle: albs-darwin-arm64.zip, plugin_binary: network-firewall-darwin-arm64 }
+          - { goos: darwin, goarch: amd64, binary: albs, bundle: albs-darwin-amd64.zip, plugin_binary: network-firewall-darwin-amd64 }
+          - { goos: linux, goarch: amd64, binary: albs, bundle: albs-linux-amd64.zip, plugin_binary: network-firewall-linux-amd64 }
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -54,11 +54,16 @@ jobs:
           go-version: '1.21.x'
       - run: yarn install --frozen-lockfile --non-interactive && yarn build
         working-directory: frontend
-      - run: mkdir -p release && CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build -trimpath -ldflags "-s -w -X main.Version=${GITHUB_REF_NAME}" -o "release/${{ matrix.filename }}" .
+      - run: |
+          mkdir -p "bundle/plugins/network-firewall/dist" release
+          CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build -trimpath -ldflags "-s -w -X main.Version=${GITHUB_REF_NAME}" -o "bundle/${{ matrix.binary }}" .
+          CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build -trimpath -ldflags "-s -w" -o "bundle/plugins/network-firewall/dist/${{ matrix.plugin_binary }}" ./plugins/network-firewall/runner
+          cp plugins/network-firewall/albs.setup.json "bundle/plugins/network-firewall/"
+          (cd bundle && zip -r "../release/${{ matrix.bundle }}" .)
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.filename }}
-          path: release/${{ matrix.filename }}
+          name: ${{ matrix.bundle }}
+          path: release/${{ matrix.bundle }}
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')

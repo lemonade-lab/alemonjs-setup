@@ -186,6 +186,12 @@ func (m Manager) Read(root, name string) (Result, error) {
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
+		// These two files are editable project configuration. A new robot
+		// project legitimately may not have created either one yet; present an
+		// empty document so the editor can create it on save.
+		if errors.Is(err, os.ErrNotExist) && (name == "alemon.config.yaml" || name == ".npmrc") {
+			return Result{Path: path, Output: ""}, nil
+		}
 		if permissionError(err) {
 			return m.withPrivileges(privilegedRequest{Operation: "read", Root: root, File: name})
 		}
@@ -301,6 +307,10 @@ func (m Manager) Run(root, action, message, packageName, version, tag, token str
 			return Result{}, err
 		}
 		name, args = "npx", []string{"pm2", "startOrRestart", "pm2.config.cjs"}
+	case "pm2-stop":
+		name, args = "npx", []string{"pm2", "stop", "pm2.config.cjs"}
+	case "pm2-status":
+		name, args = "npx", []string{"pm2", "list"}
 	case "install-package":
 		if !allowedInstallPackage(packageName) {
 			return Result{}, errors.New("不支持的 AlemonJS 包")

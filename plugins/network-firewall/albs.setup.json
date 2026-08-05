@@ -1,0 +1,57 @@
+{
+  "id": "network-firewall",
+  "name": "网络与防火墙",
+  "version": "1.0.0",
+  "description": "检查本机网络、监听端口，并管理防火墙端口规则。",
+  "platforms": ["darwin", "linux", "windows"],
+  "runtime": "binary",
+  "entry": {
+    "darwin-arm64": "dist/network-firewall-darwin-arm64",
+    "darwin-amd64": "dist/network-firewall-darwin-amd64",
+    "linux-amd64": "dist/network-firewall-linux-amd64",
+    "windows-amd64": "dist/network-firewall-windows-amd64.exe"
+  },
+  "development": {
+    "runtime": "go",
+    "entry": {
+      "go": "runner/main.go"
+    }
+  },
+  "navigation": {
+    "label": "网络",
+    "icon": "network",
+    "order": -100
+  },
+  "pages": [
+    { "id": "overview", "label": "概览", "description": "查看网络地址与本机监听端口。" },
+    { "id": "firewall", "label": "防火墙", "description": "查看并管理入站端口规则。" }
+  ],
+  "actions": [
+    { "id": "check", "label": "检查网络", "description": "读取网络地址、默认路由和监听端口。", "page": "overview" },
+    { "id": "firewall-status", "label": "检查防火墙", "description": "读取当前系统的防火墙状态。", "page": "firewall" },
+    {
+      "id": "open-port",
+      "label": "开放端口",
+      "description": "允许指定端口的入站连接。",
+      "page": "firewall",
+      "confirm": true,
+      "fields": [
+        { "key": "port", "label": "端口", "type": "select", "default": "17117", "options": [{ "label": "AlemonJS CBP · 17117", "value": "17117" }, { "label": "SSH · 22", "value": "22" }, { "label": "HTTP · 80", "value": "80" }, { "label": "HTTPS · 443", "value": "443" }, { "label": "自定义端口", "value": "custom" }] },
+        { "key": "customPort", "label": "自定义端口", "type": "number" },
+        { "key": "protocol", "label": "协议", "type": "select", "default": "tcp", "options": [{ "label": "TCP（推荐）", "value": "tcp" }, { "label": "UDP", "value": "udp" }] }
+      ]
+    },
+    {
+      "id": "close-port",
+      "label": "关闭端口",
+      "description": "移除指定端口的入站允许规则。",
+      "page": "firewall",
+      "confirm": true,
+      "fields": [
+        { "key": "port", "label": "端口", "type": "select", "default": "17117", "options": [{ "label": "AlemonJS CBP · 17117", "value": "17117" }, { "label": "SSH · 22", "value": "22" }, { "label": "HTTP · 80", "value": "80" }, { "label": "HTTPS · 443", "value": "443" }, { "label": "自定义端口", "value": "custom" }] },
+        { "key": "customPort", "label": "自定义端口", "type": "number" },
+        { "key": "protocol", "label": "协议", "type": "select", "default": "tcp", "options": [{ "label": "TCP（推荐）", "value": "tcp" }, { "label": "UDP", "value": "udp" }] }
+      ]
+    }
+  ]
+}

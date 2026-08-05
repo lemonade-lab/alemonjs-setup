@@ -14,6 +14,7 @@ import (
 	"alemonjs-setup/internal/project"
 	"alemonjs-setup/internal/releases"
 	"alemonjs-setup/internal/robot"
+	"alemonjs-setup/internal/setupplugin"
 	"alemonjs-setup/internal/system"
 	"alemonjs-setup/internal/web"
 )
@@ -169,6 +170,9 @@ func main() {
 			}
 			serviceAction(system.UninstallService)
 			return
+		case "plugin":
+			pluginCommand(arguments[1:], yes)
+			return
 		case "npm":
 			if len(arguments) != 2 || arguments[1] != "publish" {
 				usage()
@@ -268,6 +272,44 @@ func publish(root, action string, confirmed bool) {
 	}
 }
 
+func pluginCommand(arguments []string, confirmed bool) {
+	registry := setupplugin.NewRegistry()
+	if len(arguments) == 1 && arguments[0] == "list" {
+		items := registry.All()
+		if len(items) == 0 {
+			fmt.Println("暂未发现 Setup 插件。")
+			return
+		}
+		for _, plugin := range items {
+			state := "已启用"
+			if !plugin.Enabled {
+				state = "已卸载"
+			}
+			fmt.Printf("%s\tv%s\t%s\n", plugin.ID, plugin.Version, state)
+		}
+		return
+	}
+	if len(arguments) == 2 && arguments[0] == "enable" {
+		if err := registry.SetEnabled(arguments[1], true); err != nil {
+			log.Fatal(err)
+		}
+		fmt.Printf("已启用 Setup 插件：%s\n", arguments[1])
+		return
+	}
+	if len(arguments) == 2 && arguments[0] == "disable" {
+		if !confirmed {
+			fmt.Printf("请使用 albs plugin disable %s --yes 确认卸载。\n", arguments[1])
+			return
+		}
+		if err := registry.SetEnabled(arguments[1], false); err != nil {
+			log.Fatal(err)
+		}
+		fmt.Printf("已卸载 Setup 插件：%s；可用 albs plugin enable %s 恢复。\n", arguments[1], arguments[1])
+		return
+	}
+	usage()
+}
+
 func serviceAction(action func() (string, error)) {
 	result, err := action()
 	if err != nil {
@@ -326,6 +368,9 @@ func usage() {
   albs status                         查看后台服务状态
   albs start | stop | restart         管理后台服务
   albs uninstall --yes                移除后台服务
+  albs plugin list                     查看已发现的 Setup 插件
+  albs plugin disable <id> --yes       卸载（停用）一个 Setup 插件
+  albs plugin enable <id>              重新启用一个 Setup 插件
   albs [--cwd /项目目录] npm publish  发布到 npm 官方仓库
   albs [--cwd /项目目录] git publish --yes  创建 GitHub Release 标签`)
 }

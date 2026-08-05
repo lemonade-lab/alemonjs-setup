@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { useDispatch, useSelector } from 'react-redux'
+import { Archive, ArrowLeft, ArrowRight, Check, Eye, EyeOff, Folder, Link, Network, Package, Play, Plug, Plus, Search, Send, Settings, X } from 'lucide-react'
 import { RobotConfigForm } from './RobotConfigForm'
 import { NpmrcConfigForm } from './NpmrcConfigForm'
 import { NpmPublishPanel } from './NpmPublishPanel'
 import { PackageManifestPanel } from './PackageManifestPanel'
-import { useCatalogDocumentQuery, useCatalogPackageConfigQuery, useCatalogQuery, useGitStatusQuery, useInitializeGitMutation, useLazyRobotFileQuery, useLazySetupUpdateQuery, useLocalPackagesQuery, useRobotTasksQuery, useStartRobotTaskMutation, useWritePackageConfigMutation, useWriteRobotFileMutation } from '../store/workspaceApi'
+import { SetupUpdateButton } from './SetupUpdateButton'
+import { useCatalogDocumentQuery, useCatalogPackageConfigQuery, useCatalogQuery, useGitStatusQuery, useInitializeGitMutation, useLazyRobotFileQuery, useLocalPackagesQuery, useRobotTasksQuery, useSetSetupPluginEnabledMutation, useSetupPluginsQuery, useStartRobotTaskMutation, useStartSetupPluginTaskMutation, useWritePackageConfigMutation, useWriteRobotFileMutation, type SetupPlugin } from '../store/workspaceApi'
 import { addProjects, removeProject as removeWorkspaceProject, selectProject, setDraft } from '../store/workspaceStore'
 import type { RootState } from '../store/guideStore'
 
@@ -14,11 +16,15 @@ type CatalogGroup = { title: string; items: CatalogItem[] }
 type Page = 'robot' | 'build' | 'plugins' | 'connections'
 type Section = 'backpack' | 'config' | 'npmrc' | 'actions'
 type Project = { id: string; path: string; name: string }
-type SystemFeature = 'plugins'
+type SystemFeature = string
 type Props = { report: { checks: Check[] } | null; checking: boolean; error: string; defaultPage: string; onOpenGuide: () => void; onCheck: () => void; onFix: (check: Check) => void; goals?: unknown; goal?: unknown; onSelect?: (id: string) => void }
 
-const featureCatalog: Array<{ id: SystemFeature; label: string; icon: string; status?: string }> = [{ id: 'plugins', label: '插件', icon: '▦', status: '即将支持' }]
-const directoryActions: Array<{ id: Section | Page; label: string; icon: string; kind: 'section' | 'page' }> = [{ id: 'config', label: '配置', icon: '⚙', kind: 'section' }, { id: 'actions', label: '运行', icon: '▶', kind: 'section' }, { id: 'connections', label: '连接', icon: '⌁', kind: 'page' }, { id: 'backpack', label: '背包', icon: '▣', kind: 'section' }, { id: 'plugins', label: '插件', icon: '▦', kind: 'page' }, { id: 'build', label: '发布', icon: '⌗', kind: 'page' }]
+const coreFeatureCatalog: Array<{ id: SystemFeature; label: string; icon: ReactNode; status?: string }> = [{ id: 'plugins', label: '插件', icon: <Plug /> }]
+const directoryActions: Array<{ id: Section | Page; label: string; icon: ReactNode; kind: 'section' | 'page' }> = [{ id: 'config', label: '配置', icon: <Settings />, kind: 'section' }, { id: 'actions', label: '运行', icon: <Play />, kind: 'section' }, { id: 'connections', label: '连接', icon: <Link />, kind: 'page' }, { id: 'backpack', label: '背包', icon: <Archive />, kind: 'section' }, { id: 'plugins', label: '插件', icon: <Package />, kind: 'page' }, { id: 'build', label: '发布', icon: <Send />, kind: 'page' }]
+
+function setupPluginIcon(icon?: string) {
+  return icon === 'network' ? <Network /> : <Plug />
+}
 
 function projectName(path: string) { return path.replace(/\/$/, '').split('/').pop() || path }
 
@@ -42,6 +48,54 @@ function operationErrorMessage(reason: unknown, fallback: string) {
   return fallback
 }
 
+export function DirectoryPicker({ open, multiple = true, onClose, onSelect }: { open: boolean; multiple?: boolean; onClose: () => void; onSelect: (paths: string[]) => void }) {
+  type Directory = { name: string; path: string }
+  type DirectoryData = { path: string; parent: string; roots: string[]; directories: Directory[] }
+  const [path, setPath] = useState('')
+  const [query, setQuery] = useState('')
+  const [hidden, setHidden] = useState(false)
+  const [data, setData] = useState<DirectoryData | null>(null)
+  const [selected, setSelected] = useState<string[]>([])
+  const [history, setHistory] = useState<string[]>([])
+  const [historyIndex, setHistoryIndex] = useState(-1)
+
+  const visit = (nextPath: string) => {
+    if (!nextPath || nextPath === path) return
+    setPath(nextPath)
+    setSelected([])
+    setHistory((entries) => {
+      const next = [...entries.slice(0, historyIndex + 1), nextPath]
+      setHistoryIndex(next.length - 1)
+      return next
+    })
+  }
+  useEffect(() => {
+    if (!open) return
+    const controller = new AbortController()
+    const parameters = new URLSearchParams(path ? { path, hidden: String(hidden) } : { hidden: String(hidden) })
+    void fetch(`/api/v1/directories?${parameters}`, { signal: controller.signal })
+      .then(async (response) => {
+        const body = await response.text()
+        if (!response.ok) throw new Error(body || '目录无法读取。')
+        return JSON.parse(body) as DirectoryData
+      })
+      .then((result) => {
+        setData(result)
+        if (!path) { setPath(result.path); setHistory([result.path]); setHistoryIndex(0) }
+      })
+      .catch((reason: unknown) => { if (!(reason instanceof DOMException && reason.name === 'AbortError')) setData(null) })
+    return () => controller.abort()
+  }, [hidden, open, path])
+  if (!open) return null
+  const items = (data?.directories ?? []).filter((item) => item.name.toLowerCase().includes(query.toLowerCase()))
+  const toggleSelection = (itemPath: string) => setSelected((current) => multiple ? (current.includes(itemPath) ? current.filter((entry) => entry !== itemPath) : [...current, itemPath]) : [itemPath])
+  const home = data?.roots[0] ?? ''
+  const favorites = [{ name: '主目录', path: home }, ...['Desktop', 'Documents', 'Downloads', 'Pictures'].map((name) => ({ name, path: `${home}/${name}` }))]
+  const otherRoots = (data?.roots ?? []).filter((root) => root !== home)
+  const goHistory = (step: number) => { const target = history[historyIndex + step]; if (target) { setHistoryIndex(historyIndex + step); setPath(target); setSelected([]) } }
+  return <div className="directory-picker-backdrop"><section className="directory-picker finder-picker" role="dialog" aria-label="选择目录"><header className="finder-toolbar"><div className="finder-tools"><nav className="finder-navigation" aria-label="目录导航"><button className="icon-button" disabled={historyIndex <= 0 && !data?.parent} onClick={() => historyIndex > 0 ? goHistory(-1) : visit(data?.parent ?? '')} title="后退"><ArrowLeft /></button><button className="icon-button" disabled={historyIndex >= history.length - 1} onClick={() => goHistory(1)} title="前进"><ArrowRight /></button><button className="icon-button" onClick={() => setHidden((value) => !value)} title={hidden ? '隐藏隐藏目录' : '显示隐藏目录'}>{hidden ? <EyeOff /> : <Eye />}</button></nav><small>单击选择，双击打开</small></div><strong>{data?.path?.split('/').filter(Boolean).pop() || '选择目录'}</strong><label className="finder-search"><Search /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索当前目录" /></label></header><section className="finder-body"><aside className="finder-sidebar"><small>常用</small>{favorites.map((item) => <button className={item.path === data?.path ? 'active' : ''} key={item.path} onClick={() => visit(item.path)}><Folder />{item.name}</button>)}{otherRoots.length > 0 && <><small>位置</small>{otherRoots.map((root) => <button className={root === data?.path ? 'active' : ''} key={root} onClick={() => visit(root)}><Folder />{root.split('/').filter(Boolean).pop() || root}</button>)}</>}</aside><main className="finder-content"><header><span>名称</span><span>种类</span></header><div className="directory-picker-list">{items.map((item) => <button className={selected.includes(item.path) ? 'selected' : ''} key={item.path} onClick={() => toggleSelection(item.path)} onDoubleClick={() => visit(item.path)}><Folder /><span>{item.name}</span><small>文件夹</small></button>)}</div></main></section><footer><span title={data?.path ?? ''}>{data?.path ?? '正在读取目录…'}</span><div><button className="secondary-button" onClick={onClose}>取消</button><button className="primary-button" disabled={!selected.length} onClick={() => onSelect(selected)}>{multiple ? '添加' : '选择'}</button></div></footer></section></div>
+}
+
 export function Dashboard({ report, checking, error, defaultPage, onOpenGuide, onCheck, onFix }: Props) {
   const [page, setPage] = useState<Page>('robot')
   const [systemFeature, setSystemFeature] = useState<SystemFeature | null>(null)
@@ -57,6 +111,7 @@ export function Dashboard({ report, checking, error, defaultPage, onOpenGuide, o
   const [releaseVersion, setReleaseVersion] = useState('')
   const [gitConfirm, setGitConfirm] = useState(false)
   const [environmentOpen, setEnvironmentOpen] = useState(false)
+  const [directoryPickerOpen, setDirectoryPickerOpen] = useState(false)
   const environmentChecked = useRef(false)
   const dispatch = useDispatch()
   const projects = useSelector((state: RootState) => state.workspace.projects) as Project[]
@@ -75,6 +130,7 @@ export function Dashboard({ report, checking, error, defaultPage, onOpenGuide, o
   const [writeRobotFile] = useWriteRobotFileMutation()
   const [writePackageConfig] = useWritePackageConfigMutation()
   const [initializeGit] = useInitializeGitMutation()
+  const { data: setupPlugins = [] } = useSetupPluginsQuery()
   const catalogError = catalogQueryError ? '在线目录暂时无法读取。' : ''
 
   useEffect(() => { if (defaultPage === 'robot') setPage('robot') }, [defaultPage])
@@ -131,11 +187,12 @@ export function Dashboard({ report, checking, error, defaultPage, onOpenGuide, o
   }
 
   async function chooseDirectories() {
-    const response = await fetch('/api/v1/directories/select', { method: 'POST' })
-    const data = await response.json() as { paths?: string[]; path?: string }
-    const paths = data.paths ?? (data.path ? [data.path] : [])
-    if (!response.ok || !paths.length) return
+    setDirectoryPickerOpen(true)
+  }
+  function addSelectedDirectories(paths: string[]) {
+    if (!paths.length) return
     dispatch(addProjects(paths.map((path) => ({ id: path, path, name: projectName(path) }))))
+    setDirectoryPickerOpen(false)
     setPage('robot'); setSection('config'); setOutput('')
   }
 
@@ -162,24 +219,100 @@ export function Dashboard({ report, checking, error, defaultPage, onOpenGuide, o
   </section>
 
   const catalogContent = <section className="workspace-content">{catalogLoading && <p className="catalog-state">正在读取目录…</p>}{catalogError && <p className="catalog-state">{catalogError}</p>}{!catalogLoading && !catalogError && currentCatalog && (catalogItem ? <CatalogDetail item={catalogItem} group={currentCatalog.title} busy={busy} onBack={() => setCatalogItem(null)} onRun={(action, packageName) => api('POST', { root, action, package: packageName })} onSaveConfig={savePackageConfig} /> : <section className="catalog-items">{currentCatalog.items.map((item) => <button className="catalog-item" key={`${currentCatalog.title}-${item.name}`} onClick={() => setCatalogItem(item)}><strong>{item.name}</strong><span>›</span></button>)}</section>)}</section>
-  const workspace = systemFeature === 'plugins' ? <SystemPluginCenter /> : activeProject ? <>{page === 'robot' && robotContent}{page === 'build' && <section className="workspace-content build-page">{buildMode === 'manifest' ? <PackageManifestPanel root={root} busy={busy} onSaved={setOutput} /> : buildMode === 'npm' ? <NpmPublishPanel root={root} busy={busy} onRun={(action, values) => api('POST', { root, action, ...values })} /> : <GitReleasePanel root={root} busy={busy} version={releaseVersion} confirmed={gitConfirm} onVersionChange={(value) => { setReleaseVersion(value); setGitConfirm(false) }} onConfirm={() => setGitConfirm((value) => !value)} onInitialize={initializeProjectGit} onRun={() => api('POST', { root, action: 'git-release', version: releaseVersion, confirm: 'true' })} />}{output && <OperationLog output={output} onClose={() => setOutput('')} />}</section>}{(page === 'plugins' || page === 'connections') && catalogContent}{page !== 'build' && output && <OperationLog output={output} onClose={() => setOutput('')} />}</> : <EmptyWorkspace onAdd={chooseDirectories} />
+  const setupPlugin = setupPlugins.find((item) => systemFeature === `setup:${item.id}`)
+  const workspace = systemFeature === 'plugins' ? <SystemPluginCenter plugins={setupPlugins} onOpen={(id) => selectSystemFeature(`setup:${id}`)} /> : setupPlugin ? <SetupPluginCenter plugin={setupPlugin} /> : activeProject ? <>{page === 'robot' && robotContent}{page === 'build' && <section className="workspace-content build-page">{buildMode === 'manifest' ? <PackageManifestPanel root={root} busy={busy} onSaved={setOutput} /> : buildMode === 'npm' ? <NpmPublishPanel root={root} busy={busy} onRun={(action, values) => api('POST', { root, action, ...values })} /> : <GitReleasePanel root={root} busy={busy} version={releaseVersion} confirmed={gitConfirm} onVersionChange={(value) => { setReleaseVersion(value); setGitConfirm(false) }} onConfirm={() => setGitConfirm((value) => !value)} onInitialize={initializeProjectGit} onRun={() => api('POST', { root, action: 'git-release', version: releaseVersion, confirm: 'true' })} />}{output && <OperationLog output={output} onClose={() => setOutput('')} />}</section>}{(page === 'plugins' || page === 'connections') && catalogContent}{page !== 'build' && output && <OperationLog output={output} onClose={() => setOutput('')} />}</> : <EmptyWorkspace onAdd={chooseDirectories} />
 
   const environmentReady = report ? `${readyCount}/${report.checks.length}` : '—'
   const environmentWarning = Boolean(report?.checks.some((item) => item.status !== 'ready'))
 
-  return <main className="guide-shell"><section className="guide-window dashboard-window"><header className="guide-bar dashboard-toolbar"><div className="workspace-title"><a className="workspace-name" href="https://alemonjs.com/" target="_blank" rel="noreferrer">ALEMONJS</a><SetupUpdateButton /></div><div className="header-global-actions"><McpControl /><OperationTasksButton /><button className={`environment-control ${environmentWarning ? 'warning' : ''}`} onClick={() => { setEnvironmentOpen(true); onCheck() }} disabled={checking} title="查看并检查全局环境"><i>{checking ? '◌' : environmentWarning ? '!' : '✓'}</i><span>环境</span><strong>{checking ? '检查中' : environmentReady}</strong></button><button className="guide-trigger" onClick={onOpenGuide} aria-label="打开引导" title="打开引导">?</button></div></header><EnvironmentPanel open={environmentOpen} report={report} checking={checking} onClose={() => setEnvironmentOpen(false)} onRefresh={onCheck} onFix={onFix} /><section className="console-layout">
-    <ProjectRail feature={systemFeature} projects={projects} activeID={activeProjectID} onFeature={selectSystemFeature} onAdd={chooseDirectories} onSelect={(id) => { dispatch(selectProject(id)); setSystemFeature(null); setPage('robot'); setSection('config'); setOutput('') }} onRemove={removeProject} />
-    <section className="console-page">{workspace}{error && <p className="error">{error}</p>}{!systemFeature && <ControlCard page={page} section={section} runMode={runMode} project={activeProject} buildMode={buildMode} catalog={catalog} catalogTitle={catalogTitle} onPage={selectPage} onSection={openSection} onRunMode={(mode) => { setRunMode(mode); openSection('actions') }} onBuildMode={(mode) => { setBuildMode(mode); setGitConfirm(false); setOutput('') }} onCatalog={(title) => { setCatalogTitle(title); setCatalogItem(null) }} />}</section>
+  return <main className="guide-shell"><section className="guide-window dashboard-window"><header className="guide-bar dashboard-toolbar"><div className="workspace-title"><a className="workspace-name" href="https://alemonjs.com/" target="_blank" rel="noreferrer">ALEMONJS</a><SetupUpdateButton /></div><div className="header-global-actions"><McpControl /><OperationTasksButton /><button className={`environment-control ${environmentWarning ? 'warning' : ''}`} onClick={() => { setEnvironmentOpen(true); onCheck() }} disabled={checking} title="查看并检查全局环境"><i>{checking ? '◌' : environmentWarning ? '!' : '✓'}</i><span>环境</span><strong>{checking ? '检查中' : environmentReady}</strong></button><button className="guide-trigger" onClick={onOpenGuide} aria-label="打开引导" title="打开引导">?</button></div></header><EnvironmentPanel open={environmentOpen} report={report} checking={checking} onClose={() => setEnvironmentOpen(false)} onRefresh={onCheck} onFix={onFix} /><DirectoryPicker open={directoryPickerOpen} onClose={() => setDirectoryPickerOpen(false)} onSelect={addSelectedDirectories} /><section className="console-layout">
+    <ProjectRail feature={systemFeature} setupPlugins={setupPlugins} projects={projects} activeID={activeProjectID} onFeature={selectSystemFeature} onAdd={chooseDirectories} onSelect={(id) => { dispatch(selectProject(id)); setSystemFeature(null); setPage('robot'); setSection('config'); setOutput('') }} onRemove={removeProject} />
+    <section className="console-page">{workspace}{error && <p className="error">{error}</p>}{!systemFeature && activeProject && <ControlCard page={page} section={section} runMode={runMode} project={activeProject} buildMode={buildMode} catalog={catalog} catalogTitle={catalogTitle} onPage={selectPage} onSection={openSection} onRunMode={(mode) => { setRunMode(mode); openSection('actions') }} onBuildMode={(mode) => { setBuildMode(mode); setGitConfirm(false); setOutput('') }} onCatalog={(title) => { setCatalogTitle(title); setCatalogItem(null) }} />}</section>
   </section></section></main>
 }
 
-function ProjectRail({ feature, projects, activeID, onFeature, onAdd, onSelect, onRemove }: { feature: SystemFeature | null; projects: Project[]; activeID: string; onFeature: (feature: SystemFeature) => void; onAdd: () => void; onSelect: (id: string) => void; onRemove: (id: string) => void }) { return <aside className="project-rail"><section className="feature-catalog" aria-label="系统功能目录"><header><span>功能目录</span><small>系统</small></header><nav>{featureCatalog.map((item) => <button className={feature === item.id ? 'active' : ''} key={item.id} onClick={() => onFeature(item.id)}><i>{item.icon}</i><span>{item.label}</span>{item.status && <small>{item.status}</small>}</button>)}</nav></section><section className="project-directory"><header><div><strong>机器人目录</strong><span>{projects.length}</span></div><button onClick={onAdd} aria-label="添加机器人目录" title="添加机器人目录">＋</button></header><div className="project-list">{projects.map((project) => <article className={project.id === activeID ? 'active' : ''} key={project.id}><button className="project-select" onClick={() => onSelect(project.id)}><strong>{project.name}</strong><small title={project.path}>{project.path}</small></button><button className="project-remove" onClick={() => onRemove(project.id)} aria-label={`移除 ${project.name}`} title="移除目录">×</button></article>)}{!projects.length && <p>添加目录开始管理</p>}</div></section></aside> }
-function SetupUpdateButton() { const [check, { data, isFetching, error }] = useLazySetupUpdateQuery(); const [open, setOpen] = useState(false); return <div className="setup-update"><button className="setup-update-button" onClick={() => { setOpen(true); void check() }} disabled={isFetching}>{isFetching ? '检查中…' : '更新'}</button>{open && <section className="setup-update-popover"><header><strong>应用更新</strong><button onClick={() => setOpen(false)} aria-label="关闭更新提示">×</button></header>{isFetching ? <p>正在比对 GitHub 正式版本…</p> : error ? <p>暂时无法检查更新，请稍后重试。</p> : data?.available ? <><p>发现新版本 <b>{data.latest}</b><small>当前 {data.current}</small></p>{data.platformMatched && data.downloadUrl ? <a className="primary-button" href={data.downloadUrl} target="_blank" rel="noreferrer">下载 {data.assetName}</a> : <a className="secondary-button" href={data.releaseUrl} target="_blank" rel="noreferrer">查看安装包</a>}</> : data ? <p>已是最新版本 <b>{data.current}</b></p> : null}</section>}</div> }
-function McpControl() { const [open, setOpen] = useState(false); const [copied, setCopied] = useState(false); const config = '{\n  "mcpServers": {\n    "alemonjs-setup": {\n      "command": "albs",\n      "args": ["mcp"]\n    }\n  }\n}'; const copyConfig = async () => { try { await navigator.clipboard.writeText(config); setCopied(true); window.setTimeout(() => setCopied(false), 1800) } catch { setCopied(false) } }; return <div className="mcp-control"><button className="mcp-control-button" onClick={() => setOpen((value) => !value)} aria-expanded={open} title="MCP 本机 AI 对接"><i>✓</i><span>MCP</span><strong>已开启</strong></button>{open && <section className="mcp-popover" role="dialog" aria-label="MCP 本机 AI 对接"><header><div><strong>MCP 本机对接</strong><small>已开启</small></div><button onClick={() => setOpen(false)} aria-label="关闭 MCP 说明">×</button></header><p>MCP 让豆包等 AI 助手在你明确授权后检查、读写本机 AlemonJS 项目源码，并管理依赖与本地插件。</p><p>这是本机 stdio 服务，不开放网络端口；AI 客户端会按下面配置启动 <code>albs mcp</code>。</p><pre>{config}</pre><button className="mcp-copy-button" onClick={() => void copyConfig()}>{copied ? '已复制配置' : '复制 MCP 配置'}</button><small className="mcp-note">涉及安装、构建、写入或执行脚本时，助手仍必须取得你的本次确认；密钥、.env、.npmrc、Git 元数据与依赖目录不开放。</small></section>}</div> }
-function OperationTasksButton() { const [open, setOpen] = useState(false); const { data = [], isFetching } = useRobotTasksQuery(undefined, { skip: !open, pollingInterval: open ? 1500 : 0 }); const [selected, setSelected] = useState<string>(''); const current = data.find((item) => item.id === selected) ?? data[0]; const running = data.filter((item) => item.status === 'running').length; const labels: Record<string, string> = { install: '安装依赖', 'dependency-status': '检查依赖', dev: '开发启动', pm2: '后台启动', 'install-package': '安装插件', 'uninstall-package': '卸载插件', 'git-release': 'Git 打包', 'npm-publish': 'NPM 发布' }; return <div className="operation-tasks"><button className="operation-tasks-button" onClick={() => setOpen((value) => !value)} title="操作记录">▤{running > 0 && <b>{running}</b>}</button>{open && <section className="operation-tasks-popover"><header><strong>操作记录</strong><button onClick={() => setOpen(false)} aria-label="关闭操作记录">×</button></header>{isFetching && !data.length ? <p>正在读取任务…</p> : !data.length ? <p>暂无操作记录。</p> : <><div className="task-list">{data.slice(0, 8).map((item) => <button key={item.id} className={current?.id === item.id ? 'active' : ''} onClick={() => setSelected(item.id)}><i className={item.status}>{item.status === 'running' ? '◌' : item.status === 'completed' ? '✓' : '!'}</i><span>{labels[item.action] ?? item.action}</span></button>)}</div>{current && <pre className={current.status}>{current.status === 'failed' ? current.error : current.output || '正在执行…'}</pre>}</>}</section>}</div> }
+function ProjectRail({ feature, setupPlugins, projects, activeID, onFeature, onAdd, onSelect, onRemove }: { feature: SystemFeature | null; setupPlugins: SetupPlugin[]; projects: Project[]; activeID: string; onFeature: (feature: SystemFeature) => void; onAdd: () => void; onSelect: (id: string) => void; onRemove: (id: string) => void }) {
+  const activePlugins = setupPlugins.filter((item) => item.enabled)
+  return <aside className="project-rail"><section className="feature-catalog" aria-label="系统功能目录"><header><span>功能目录</span><small>系统</small></header><nav>{coreFeatureCatalog.map((item) => <button className={feature === item.id ? 'active' : ''} key={item.id} onClick={() => onFeature(item.id)}><i>{item.icon}</i><span>{item.label}</span>{item.status && <small>{item.status}</small>}</button>)}</nav>{activePlugins.length > 0 && <><span className="setup-plugin-divider" /><p className="setup-plugin-heading">已安装能力</p><nav>{activePlugins.map((item) => <button className={feature === `setup:${item.id}` ? 'active' : ''} key={item.id} onClick={() => onFeature(`setup:${item.id}`)}><i>{setupPluginIcon(item.navigation.icon)}</i><span>{item.navigation.label || item.name}</span><small>已加载</small></button>)}</nav></>}</section><section className="project-directory"><header><div><strong>机器人目录</strong><span>{projects.length}</span></div><button onClick={onAdd} aria-label="添加机器人目录" title="添加机器人目录"><Plus /></button></header><div className="project-list">{projects.map((project) => <article className={project.id === activeID ? 'active' : ''} key={project.id}><button className="project-select" onClick={() => onSelect(project.id)}><strong>{project.name}</strong><small title={project.path}>{project.path}</small></button><button className="project-remove" onClick={() => onRemove(project.id)} aria-label={`移除 ${project.name}`} title="移除目录"><X /></button></article>)}{!projects.length && <p>添加目录开始管理</p>}</div></section></aside>
+}
+function McpControl() {
+  const [open, setOpen] = useState(false)
+  const [transport, setTransport] = useState<'stdio' | 'http'>('stdio')
+  const [copied, setCopied] = useState(false)
+  const stdioConfig = '{\n  "mcpServers": {\n    "alemonjs-setup": {\n      "command": "albs",\n      "args": ["mcp"]\n    }\n  }\n}'
+  const httpCommand = "MCP_TOKEN='请生成高强度随机值' albs --mcp-port 17391 mcp-http"
+  const copy = async (value: string) => { try { await navigator.clipboard.writeText(value); setCopied(true); window.setTimeout(() => setCopied(false), 1800) } catch { setCopied(false) } }
+  const http = transport === 'http'
+  return <div className="mcp-control"><button className="mcp-control-button" onClick={() => setOpen((value) => !value)} aria-expanded={open} title="连接 Codex 或其他本机 AI 客户端"><i>✓</i><span>MCP</span><strong>已开启</strong></button>{open && <section className="mcp-popover" role="dialog" aria-label="连接 MCP"><header><div><strong>连接 Codex / 自定义 MCP</strong><small>两种标准传输均可用</small></div><button onClick={() => setOpen(false)} aria-label="关闭 MCP 说明">×</button></header><p>MCP 让 AI 在你的确认下管理 AlemonJS：读取与修改项目、更新运行配置、启动机器人、构建、打包与发布。它不是网页远程控制；客户端只会连接本机服务。</p><div className="mcp-transport-tabs" role="tablist" aria-label="MCP 接入类型"><button className={!http ? 'active' : ''} role="tab" aria-selected={!http} onClick={() => setTransport('stdio')}>STDIO <small>推荐</small></button><button className={http ? 'active' : ''} role="tab" aria-selected={http} onClick={() => setTransport('http')}>流式 HTTP <small>本机</small></button></div>{http ? <><p>先在终端启动受 Token 保护的服务；随后在 Codex 的“连接至自定义 MCP”中选择<strong> 流式 HTTP</strong>，填写地址与 Bearer Token。</p><dl className="mcp-form-guide"><div><dt>名称</dt><dd>alemonjs-setup</dd></div><div><dt>类型</dt><dd>流式 HTTP</dd></div><div><dt>地址</dt><dd><code>http://127.0.0.1:17391/mcp</code></dd></div><div><dt>认证</dt><dd>Bearer Token：<code>&lt;MCP_TOKEN&gt;</code></dd></div><div><dt>启动命令</dt><dd><code>{httpCommand}</code></dd></div></dl><button className="mcp-copy-button" onClick={() => void copy(httpCommand)}>{copied ? '已复制启动命令' : '复制启动命令'}</button><small className="mcp-note">服务仅绑定 127.0.0.1；不要把地址、Token 或端口转发到局域网和公网。流式 HTTP 兼容 MCP 的 POST 请求，服务不提供独立 SSE 推送流。</small></> : <><p>在 Codex 的“连接至自定义 MCP”中选择<strong> STDIO</strong>，把下列字段逐行填入。Codex 会直接启动本机 <code>albs</code>，无需额外开启端口。</p><dl className="mcp-form-guide"><div><dt>名称</dt><dd>alemonjs-setup</dd></div><div><dt>类型</dt><dd>STDIO</dd></div><div><dt>启动命令</dt><dd><code>albs</code></dd></div><div><dt>参数</dt><dd><code>mcp</code></dd></div><div><dt>环境变量（可选）</dt><dd><code>MCP_ALLOWED_ROOTS=/你的/机器人目录</code></dd></div></dl><button className="mcp-copy-button" onClick={() => void copy(stdioConfig)}>{copied ? '已复制 JSON 配置' : '复制 JSON 配置'}</button><small className="mcp-note">涉及安装、构建、写入或执行脚本时，助手仍必须取得你的本次确认；密钥、.env、.npmrc、Git 元数据与依赖目录不开放。</small></>}</section>}</div>
+}
+function OperationTasksButton() { const [open, setOpen] = useState(false); const { data, isFetching } = useRobotTasksQuery(undefined, { skip: !open, pollingInterval: open ? 1500 : 0 }); const tasks = Array.isArray(data) ? data : []; const [selected, setSelected] = useState<string>(''); const current = tasks.find((item) => item.id === selected) ?? tasks[0]; const running = tasks.filter((item) => item.status === 'running').length; const labels: Record<string, string> = { install: '安装依赖', 'dependency-status': '检查依赖', dev: '开发启动', pm2: '后台启动', 'install-package': '安装插件', 'uninstall-package': '卸载插件', 'git-release': 'Git 打包', 'npm-publish': 'NPM 发布' }; return <div className="operation-tasks"><button className="operation-tasks-button" onClick={() => setOpen((value) => !value)} title="操作记录">▤{running > 0 && <b>{running}</b>}</button>{open && <section className="operation-tasks-popover"><header><strong>操作记录</strong><button onClick={() => setOpen(false)} aria-label="关闭操作记录">×</button></header>{isFetching && !tasks.length ? <p>正在读取任务…</p> : !tasks.length ? <p>暂无操作记录。</p> : <><div className="task-list">{tasks.slice(0, 8).map((item) => <button key={item.id} className={current?.id === item.id ? 'active' : ''} onClick={() => setSelected(item.id)}><i className={item.status}>{item.status === 'running' ? '◌' : item.status === 'completed' ? '✓' : '!'}</i><span>{labels[item.action] ?? item.action}</span></button>)}</div>{current && <pre className={current.status}>{current.status === 'failed' ? current.error : current.output || '正在执行…'}</pre>}</>}</section>}</div> }
 function EnvironmentPanel({ open, report, checking, onClose, onRefresh, onFix }: { open: boolean; report: { checks: Check[] } | null; checking: boolean; onClose: () => void; onRefresh: () => void; onFix: (check: Check) => void }) { if (!open) return null; const checks = report?.checks ?? []; const readyCount = checks.filter((check) => check.status === 'ready').length; return <aside className="environment-panel" role="dialog" aria-label="全局环境详情"><header><strong>{checking ? '正在检查环境…' : checks.length ? `${readyCount}/${checks.length} 已就绪` : '等待检查'}</strong><button onClick={onClose} aria-label="关闭环境详情">×</button></header>{checking && <p className="environment-panel-state">正在读取 Node.js、Git 和系统工具状态。</p>}{!checking && checks.length > 0 && <div className="environment-check-list">{checks.map((check) => <article className={check.status} key={check.id}><i>{check.status === 'ready' ? '✓' : '!'}</i><div><strong>{check.name}</strong><span>{check.detail}</span>{check.status !== 'ready' && check.suggestion && <small>{check.suggestion}</small>}</div>{check.status !== 'ready' && <button className="text-button" onClick={() => onFix(check)}>修复</button>}</article>)}</div>}{!checking && !checks.length && <p className="environment-panel-state">尚未获取检查结果。</p>}<footer><button className="secondary-button" disabled={checking} onClick={onRefresh}>重新检查</button></footer></aside> }
 function EmptyWorkspace({ onAdd }: { onAdd: () => void }) { return <section className="workspace-content empty-workspace"><span>◈</span><strong>从左侧添加机器人目录</strong><button className="primary-button" onClick={onAdd}>添加目录</button></section> }
-function SystemPluginCenter() { return <section className="workspace-content system-feature-placeholder"><span>▦</span><p>系统功能</p><h1>系统插件</h1><strong>即将支持</strong></section> }
+function SystemPluginCenter({ plugins, onOpen }: { plugins: SetupPlugin[]; onOpen: (id: string) => void }) {
+  const [setEnabled, { isLoading }] = useSetSetupPluginEnabledMutation()
+  const [message, setMessage] = useState('')
+  const toggle = async (plugin: SetupPlugin) => {
+    try {
+      await setEnabled({ pluginID: plugin.id, enabled: !plugin.enabled }).unwrap()
+      setMessage(plugin.enabled ? `已卸载“${plugin.name}”。` : `已启用“${plugin.name}”。`)
+    } catch (reason) {
+      setMessage(operationErrorMessage(reason, '插件状态未更新。'))
+    }
+  }
+  return <section className="workspace-content setup-plugin-manager"><header><h1>插件 <small>{plugins.filter((item) => item.enabled).length}</small></h1><span>丢入插件目录后自动加载</span></header>{plugins.length ? <section className="setup-plugin-cards">{plugins.map((plugin) => <article className={plugin.enabled ? '' : 'disabled'} key={plugin.id}><button onClick={() => plugin.enabled && onOpen(plugin.id)} disabled={!plugin.enabled}><i>{setupPluginIcon(plugin.navigation.icon)}</i><div><strong>{plugin.name}</strong><small>v{plugin.version} · {plugin.enabled ? '已启用' : '已卸载'}</small></div><b>{plugin.enabled ? '›' : '—'}</b></button><button className="setup-plugin-toggle" disabled={isLoading} onClick={() => void toggle(plugin)}>{plugin.enabled ? '卸载' : '启用'}</button></article>)}</section> : <section className="setup-plugin-empty"><strong>暂未发现插件</strong><span>将插件目录放入 plugins 后刷新即可。</span></section>}{message && <p className="setup-plugin-message">{message}</p>}</section>
+}
+function SetupPluginCenter({ plugin }: { plugin: SetupPlugin }) {
+  type SetupAction = NonNullable<SetupPlugin['actions']>[number]
+  const [page, setPage] = useState(plugin.pages[0]?.id ?? 'overview')
+  const [activeAction, setActiveAction] = useState('')
+  const [message, setMessage] = useState('')
+  const [values, setValues] = useState<Record<string, string>>({})
+  const [startTask, { isLoading }] = useStartSetupPluginTaskMutation()
+  const current = plugin.pages.find((item) => item.id === page) ?? plugin.pages[0]
+  const visibleActions = (plugin.actions ?? []).filter((action) => !action.page || action.page === current?.id)
+
+  useEffect(() => {
+    setPage(plugin.pages[0]?.id ?? 'overview')
+    setActiveAction('')
+    setMessage('')
+    setValues(Object.fromEntries((plugin.actions ?? []).flatMap((action) => (action.fields ?? []).map((field) => [`${action.id}:${field.key}`, field.default ?? '']))))
+  }, [plugin.actions, plugin.id, plugin.pages])
+
+  const paramsFor = (action: SetupAction) => Object.fromEntries((action.fields ?? []).map((field) => [field.key, values[`${action.id}:${field.key}`] ?? field.default ?? '']))
+  const run = async (action: SetupAction) => {
+    try {
+      const task = await startTask({ pluginID: plugin.id, action: action.id, confirm: action.confirm ?? false, params: paramsFor(action) }).unwrap()
+      setActiveAction('')
+      setMessage(`已开始“${action.label}”，可在右上角操作记录查看进度。`)
+      void task
+    } catch (reason) {
+      setMessage(operationErrorMessage(reason, '插件操作未开始。'))
+    }
+  }
+
+  return <section className="workspace-content setup-plugin-page">
+    <header><div><h1>{plugin.name}</h1></div><small>v{plugin.version}</small></header>
+    <div className="setup-plugin-layout">
+      <nav aria-label={`${plugin.name} 功能页`}>{plugin.pages.map((item) => <button className={page === item.id ? 'active' : ''} key={item.id} onClick={() => { setPage(item.id); setActiveAction('') }}>{item.label}<b>›</b></button>)}</nav>
+      <section className="setup-plugin-workspace">
+        <header className="setup-plugin-context"><h2>{current?.label}</h2>{current?.description && <span>{current.description}</span>}</header>
+        {!plugin.runnable && <p className="setup-plugin-unavailable">当前系统缺少此插件的执行器。</p>}
+        {visibleActions.length > 0 && <div className="setup-plugin-actions">
+          {visibleActions.map((action) => <section className={activeAction === action.id ? 'setup-plugin-action active' : 'setup-plugin-action'} key={action.id}>
+            <button className="setup-plugin-action-choice" disabled={!plugin.runnable} onClick={() => setActiveAction(activeAction === action.id ? '' : action.id)}>
+              <span><strong>{action.label}</strong>{action.description && <small>{action.description}</small>}</span><b>{activeAction === action.id ? '−' : '+'}</b>
+            </button>
+            {activeAction === action.id && <div className="setup-plugin-action-editor">
+              {action.fields?.length ? <div className="setup-plugin-fields">{action.fields.map((field) => <label key={field.key}>{field.label}{field.type === 'select' ? <select value={values[`${action.id}:${field.key}`] ?? field.default ?? ''} onChange={(event) => setValues({ ...values, [`${action.id}:${field.key}`]: event.target.value })}>{(field.options ?? []).map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select> : <input type={field.type} value={values[`${action.id}:${field.key}`] ?? ''} onChange={(event) => setValues({ ...values, [`${action.id}:${field.key}`]: event.target.value })} placeholder={field.label} />}</label>)}</div> : null}
+              <footer>{action.confirm && <small>此操作会修改本机系统设置。</small>}<button className="secondary-button" onClick={() => setActiveAction('')}>取消</button><button className="primary-button" disabled={isLoading} onClick={() => void run(action)}>{isLoading ? '启动中…' : action.confirm ? '确认执行' : '执行'}</button></footer>
+            </div>}
+          </section>)}
+        </div>}
+        {message && <p className="setup-plugin-message">{message}</p>}
+      </section>
+    </div>
+  </section>
+}
 function BackpackPanel({ root, items, loading, failed, onRefresh, onOpenPlugins }: { root: string; items: Array<{ name: string; version?: string; description?: string; path: string; valid: boolean }>; loading: boolean; failed: boolean; onRefresh: () => void; onOpenPlugins: () => void }) { return <section className="backpack-panel"><header><div><p>本地插件包</p><h1>背包</h1><small title={`${root}/packages`}>packages</small></div><button className="secondary-button" disabled={loading} onClick={onRefresh}>{loading ? '读取中…' : '刷新'}</button></header>{loading ? <p className="catalog-state">正在读取本地插件包…</p> : items.length ? <div className="backpack-items">{items.map((item) => <article className={item.valid ? '' : 'invalid'} key={item.path}><i>{item.valid ? '▣' : '!'}</i><div><strong>{item.name}{item.version && <em>v{item.version}</em>}</strong><span>{item.valid ? item.description || '本地 AlemonJS 插件包' : '缺少有效 package.json，暂不能作为插件运行。'}</span><small title={item.path}>{item.path}</small></div></article>)}</div> : <section className="backpack-empty"><strong>暂无插件包</strong><span>{failed ? '暂未能读取本地 packages 目录，你仍可从插件页安装。' : '安装后的本地插件包会显示在这里。'}</span><button className="secondary-button" onClick={onOpenPlugins}>前往插件</button></section>}</section> }
 function CatalogDetail({ item, group, busy, onBack, onRun, onSaveConfig }: { item: CatalogItem; group: string; busy: boolean; onBack: () => void; onRun: (action: string, packageName: string) => void; onSaveConfig: (packageName: string, values: Record<string, string>) => Promise<boolean> }) {
   const [version, setVersion] = useState('')
@@ -208,10 +341,10 @@ function MarkdownPage({ markdown }: { markdown: string }) {
     return <p key={index}>{text}</p>
   })}</article>
 }
-function RunPanel({ mode, busy, onRun }: { mode: 'dependencies' | 'development' | 'background'; busy: boolean; onRun: (action: string) => void }) { const views = { dependencies: { title: '依赖管理', note: '检查当前目录是否已安装依赖；缺失时再执行安装或修复。', primary: '检查依赖', action: 'dependency-status', secondary: '安装或修复依赖', secondaryAction: 'install' }, development: { title: '开发模式', note: '以开发模式启动机器人，操作输出会显示在控制台中。', primary: '启动开发模式', action: 'dev' }, background: { title: '后台运行', note: '构建后交由 PM2 守护运行，适合持续在线的机器人。', primary: '使用 PM2 启动', action: 'pm2' } }[mode]; return <section className="run-panel"><header><div><p>运行</p><h1>{views.title}</h1><small>{views.note}</small></div></header><div className="run-panel-actions"><button className="primary-button" disabled={busy} onClick={() => onRun(views.action)}>{busy ? '处理中…' : views.primary}</button>{views.secondary && <button className="secondary-button" disabled={busy} onClick={() => onRun(views.secondaryAction!)}>{views.secondary}</button>}</div>{mode === 'development' && <p className="run-console-note">启动后的输出会显示在右下角“操作日志”中。</p>}</section> }
+function RunPanel({ mode, busy, onRun }: { mode: 'dependencies' | 'development' | 'background'; busy: boolean; onRun: (action: string) => void }) { const views = { dependencies: { title: '依赖管理', note: '检查当前目录是否已安装依赖；缺失时再执行安装或修复。', primary: '检查依赖', action: 'dependency-status', secondary: '安装或修复依赖', secondaryAction: 'install' }, development: { title: '开发模式', note: '以开发模式启动机器人，操作输出会显示在右上角操作记录中。', primary: '启动开发模式', action: 'dev' }, background: { title: '后台运行', note: '构建后交由 PM2 守护运行，适合持续在线的机器人。', primary: '使用 PM2 启动', action: 'pm2' } }[mode]; return <section className="run-panel"><header><div><h1>{views.title}</h1><small>{views.note}</small></div></header><div className="run-panel-actions"><button className="primary-button" disabled={busy} onClick={() => onRun(views.action)}>{busy ? '处理中…' : views.primary}</button>{views.secondary && <button className="secondary-button" disabled={busy} onClick={() => onRun(views.secondaryAction!)}>{views.secondary}</button>}</div></section> }
 function ControlCard({ page, section, runMode, project, buildMode, catalog, catalogTitle, onPage, onSection, onRunMode, onBuildMode, onCatalog }: { page: Page; section: Section; runMode: 'dependencies' | 'development' | 'background'; project?: Project; buildMode: 'manifest' | 'npm' | 'git'; catalog: CatalogGroup[]; catalogTitle: string; onPage: (page: Page) => void; onSection: (section: Section) => void; onRunMode: (mode: 'dependencies' | 'development' | 'background') => void; onBuildMode: (mode: 'manifest' | 'npm' | 'git') => void; onCatalog: (title: string) => void }) {
   const activePrimary = page === 'robot' ? section === 'actions' ? 'actions' : section === 'backpack' ? 'backpack' : 'config' : page
-  const subitems = activePrimary === 'config' ? [{ id: 'config', label: '配置' }, { id: 'npmrc', label: '镜像' }] : activePrimary === 'actions' ? [{ id: 'dependencies', label: '依赖' }, { id: 'development', label: '开发' }, { id: 'background', label: '后台' }] : activePrimary === 'build' ? [{ id: 'manifest', label: '包配置' }, { id: 'git', label: 'Git 打包' }, { id: 'npm', label: 'NPM 发布' }] : activePrimary === 'backpack' ? [] : catalog.map((item) => ({ id: item.title, label: item.title }))
+  const subitems = activePrimary === 'config' ? [{ id: 'npmrc', label: 'npm 源' }] : activePrimary === 'actions' ? [{ id: 'dependencies', label: '依赖' }, { id: 'development', label: '开发' }, { id: 'background', label: '后台' }] : activePrimary === 'build' ? [{ id: 'manifest', label: '包配置' }, { id: 'git', label: 'Git 打包' }, { id: 'npm', label: 'NPM 发布' }] : activePrimary === 'backpack' ? [] : catalog.map((item) => ({ id: item.title, label: item.title }))
   const activeSecondary = activePrimary === 'config' ? section : activePrimary === 'actions' ? runMode : activePrimary === 'build' ? buildMode : catalogTitle
   function selectPrimary(item: typeof directoryActions[number]) { if (item.kind === 'section') { onPage('robot'); onSection(item.id as Section); return }; onPage(item.id as Page) }
   function selectSecondary(id: string) { if (activePrimary === 'config') { onSection(id as Section); return }; if (activePrimary === 'actions') { onRunMode(id as 'dependencies' | 'development' | 'background'); return }; if (activePrimary === 'build') { onBuildMode(id as 'manifest' | 'npm' | 'git'); return }; onCatalog(id) }
