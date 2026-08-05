@@ -2,12 +2,15 @@
 package web
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -58,6 +61,11 @@ type operationTask struct {
 	FinishedAt *time.Time `json:"finishedAt,omitempty"`
 }
 
+type developmentProcess struct {
+	TaskID  string
+	Command *exec.Cmd
+}
+
 type server struct {
 	version        string
 	assets         fs.FS
@@ -69,6 +77,8 @@ type server struct {
 	mu             sync.RWMutex
 	tasks          []task
 	operations     []operationTask
+	development    map[string]developmentProcess
+	stopping       map[string]bool
 	requestID      atomic.Uint64
 	directoryRoots []string
 }
@@ -97,7 +107,7 @@ func NewServer(version string, staticFiles fs.FS, templateFiles ...fs.FS) http.H
 	if err != nil {
 		panic(err)
 	}
-	s := &server{version: version, assets: assets, static: http.FileServer(http.FS(assets)), checker: system.NewChecker(), plugins: setupplugin.NewRegistry(), directoryRoots: managedDirectoryRoots()}
+	s := &server{version: version, assets: assets, static: http.FileServer(http.FS(assets)), checker: system.NewChecker(), plugins: setupplugin.NewRegistry(), development: map[string]developmentProcess{}, stopping: map[string]bool{}, directoryRoots: managedDirectoryRoots()}
 	if len(templateFiles) > 0 {
 		templates, err := fs.Sub(templateFiles[0], "templates")
 		if err != nil {
@@ -116,11 +126,13 @@ func NewServer(version string, staticFiles fs.FS, templateFiles ...fs.FS) http.H
 	mux.HandleFunc("/api/v1/update", s.updateHandler)
 	mux.HandleFunc("/api/v1/directories", s.directoryHandler)
 	mux.HandleFunc("/api/v1/catalog", s.catalogHandler)
+	mux.HandleFunc("/api/v1/catalog/versions", s.catalogVersionsHandler)
 	mux.HandleFunc("/api/v1/catalog/document", s.catalogDocumentHandler)
 	mux.HandleFunc("/api/v1/catalog/package-config", s.catalogPackageConfigHandler)
 	mux.HandleFunc("/api/v1/setup/plugins", s.setupPluginsHandler)
 	mux.HandleFunc("/api/v1/setup/plugins/", s.setupPluginActionHandler)
 	mux.HandleFunc("/api/v1/robot", s.robotHandler)
+	mux.HandleFunc("/api/v1/robot/validate", s.robotValidateHandler)
 	mux.HandleFunc("/api/v1/robot/console", s.robotConsoleHandler)
 	mux.HandleFunc("/api/v1/robot/tasks", s.robotTasksHandler)
 	mux.HandleFunc("/api/v1/robot/packages", s.robotPackagesHandler)
@@ -158,7 +170,14 @@ func (s *server) npmPackPreviewHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "该操作暂不支持。")
 		return
 	}
-	preview, err := s.robots.NPMPackPreview(r.URL.Query().Get("root"))
+	root, commit := r.URL.Query().Get("root"), r.URL.Query().Get("commit")
+	var preview robot.NPMPackPreview
+	var err error
+	if commit != "" {
+		preview, err = s.robots.NPMPackPreviewAtCommit(root, commit)
+	} else {
+		preview, err = s.robots.NPMPackPreview(root)
+	}
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -190,6 +209,19 @@ func (s *server) catalogHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, groups)
+}
+
+func (s *server) catalogVersionsHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "该操作暂不支持。")
+		return
+	}
+	versions, err := catalog.LoadPackageVersions(r.URL.Query().Get("package"))
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, versions)
 }
 
 func (s *server) catalogDocumentHandler(w http.ResponseWriter, r *http.Request) {
@@ -454,12 +486,35 @@ func (s *server) robotConsoleHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "该操作暂不支持。")
 		return
 	}
-	result, err := s.robots.Console(r.URL.Query().Get("root"))
+	root := r.URL.Query().Get("root")
+	result, err := s.robots.Console(root)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if output, status := s.operationOutput(root, "dev"); output != "" {
+		label := "最近一次开发模式输出"
+		if status == "running" {
+			label = "开发模式实时输出"
+		}
+		result.Output += "\n\n$ " + label + "\n" + output
+	} else {
+		result.Output += "\n\n$ 开发模式实时输出\n当前没有正在运行的开发进程。"
+	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *server) robotValidateHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "该操作暂不支持。")
+		return
+	}
+	result, err := s.robots.Validate(r.URL.Query().Get("root"))
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"valid": false, "error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"valid": true, "path": result.Path})
 }
 
 func (s *server) robotTasksHandler(w http.ResponseWriter, r *http.Request) {
@@ -506,14 +561,62 @@ func (s *server) robotTasksHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "请选择机器人目录和操作。")
 		return
 	}
-	created := operationTask{ID: "robot-" + time.Now().Format("20060102150405.000000000"), Root: input.Root, Action: input.Action, Status: "running", CreatedAt: time.Now()}
-	log.Printf("[ROBOT %s] 开始 action=%s root=%q", created.ID, created.Action, created.Root)
-	s.mu.Lock()
-	s.operations = append([]operationTask{created}, s.operations...)
-	if len(s.operations) > 40 {
-		s.operations = s.operations[:40]
+	if _, err := s.robots.Validate(input.Root); err != nil {
+		writeError(w, http.StatusBadRequest, "当前机器人目录不可用："+err.Error()+"。请在左侧移除后重新选择目录。")
+		return
 	}
-	s.mu.Unlock()
+	created := operationTask{ID: "robot-" + time.Now().Format("20060102150405.000000000"), Root: input.Root, Action: input.Action, Status: "running", CreatedAt: time.Now()}
+	if input.Action == "dev-stop" {
+		if err := s.stopDevelopment(input.Root); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		finished := time.Now()
+		created.Status = "completed"
+		created.Output = "已请求停止开发模式；等待开发进程退出。"
+		created.FinishedAt = &finished
+		s.addOperation(created)
+		writeJSON(w, http.StatusAccepted, created)
+		return
+	}
+	if input.Action == "dev" {
+		if s.developmentRunning(input.Root) {
+			writeError(w, http.StatusConflict, "当前目录的开发模式正在运行；请先停止后再启动。")
+			return
+		}
+		command, err := s.robots.DevelopmentCommand(input.Root)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		stdout, err := command.StdoutPipe()
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "无法连接开发模式输出："+err.Error())
+			return
+		}
+		stderr, err := command.StderrPipe()
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "无法连接开发模式错误输出："+err.Error())
+			return
+		}
+		if err := command.Start(); err != nil {
+			writeError(w, http.StatusBadRequest, "开发模式启动失败："+err.Error())
+			return
+		}
+		if !s.registerDevelopment(input.Root, created.ID, command) {
+			_ = command.Process.Kill()
+			writeError(w, http.StatusConflict, "当前目录的开发模式正在运行；请先停止后再启动。")
+			return
+		}
+		created.Output = "开发模式已启动，正在等待进程输出…\n"
+		s.addOperation(created)
+		log.Printf("[ROBOT %s] 开始 action=dev root=%q", created.ID, created.Root)
+		go s.watchDevelopmentTask(created.ID, input.Root, command, stdout, stderr)
+		writeJSON(w, http.StatusAccepted, created)
+		return
+	}
+	log.Printf("[ROBOT %s] 开始 action=%s root=%q", created.ID, created.Action, created.Root)
+	s.addOperation(created)
 	go func() {
 		result, err := s.robots.Run(input.Root, input.Action, input.Message, input.Package, input.Version, input.Tag, input.Token, input.Confirm == "true")
 		finished := time.Now()
@@ -538,6 +641,138 @@ func (s *server) robotTasksHandler(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[ROBOT %s] 完成 action=%s root=%q output=%dB", created.ID, created.Action, created.Root, len(result.Output))
 	}()
 	writeJSON(w, http.StatusAccepted, created)
+}
+
+func (s *server) addOperation(created operationTask) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.operations = append([]operationTask{created}, s.operations...)
+	if len(s.operations) > 40 {
+		s.operations = s.operations[:40]
+	}
+}
+
+func (s *server) operationOutput(root, action string) (string, string) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, item := range s.operations {
+		if item.Root == root && item.Action == action {
+			return item.Output, item.Status
+		}
+	}
+	return "", ""
+}
+
+func (s *server) developmentRunning(root string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	_, running := s.development[root]
+	return running
+}
+
+func (s *server) registerDevelopment(root, taskID string, command *exec.Cmd) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, running := s.development[root]; running {
+		return false
+	}
+	s.development[root] = developmentProcess{TaskID: taskID, Command: command}
+	return true
+}
+
+func (s *server) stopDevelopment(root string) error {
+	s.mu.Lock()
+	process, running := s.development[root]
+	if !running {
+		s.mu.Unlock()
+		return fmt.Errorf("当前目录没有正在运行的开发模式")
+	}
+	s.stopping[root] = true
+	s.mu.Unlock()
+	s.appendOperationOutput(process.TaskID, "正在停止开发进程…\n")
+	if err := process.Command.Process.Signal(os.Interrupt); err != nil {
+		return fmt.Errorf("无法停止开发进程：%w", err)
+	}
+	// Some package managers do not pass Interrupt through immediately. Give the
+	// command a short graceful window, then ensure the managed parent exits.
+	time.AfterFunc(5*time.Second, func() {
+		s.mu.RLock()
+		current, active := s.development[root]
+		stopping := s.stopping[root]
+		s.mu.RUnlock()
+		if active && stopping && current.TaskID == process.TaskID {
+			_ = current.Command.Process.Kill()
+		}
+	})
+	return nil
+}
+
+func (s *server) appendOperationOutput(id, output string) {
+	if output == "" {
+		return
+	}
+	const maxOutput = 256 * 1024
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for index := range s.operations {
+		if s.operations[index].ID != id {
+			continue
+		}
+		s.operations[index].Output += output
+		if len(s.operations[index].Output) > maxOutput {
+			s.operations[index].Output = "…前面的输出已省略…\n" + s.operations[index].Output[len(s.operations[index].Output)-maxOutput:]
+		}
+		return
+	}
+}
+
+func (s *server) watchDevelopmentTask(id, root string, command *exec.Cmd, stdout, stderr io.Reader) {
+	var readers sync.WaitGroup
+	read := func(stream io.Reader) {
+		defer readers.Done()
+		scanner := bufio.NewScanner(stream)
+		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+		for scanner.Scan() {
+			s.appendOperationOutput(id, scanner.Text()+"\n")
+		}
+		if err := scanner.Err(); err != nil {
+			s.appendOperationOutput(id, "读取进程输出失败："+err.Error()+"\n")
+		}
+	}
+	readers.Add(2)
+	go read(stdout)
+	go read(stderr)
+	err := command.Wait()
+	readers.Wait()
+
+	finished := time.Now()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	stopped := s.stopping[root]
+	if current, active := s.development[root]; active && current.TaskID == id {
+		delete(s.development, root)
+		delete(s.stopping, root)
+	}
+	for index := range s.operations {
+		if s.operations[index].ID != id {
+			continue
+		}
+		s.operations[index].FinishedAt = &finished
+		if err != nil && !stopped {
+			s.operations[index].Status = "failed"
+			s.operations[index].Error = "开发进程已退出：" + err.Error()
+			log.Printf("[ROBOT %s] 开发进程退出 error=%s", id, err)
+		} else if stopped {
+			s.operations[index].Status = "completed"
+			s.operations[index].Output += "开发进程已停止。\n"
+			log.Printf("[ROBOT %s] 开发进程已停止", id)
+		} else {
+			s.operations[index].Status = "completed"
+			s.operations[index].Output += "开发进程已正常退出。\n"
+			log.Printf("[ROBOT %s] 开发进程正常退出", id)
+		}
+		return
+	}
 }
 
 func (s *server) robotPackagesHandler(w http.ResponseWriter, r *http.Request) {

@@ -19,17 +19,20 @@ const npmRegistry = "https://registry.npmjs.org"
 // NPMStatus is the information needed to safely guide a package publication.
 // It never contains credentials or raw npm command output.
 type NPMStatus struct {
-	Name             string   `json:"name"`
-	LocalVersion     string   `json:"localVersion"`
-	LatestVersion    string   `json:"latestVersion,omitempty"`
-	LatestPublished  string   `json:"latestPublished,omitempty"`
-	Published        bool     `json:"published"`
-	Private          bool     `json:"private"`
-	LoggedIn         bool     `json:"loggedIn"`
-	Username         string   `json:"username,omitempty"`
-	SuggestedVersion string   `json:"suggestedVersion,omitempty"`
-	Scripts          []string `json:"scripts"`
-	Issues           []string `json:"issues"`
+	Name             string      `json:"name"`
+	LocalVersion     string      `json:"localVersion"`
+	LatestVersion    string      `json:"latestVersion,omitempty"`
+	LatestPublished  string      `json:"latestPublished,omitempty"`
+	Published        bool        `json:"published"`
+	Private          bool        `json:"private"`
+	LoggedIn         bool        `json:"loggedIn"`
+	Username         string      `json:"username,omitempty"`
+	SuggestedVersion string      `json:"suggestedVersion,omitempty"`
+	Scripts          []string    `json:"scripts"`
+	Branch           string      `json:"branch,omitempty"`
+	GitReady         bool        `json:"gitReady"`
+	SourceCommits    []GitCommit `json:"sourceCommits"`
+	Issues           []string    `json:"issues"`
 }
 
 // NPMPackPreview is produced by npm itself, so the user sees the exact files
@@ -63,7 +66,7 @@ func (Manager) NPMStatus(root string) (NPMStatus, error) {
 	if err := json.Unmarshal(data, &manifest); err != nil {
 		return NPMStatus{}, errors.New("package.json 格式无法识别，请先修正后再发布")
 	}
-	status := NPMStatus{Name: manifest.Name, LocalVersion: manifest.Version, Private: manifest.Private, Scripts: []string{}, Issues: []string{}}
+	status := NPMStatus{Name: manifest.Name, LocalVersion: manifest.Version, Private: manifest.Private, Scripts: []string{}, SourceCommits: []GitCommit{}, Issues: []string{}}
 	for _, name := range []string{"prepublishOnly", "prepack", "prepare", "build"} {
 		if command := strings.TrimSpace(manifest.Scripts[name]); command != "" {
 			status.Scripts = append(status.Scripts, name+": "+command)
@@ -97,6 +100,24 @@ func (Manager) NPMStatus(root string) (NPMStatus, error) {
 	} else {
 		status.Issues = append(status.Issues, "尚未登录 npm；请先完成登录或配置发布令牌。")
 	}
+	if output, err := gitRun(path, "rev-parse", "--is-inside-work-tree"); err != nil || output != "true" {
+		status.Issues = append(status.Issues, "当前项目尚未初始化 Git，无法确认要发布的源码提交。")
+		return status, nil
+	}
+	status.GitReady = true
+	gitRoot, err := gitRun(path, "rev-parse", "--show-toplevel")
+	if err != nil || !sameWorkspacePath(path, gitRoot) {
+		status.Issues = append(status.Issues, "所选目录不是 Git 仓库根目录，无法确认要发布的源码提交。")
+		return status, nil
+	}
+	status.Branch, _ = gitRun(path, "branch", "--show-current")
+	if dirty, _ := gitRun(path, "status", "--porcelain"); dirty != "" {
+		status.Issues = append(status.Issues, "工作区有未提交修改；请先提交或暂存后再发布。")
+	}
+	status.SourceCommits = sourceCommits(path)
+	if len(status.SourceCommits) == 0 {
+		status.Issues = append(status.Issues, "当前分支还没有可选择的提交。")
+	}
 	return status, nil
 }
 
@@ -105,6 +126,36 @@ func (Manager) NPMPackPreview(root string) (NPMPackPreview, error) {
 	if err != nil {
 		return NPMPackPreview{}, err
 	}
+	return npmPackPreview(path)
+}
+
+// NPMPackPreviewAtCommit previews the same committed files that will be sent
+// to npm, without running package lifecycle scripts or changing the project.
+func (Manager) NPMPackPreviewAtCommit(root, sourceCommit string) (NPMPackPreview, error) {
+	path, err := projectPath(root)
+	if err != nil {
+		return NPMPackPreview{}, err
+	}
+	if !regexp.MustCompile(`^[0-9a-fA-F]{7,64}$`).MatchString(sourceCommit) {
+		return NPMPackPreview{}, errors.New("请选择一个已提交的源码版本")
+	}
+	sourceCommit, err = gitRun(path, "rev-parse", "--verify", sourceCommit+"^{commit}")
+	if err != nil {
+		return NPMPackPreview{}, errors.New("所选源码提交不存在，请刷新后重新选择")
+	}
+	worktree, err := os.MkdirTemp("", "albs-npm-preview-")
+	if err != nil {
+		return NPMPackPreview{}, err
+	}
+	defer os.RemoveAll(worktree)
+	if _, err := gitRun(path, "worktree", "add", "--detach", worktree, sourceCommit); err != nil {
+		return NPMPackPreview{}, fmt.Errorf("无法创建源码预览目录：%w", err)
+	}
+	defer gitRun(path, "worktree", "remove", "--force", worktree)
+	return npmPackPreview(worktree)
+}
+
+func npmPackPreview(path string) (NPMPackPreview, error) {
 	// --ignore-scripts keeps this preview side-effect free. The actual npm
 	// publish still runs the package lifecycle scripts and is shown separately.
 	output, err := run(path, "npm", "pack", "--dry-run", "--json", "--ignore-scripts")
@@ -129,6 +180,70 @@ func (Manager) NPMPackPreview(root string) (NPMPackPreview, error) {
 	}
 	preview.FileCount = len(preview.Files)
 	return preview, nil
+}
+
+// NPMPublish publishes an archive produced from the selected committed source
+// revision. This prevents a local uncommitted file from accidentally becoming
+// part of a public npm package.
+func (Manager) NPMPublish(root, sourceCommit, tag, token string) (Result, error) {
+	path, err := projectPath(root)
+	if err != nil {
+		return Result{}, err
+	}
+	status, err := (Manager{}).NPMStatus(path)
+	if err != nil {
+		return Result{}, err
+	}
+	issues := make([]string, 0, len(status.Issues))
+	for _, issue := range status.Issues {
+		if token != "" && strings.HasPrefix(issue, "尚未登录 npm") {
+			continue
+		}
+		issues = append(issues, issue)
+	}
+	if len(issues) > 0 {
+		return Result{}, errors.New("发布前检查未通过：" + strings.Join(issues, "；"))
+	}
+	if !regexp.MustCompile(`^[0-9a-fA-F]{7,64}$`).MatchString(sourceCommit) {
+		return Result{}, errors.New("请选择一个已提交的源码版本")
+	}
+	sourceCommit, err = gitRun(path, "rev-parse", "--verify", sourceCommit+"^{commit}")
+	if err != nil {
+		return Result{}, errors.New("所选源码提交不存在，请刷新后重新选择")
+	}
+	if _, err := gitRun(path, "merge-base", "--is-ancestor", sourceCommit, "HEAD"); err != nil {
+		return Result{}, errors.New("所选提交不属于当前源码分支，请刷新后重新选择")
+	}
+	worktree, err := os.MkdirTemp("", "albs-npm-source-")
+	if err != nil {
+		return Result{}, err
+	}
+	defer os.RemoveAll(worktree)
+	output, err := gitRun(path, "worktree", "add", "--detach", worktree, sourceCommit)
+	if err != nil {
+		return Result{Path: path, Output: output}, fmt.Errorf("无法创建源码打包目录：%w", err)
+	}
+	defer gitRun(path, "worktree", "remove", "--force", worktree)
+	output, err = run(worktree, "npm", "pack", "--json")
+	if err != nil {
+		return Result{Path: path, Output: output}, fmt.Errorf("从所选提交打包失败：%w", err)
+	}
+	var items []struct {
+		Filename string `json:"filename"`
+	}
+	if err := json.Unmarshal([]byte(output), &items); err != nil || len(items) == 0 || items[0].Filename == "" {
+		return Result{Path: path, Output: output}, errors.New("npm 未返回可发布的打包文件")
+	}
+	archive := filepath.Join(worktree, items[0].Filename)
+	if token != "" {
+		output, err = publishWithToken(worktree, archive, tag, token)
+	} else {
+		output, err = run(worktree, "npm", "publish", archive, "--tag", tag, "--registry="+npmRegistry)
+	}
+	if err != nil {
+		return Result{Path: path, Output: output}, fmt.Errorf("npm 发布失败：%w", err)
+	}
+	return Result{Path: path, Output: "已从 " + status.Branch + "@" + shortGitSHA(sourceCommit) + " 打包并发布到 npm。\n" + output}, nil
 }
 
 func npmPackage(name string) (latest, publishedAt string, found bool, err error) {
@@ -168,7 +283,7 @@ func npmWhoami(root string) string {
 	return strings.TrimSpace(string(output))
 }
 
-func publishWithToken(root, tag, token string) (string, error) {
+func publishWithToken(root, target, tag, token string) (string, error) {
 	if strings.ContainsAny(token, "\r\n") {
 		return "", errors.New("npm 令牌格式无效")
 	}
@@ -182,7 +297,12 @@ func publishWithToken(root, tag, token string) (string, error) {
 	if err := os.WriteFile(config, []byte(content), 0600); err != nil {
 		return "", fmt.Errorf("无法准备临时发布配置：%w", err)
 	}
-	return runWithEnv(root, map[string]string{"NPM_CONFIG_USERCONFIG": config}, "npm", "publish", "--tag", tag, "--registry="+npmRegistry)
+	args := []string{"publish"}
+	if target != "" {
+		args = append(args, target)
+	}
+	args = append(args, "--tag", tag, "--registry="+npmRegistry)
+	return runWithEnv(root, map[string]string{"NPM_CONFIG_USERCONFIG": config}, "npm", args...)
 }
 
 var versionPattern = regexp.MustCompile(`^\d+\.\d+\.\d+$`)

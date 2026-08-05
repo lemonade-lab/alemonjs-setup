@@ -16,23 +16,45 @@ var gitVersionPattern = regexp.MustCompile(`^v\d+\.\d+\.\d+$`)
 // publishing the built Node package to the project's release branch, not
 // building alemonjs-setup itself.
 type GitStatus struct {
-	Root               string   `json:"root,omitempty"`
-	Repository         string   `json:"repository,omitempty"`
-	Branch             string   `json:"branch,omitempty"`
-	PackageName        string   `json:"packageName,omitempty"`
-	PackageVersion     string   `json:"packageVersion,omitempty"`
-	PackageManager     string   `json:"packageManager,omitempty"`
-	GitHubActionsURL   string   `json:"gitHubActionsUrl,omitempty"`
-	WorkflowConfigured bool     `json:"workflowConfigured"`
-	GitReady           bool     `json:"gitReady"`
-	ReleaseBranch      bool     `json:"releaseBranch"`
-	LatestVersion      string   `json:"latestVersion,omitempty"`
-	SuggestedVersion   string   `json:"suggestedVersion,omitempty"`
-	Tags               []string `json:"tags"`
-	Commits            []string `json:"commits"`
-	Artifacts          []string `json:"artifacts"`
-	Checks             []string `json:"checks"`
-	Issues             []string `json:"issues"`
+	Root               string           `json:"root,omitempty"`
+	Repository         string           `json:"repository,omitempty"`
+	Branch             string           `json:"branch,omitempty"`
+	PackageName        string           `json:"packageName,omitempty"`
+	PackageVersion     string           `json:"packageVersion,omitempty"`
+	PackageManager     string           `json:"packageManager,omitempty"`
+	GitHubActionsURL   string           `json:"gitHubActionsUrl,omitempty"`
+	WorkflowConfigured bool             `json:"workflowConfigured"`
+	GitReady           bool             `json:"gitReady"`
+	ReleaseBranch      bool             `json:"releaseBranch"`
+	LatestVersion      string           `json:"latestVersion,omitempty"`
+	SuggestedVersion   string           `json:"suggestedVersion,omitempty"`
+	Tags               []string         `json:"tags"`
+	Commits            []string         `json:"commits"`
+	SourceCommits      []GitCommit      `json:"sourceCommits"`
+	ReleaseMappings    []ReleaseMapping `json:"releaseMappings"`
+	Artifacts          []string         `json:"artifacts"`
+	Checks             []string         `json:"checks"`
+	Issues             []string         `json:"issues"`
+}
+
+// GitCommit is a source revision the user can deliberately package.  Releases
+// are always built from one of these committed revisions, never from files
+// currently lying in the working directory.
+type GitCommit struct {
+	SHA       string `json:"sha"`
+	ShortSHA  string `json:"shortSha"`
+	Subject   string `json:"subject"`
+	CreatedAt string `json:"createdAt"`
+}
+
+// ReleaseMapping is stored inside every release commit as .albs-release.json.
+// It makes it possible to answer exactly which source revision produced a
+// published package even after the source branch has moved on.
+type ReleaseMapping struct {
+	Version       string `json:"version"`
+	SourceBranch  string `json:"sourceBranch"`
+	SourceCommit  string `json:"sourceCommit"`
+	ReleaseCommit string `json:"releaseCommit,omitempty"`
 }
 
 type GitInitConfig struct {
@@ -47,7 +69,7 @@ func GitReleaseStatus(root string) (GitStatus, error) {
 	if err != nil {
 		return GitStatus{}, err
 	}
-	status := GitStatus{Root: path, Checks: []string{}, Issues: []string{}, Tags: []string{}, Commits: []string{}, Artifacts: []string{}}
+	status := GitStatus{Root: path, Checks: []string{}, Issues: []string{}, Tags: []string{}, Commits: []string{}, SourceCommits: []GitCommit{}, ReleaseMappings: []ReleaseMapping{}, Artifacts: []string{}}
 	pkg, err := readPackage(path)
 	if err != nil {
 		status.Issues = append(status.Issues, "当前目录缺少可用的 package.json，无法按应用包流程发布。")
@@ -92,7 +114,7 @@ func GitReleaseStatus(root string) (GitStatus, error) {
 		status.Checks = append(status.Checks, "当前处于 main 分支")
 	}
 	if dirty, _ := gitRun(path, "status", "--porcelain"); dirty != "" {
-		status.Issues = append(status.Issues, "工作区有未提交修改。")
+		status.Issues = append(status.Issues, "工作区有未提交修改；请先提交或暂存后再打包。")
 	} else {
 		status.Checks = append(status.Checks, "工作区干净")
 	}
@@ -115,8 +137,13 @@ func GitReleaseStatus(root string) (GitStatus, error) {
 			// accurate without changing the user's worktree.
 			if _, err := gitRun(path, "fetch", "origin", "release"); err == nil {
 				status.Commits = gitLines(path, "log", "origin/release", "--oneline", "-8")
+				status.ReleaseMappings = releaseMappings(path, "origin/release")
 			}
 		}
+	}
+	status.SourceCommits = sourceCommits(path)
+	if len(status.SourceCommits) == 0 && status.GitReady {
+		status.Issues = append(status.Issues, "当前分支还没有可选择的提交。")
 	}
 	for _, item := range []struct{ path, label string }{{"lib", "lib（构建产物）"}, {"README.md", "README.md"}, {".puppeteerrc.cjs", ".puppeteerrc.cjs"}} {
 		if _, err := os.Stat(filepath.Join(path, item.path)); err == nil {
@@ -193,10 +220,11 @@ func sameWorkspacePath(left, right string) bool {
 	return left == right
 }
 
-// GitPublish builds the current Node project, puts only distributable files on
-// release, and tags that release commit. It never cleans or switches the user's
-// current worktree and never overwrites a remote branch or tag.
-func GitPublish(root, version string, confirmed bool) (Result, error) {
+// GitPublish builds a selected committed source revision, puts only
+// distributable files on release, and tags that release commit. It never cleans
+// or switches the user's current worktree and never overwrites a remote branch
+// or tag.
+func GitPublish(root, version, sourceCommit string, confirmed bool) (Result, error) {
 	path, err := workspacePath(root)
 	if err != nil {
 		return Result{}, err
@@ -214,6 +242,16 @@ func GitPublish(root, version string, confirmed bool) (Result, error) {
 	if len(issues) > 0 {
 		return Result{}, errors.New("发布前检查未通过：" + strings.Join(issues, "；"))
 	}
+	if !regexp.MustCompile(`^[0-9a-fA-F]{7,64}$`).MatchString(sourceCommit) {
+		return Result{}, errors.New("请选择一个已提交的源码版本")
+	}
+	sourceCommit, err = gitRun(path, "rev-parse", "--verify", sourceCommit+"^{commit}")
+	if err != nil {
+		return Result{}, errors.New("所选源码提交不存在，请刷新后重新选择")
+	}
+	if _, err := gitRun(path, "merge-base", "--is-ancestor", sourceCommit, "HEAD"); err != nil {
+		return Result{}, errors.New("所选提交不属于当前源码分支，请刷新后重新选择")
+	}
 	if version == "" {
 		version = status.SuggestedVersion
 	} else {
@@ -226,16 +264,33 @@ func GitPublish(root, version string, confirmed bool) (Result, error) {
 		return Result{}, fmt.Errorf("版本标签 %s 已存在，已发布版本不可覆盖", version)
 	}
 	if !confirmed {
-		return Result{Path: path, Output: "检查通过：将构建 " + status.PackageName + "，把发布文件提交至 release，并创建标签 " + version}, errors.New("请确认后再开始 Git 打包")
+		return Result{Path: path, Output: "检查通过：将从 " + shortGitSHA(sourceCommit) + " 构建 " + status.PackageName + "，把发布文件提交至 release，并创建标签 " + version}, errors.New("请确认后再开始 Git 打包")
 	}
-	manager := projectPackageManager(path)
-	logs := []string{"开始构建 " + status.PackageName}
-	output, err := run(path, manager, "run", "build")
+	logs := []string{"已选择源码提交 " + shortGitSHA(sourceCommit), "准备独立构建目录"}
+	sourceWorktree, err := os.MkdirTemp("", "albs-source-")
+	if err != nil {
+		return Result{}, err
+	}
+	defer os.RemoveAll(sourceWorktree)
+	output, err := gitRun(path, "worktree", "add", "--detach", sourceWorktree, sourceCommit)
+	if err != nil {
+		return Result{Path: path, Output: strings.Join(append(logs, output), "\n")}, fmt.Errorf("无法创建源码构建目录：%w", err)
+	}
+	defer gitRun(path, "worktree", "remove", "--force", sourceWorktree)
+	manager := projectPackageManager(sourceWorktree)
+	logs = append(logs, "安装 "+manager+" 依赖")
+	output, err = run(sourceWorktree, manager, "install")
+	logs = append(logs, output)
+	if err != nil {
+		return Result{Path: path, Output: strings.Join(logs, "\n")}, fmt.Errorf("安装构建依赖失败：%w", err)
+	}
+	logs = append(logs, "开始构建 "+status.PackageName)
+	output, err = run(sourceWorktree, manager, "run", "build")
 	logs = append(logs, output)
 	if err != nil {
 		return Result{Path: path, Output: strings.Join(logs, "\n")}, fmt.Errorf("构建失败：%w", err)
 	}
-	if _, err := os.Stat(filepath.Join(path, "lib")); err != nil {
+	if _, err := os.Stat(filepath.Join(sourceWorktree, "lib")); err != nil {
 		return Result{Path: path, Output: strings.Join(logs, "\n")}, errors.New("构建结束后仍未找到 lib 目录，无法创建 Git 发布包")
 	}
 	worktree, err := os.MkdirTemp("", "albs-release-")
@@ -260,26 +315,75 @@ func GitPublish(root, version string, confirmed bool) (Result, error) {
 	if output, err = gitRun(worktree, "clean", "-fdx"); err != nil {
 		return Result{}, fmt.Errorf("无法清理临时发布目录：%w", err)
 	}
-	if err := copyReleaseFiles(path, worktree, strings.TrimPrefix(version, "v")); err != nil {
+	if err := copyReleaseFiles(sourceWorktree, worktree, strings.TrimPrefix(version, "v")); err != nil {
+		return Result{}, err
+	}
+	mapping := ReleaseMapping{Version: version, SourceBranch: status.Branch, SourceCommit: sourceCommit}
+	mappingData, err := json.MarshalIndent(mapping, "", "  ")
+	if err != nil {
+		return Result{}, err
+	}
+	if err := os.WriteFile(filepath.Join(worktree, ".albs-release.json"), append(mappingData, '\n'), 0644); err != nil {
 		return Result{}, err
 	}
 	if _, err := gitRun(worktree, "add", "-A"); err != nil {
 		return Result{}, err
 	}
-	if output, err = gitRun(worktree, "commit", "-m", version); err != nil {
+	commitMessage := "release: " + version + " (" + status.Branch + "@" + shortGitSHA(sourceCommit) + ")"
+	if output, err = gitRun(worktree, "commit", "-m", commitMessage); err != nil {
 		return Result{}, fmt.Errorf("无法创建 release 提交（请先配置 Git 用户名和邮箱）：%w", err)
 	}
 	if output, err = gitRun(worktree, "push", "origin", "HEAD:refs/heads/release"); err != nil {
 		return Result{Path: path, Output: strings.Join(append(logs, output), "\n")}, fmt.Errorf("release 分支推送失败：%w", err)
 	}
-	if output, err = gitRun(worktree, "tag", "-a", version, "-m", "Release "+version); err != nil {
+	if output, err = gitRun(worktree, "tag", "-a", version, "-m", "Release "+version+"\n\nSource: "+status.Branch+"@"+sourceCommit); err != nil {
 		return Result{}, fmt.Errorf("无法创建标签：%w", err)
 	}
 	if output, err = gitRun(worktree, "push", "origin", version); err != nil {
 		_, _ = gitRun(worktree, "tag", "-d", version)
 		return Result{Path: path, Output: strings.Join(append(logs, output), "\n")}, fmt.Errorf("标签推送失败：%w", err)
 	}
-	return Result{Path: path, Output: strings.Join(append(logs, "已发布 "+version+"：release 分支已更新，Git 标签已推送。"), "\n")}, nil
+	return Result{Path: path, Output: strings.Join(append(logs, "已发布 "+version+"：release 分支、标签及源码映射已推送（"+status.Branch+"@"+shortGitSHA(sourceCommit)+"）。"), "\n")}, nil
+}
+
+func shortGitSHA(value string) string {
+	if len(value) > 8 {
+		return value[:8]
+	}
+	return value
+}
+
+func sourceCommits(root string) []GitCommit {
+	output, err := gitRun(root, "log", "HEAD", "--format=%H%x1f%h%x1f%s%x1f%cs", "-20")
+	if err != nil || output == "" {
+		return []GitCommit{}
+	}
+	items := []GitCommit{}
+	for _, line := range strings.Split(output, "\n") {
+		parts := strings.Split(line, "\x1f")
+		if len(parts) != 4 {
+			continue
+		}
+		items = append(items, GitCommit{SHA: parts[0], ShortSHA: parts[1], Subject: parts[2], CreatedAt: parts[3]})
+	}
+	return items
+}
+
+func releaseMappings(root, ref string) []ReleaseMapping {
+	commits := gitLines(root, "log", ref, "--format=%H", "-8")
+	mappings := []ReleaseMapping{}
+	for _, commit := range commits {
+		data, err := gitRun(root, "show", commit+":.albs-release.json")
+		if err != nil {
+			continue
+		}
+		var mapping ReleaseMapping
+		if json.Unmarshal([]byte(data), &mapping) == nil && mapping.SourceCommit != "" {
+			mapping.ReleaseCommit = commit
+			mappings = append(mappings, mapping)
+		}
+	}
+	return mappings
 }
 
 func copyReleaseFiles(source, destination, version string) error {

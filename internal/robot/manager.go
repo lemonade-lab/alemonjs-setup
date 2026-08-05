@@ -21,6 +21,16 @@ type Result struct {
 	Path   string `json:"path"`
 }
 
+// Validate confirms that a saved robot directory still exists and is an
+// eligible Node.js project. It is intentionally side-effect free.
+func (Manager) Validate(root string) (Result, error) {
+	path, err := projectPath(root)
+	if err != nil {
+		return Result{}, err
+	}
+	return Result{Path: path, Output: "机器人目录可用。"}, nil
+}
+
 // LocalPackage is a bundled plugin found in the robot's packages directory.
 type LocalPackage struct {
 	Name        string `json:"name"`
@@ -204,6 +214,22 @@ func (Manager) Console(root string) (Result, error) {
 	return Result{Path: path, Output: strings.Join(lines, "\n")}, nil
 }
 
+// DevelopmentCommand prepares the project's declared development command for
+// the web server to supervise. Its stdout and stderr stay attached to the
+// operation record, so the UI can show progress without exposing a shell.
+func (Manager) DevelopmentCommand(root string) (*exec.Cmd, error) {
+	if err := project(root); err != nil {
+		return nil, err
+	}
+	if err := fixLegacyLvyScript(root); err != nil {
+		return nil, err
+	}
+	manager := projectPackageManager(root)
+	command := exec.Command(manager, "run", "dev")
+	command.Dir = root
+	return command, nil
+}
+
 type privilegedRequest struct {
 	Operation   string `json:"operation"`
 	Root        string `json:"root"`
@@ -270,7 +296,9 @@ func (m Manager) Run(root, action, message, packageName, version, tag, token str
 		if _, err := workspacePath(root); permissionError(err) {
 			return m.withPrivileges(request)
 		}
-		return GitPublish(root, version, confirmed)
+		// message carries the source commit selected in the Git publishing card.
+		// Keeping it on the existing task payload also preserves privileged runs.
+		return GitPublish(root, version, message, confirmed)
 	}
 	if err := project(root); err != nil {
 		if permissionError(err) {
@@ -311,25 +339,9 @@ func (m Manager) Run(root, action, message, packageName, version, tag, token str
 		if !regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`).MatchString(tag) {
 			return Result{}, errors.New("npm 标签格式无效")
 		}
-		status, err := (Manager{}).NPMStatus(root)
-		if err != nil {
-			return Result{}, err
-		}
-		issues := make([]string, 0, len(status.Issues))
-		for _, issue := range status.Issues {
-			if token != "" && strings.HasPrefix(issue, "尚未登录 npm") {
-				continue
-			}
-			issues = append(issues, issue)
-		}
-		if len(issues) > 0 {
-			return Result{}, errors.New("发布前检查未通过：" + strings.Join(issues, "；"))
-		}
-		if token != "" {
-			output, err := publishWithToken(root, tag, token)
-			return Result{Path: root, Output: output}, err
-		}
-		name, args = "npm", []string{"publish", "--tag", tag, "--registry=https://registry.npmjs.org"}
+		// message is the explicitly selected source commit, shared with the
+		// Git release flow. NPM receives a tarball made from that revision.
+		return (Manager{}).NPMPublish(root, message, tag, token)
 	case "npm-version":
 		if !regexp.MustCompile(`^\d+\.\d+\.\d+$`).MatchString(version) {
 			return Result{}, errors.New("版本号应为 1.2.3")

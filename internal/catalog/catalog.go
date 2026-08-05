@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"sort"
 	"strings"
 	"time"
 )
@@ -27,6 +28,14 @@ type Group struct {
 type Document struct {
 	Source   string `json:"source"`
 	Markdown string `json:"markdown"`
+}
+
+// PackageVersions is the small, UI-safe portion of the npm package document.
+// It lets the install screen offer published versions without exposing the
+// registry's full metadata payload to the browser.
+type PackageVersions struct {
+	Latest   string   `json:"latest"`
+	Versions []string `json:"versions"`
 }
 
 type PackageConfigField struct {
@@ -62,36 +71,9 @@ func Fetch(kind string) ([]Group, error) {
 	if response.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("官方目录暂时不可用")
 	}
-	var groups []Group
-	references := map[string]string{}
-	current := -1
-	scanner := bufio.NewScanner(response.Body)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if name, link, ok := referenceDefinition(line); ok {
-			references[name] = link
-			continue
-		}
-		if strings.HasPrefix(line, "### ") {
-			groups = append(groups, Group{Title: strings.TrimSpace(strings.TrimPrefix(line, "### "))})
-			current = len(groups) - 1
-			continue
-		}
-		if current < 0 || !strings.HasPrefix(line, "|") || strings.Contains(line, "---") || strings.Contains(line, "项目名") {
-			continue
-		}
-		columns := strings.Split(line, "|")
-		if len(columns) < 4 {
-			continue
-		}
-		name, link := markdownLink(strings.TrimSpace(columns[1]))
-		if name == "" || isCatalogTableHeader(name) {
-			continue
-		}
-		groups[current].Items = append(groups[current].Items, Item{Name: name, URL: link, Description: strings.TrimSpace(columns[2])})
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("读取官方目录失败")
+	groups, references, err := parseCatalog(response.Body)
+	if err != nil {
+		return nil, err
 	}
 	for groupIndex := range groups {
 		for itemIndex := range groups[groupIndex].Items {
@@ -107,6 +89,115 @@ func Fetch(kind string) ([]Group, error) {
 		}
 	}
 	return groups, nil
+}
+
+// parseCatalog keeps the meaning of a Markdown table instead of assuming that
+// the second column is always its description. Connection tables, for example,
+// use “项目 | 版本 | 说明”; the version badge is not user-facing copy.
+//
+// The description column is selected by its header (说明 / docs / description).
+// Old two-column catalogs without such a header retain the former second-column
+// fallback for backwards compatibility.
+func parseCatalog(reader io.Reader) ([]Group, map[string]string, error) {
+	var groups []Group
+	references := map[string]string{}
+	current := -1
+	columns := catalogColumns{name: 0, description: -1}
+	scanner := bufio.NewScanner(reader)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if name, link, ok := referenceDefinition(line); ok {
+			references[name] = link
+			continue
+		}
+		if strings.HasPrefix(line, "### ") {
+			groups = append(groups, Group{Title: strings.TrimSpace(strings.TrimPrefix(line, "### "))})
+			current = len(groups) - 1
+			columns = catalogColumns{name: 0, description: -1}
+			continue
+		}
+		if current < 0 || !strings.HasPrefix(line, "|") || isMarkdownTableDivider(line) {
+			continue
+		}
+		values := markdownTableValues(line)
+		if len(values) < 2 {
+			continue
+		}
+		if header, ok := parseCatalogTableHeader(values); ok {
+			columns = header
+			continue
+		}
+		nameIndex := columns.name
+		if nameIndex < 0 || nameIndex >= len(values) {
+			nameIndex = 0
+		}
+		name, link := markdownLink(values[nameIndex])
+		if name == "" || isCatalogTableHeader(name) {
+			continue
+		}
+		descriptionIndex := columns.description
+		if descriptionIndex < 0 {
+			descriptionIndex = 1
+		}
+		description := ""
+		if descriptionIndex < len(values) {
+			description = strings.TrimSpace(values[descriptionIndex])
+		}
+		groups[current].Items = append(groups[current].Items, Item{Name: name, URL: link, Description: description})
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, nil, fmt.Errorf("读取官方目录失败")
+	}
+	return groups, references, nil
+}
+
+type catalogColumns struct {
+	name        int
+	description int
+}
+
+func markdownTableValues(line string) []string {
+	values := strings.Split(strings.Trim(strings.TrimSpace(line), "|"), "|")
+	for index := range values {
+		values[index] = strings.TrimSpace(values[index])
+	}
+	return values
+}
+
+func isMarkdownTableDivider(line string) bool {
+	for _, value := range markdownTableValues(line) {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		for _, char := range value {
+			if char != '-' && char != ':' {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func parseCatalogTableHeader(values []string) (catalogColumns, bool) {
+	columns := catalogColumns{name: -1, description: -1}
+	for index, value := range values {
+		switch normalizeCatalogHeader(value) {
+		case "项目", "项目名", "project", "package", "name":
+			columns.name = index
+		case "说明", "描述", "简介", "description", "desc", "docs", "doc", "documentation":
+			columns.description = index
+		}
+	}
+	return columns, columns.name >= 0
+}
+
+func normalizeCatalogHeader(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	value = strings.ReplaceAll(value, " ", "")
+	value = strings.ReplaceAll(value, "_", "")
+	value = strings.ReplaceAll(value, "-", "")
+	return value
 }
 
 // isCatalogTableHeader keeps Markdown column labels out of the selectable
@@ -138,6 +229,59 @@ func LoadDocument(source string) (Document, error) {
 		return Document{}, err
 	}
 	return Document{Source: candidate, Markdown: string(data)}, nil
+}
+
+// LoadPackageVersions reads public npm metadata for an installable npm package.
+// Repository-backed catalog entries intentionally do not use this endpoint:
+// their version belongs to their Git repository rather than the npm registry.
+func LoadPackageVersions(name string) (PackageVersions, error) {
+	name = strings.TrimSpace(name)
+	if name == "" || (!strings.HasPrefix(name, "@alemonjs/") && name != "alemonjs") {
+		return PackageVersions{}, fmt.Errorf("该目录条目不是可查询版本的 npm 包")
+	}
+	endpoint := "https://registry.npmjs.org/" + url.PathEscape(name)
+	client := &http.Client{Timeout: 8 * time.Second}
+	response, err := client.Get(endpoint)
+	if err != nil {
+		return PackageVersions{}, fmt.Errorf("无法读取 npm 版本列表，请检查网络后重试")
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return PackageVersions{}, fmt.Errorf("npm 暂时无法提供该包的版本列表")
+	}
+	var metadata struct {
+		DistTags map[string]string `json:"dist-tags"`
+		Versions map[string]any    `json:"versions"`
+		Time     map[string]string `json:"time"`
+	}
+	if err := json.NewDecoder(io.LimitReader(response.Body, 8<<20)).Decode(&metadata); err != nil {
+		return PackageVersions{}, fmt.Errorf("npm 版本列表无法识别")
+	}
+	versions := make([]string, 0, len(metadata.Versions))
+	for version := range metadata.Versions {
+		versions = append(versions, version)
+	}
+	sort.Slice(versions, func(i, j int) bool { return metadata.Time[versions[i]] > metadata.Time[versions[j]] })
+	if latest := metadata.DistTags["latest"]; latest != "" {
+		versions = append([]string{latest}, versions...)
+	}
+	return PackageVersions{Latest: metadata.DistTags["latest"], Versions: uniqueStrings(versions)}, nil
+}
+
+func uniqueStrings(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	return result
 }
 
 func LoadPackageConfig(source string) (PackageConfig, error) {
@@ -281,6 +425,7 @@ func sourceLocation(suffix []string, isDocument bool) (branches, directory []str
 }
 
 func markdownLink(value string) (string, string) {
+	value = strings.TrimSpace(value)
 	if !strings.HasPrefix(value, "[") {
 		return value, ""
 	}

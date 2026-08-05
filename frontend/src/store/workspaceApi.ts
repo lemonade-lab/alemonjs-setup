@@ -4,6 +4,7 @@ type RobotResult = { output: string; path?: string }
 type RobotTask = { id: string; root: string; action: string; status: 'running' | 'completed' | 'failed'; output?: string; error?: string }
 type CatalogGroup = { title: string; items: Array<{ name: string; description: string; url: string; install: string }> }
 type CatalogDocument = { source: string; markdown: string }
+type CatalogVersions = { latest: string; versions: string[] }
 type PackageConfig = { package: string; namespace: string; fields: Array<{ name: string; type: string; required: boolean; description: string }>; values: Record<string, string> }
 type LocalPackages = { items: Array<{ name: string; version?: string; description?: string; path: string; valid: boolean }> }
 type PackageManifest = { name: string; version: string; description: string; homepage: string; repository: string; license: string; private: boolean; access: string }
@@ -23,6 +24,7 @@ export const workspaceApi = createApi({
     setSetupPluginEnabled: build.mutation<{ id: string; enabled: boolean }, { pluginID: string; enabled: boolean }>({ query: ({ pluginID, ...body }) => ({ url: `setup/plugins/${encodeURIComponent(pluginID)}/enabled`, method: 'POST', body }), invalidatesTags: ['SetupPlugins'] }),
     startSetupPluginTask: build.mutation<RobotTask, { pluginID: string; action: string; confirm: boolean; params?: Record<string, string> }>({ query: ({ pluginID, ...body }) => ({ url: `setup/plugins/${encodeURIComponent(pluginID)}/actions`, method: 'POST', body }) }),
     catalog: build.query<CatalogGroup[], 'apps' | 'environment'>({ query: (kind) => `catalog?kind=${kind}`, providesTags: (_result, _error, kind) => [{ type: 'Catalog', id: kind }] }),
+    catalogVersions: build.query<CatalogVersions, string>({ query: (packageName) => `catalog/versions?${new URLSearchParams({ package: packageName })}`, keepUnusedDataFor: 5 * 60 }),
     catalogDocument: build.query<CatalogDocument, string>({ query: (url) => `catalog/document?${new URLSearchParams({ url })}` }),
     catalogPackageConfig: build.query<PackageConfig, string>({ query: (url) => `catalog/package-config?${new URLSearchParams({ url })}` }),
     packageConfig: build.query<PackageConfig, { root: string; package: string }>({ query: ({ root, package: packageName }) => `robot/package-config?${new URLSearchParams({ root, package: packageName })}`, providesTags: (_result, _error, arg) => [{ type: 'PackageConfig', id: `${arg.root}:${arg.package}` }] }),
@@ -30,10 +32,11 @@ export const workspaceApi = createApi({
     packageManifest: build.query<PackageManifest, string>({ query: (root) => `robot/manifest?${new URLSearchParams({ root })}`, providesTags: (_result, _error, root) => [{ type: 'PackageManifest', id: root }] }),
     robotTasks: build.query<RobotTask[], void>({ query: () => 'robot/tasks' }),
     robotConsole: build.query<RobotResult, string>({ query: (root) => `robot/console?${new URLSearchParams({ root })}` }),
+    robotProject: build.query<{ valid: boolean; path?: string; error?: string }, string>({ query: (root) => `robot/validate?${new URLSearchParams({ root })}`, keepUnusedDataFor: 60 }),
     robotFile: build.query<RobotResult, { root: string; file: string }>({ query: ({ root, file }) => `robot?${new URLSearchParams({ root, file })}`, providesTags: (_result, _error, arg) => [{ type: 'RobotFile', id: `${arg.root}:${arg.file}` }] }),
     gitStatus: build.query<Record<string, unknown>, string>({ query: (root) => `publish/git/status?${new URLSearchParams({ root })}`, providesTags: (_result, _error, root) => [{ type: 'GitStatus', id: root }] }),
     npmStatus: build.query<Record<string, unknown>, string>({ query: (root) => `publish/npm/status?${new URLSearchParams({ root })}`, providesTags: (_result, _error, root) => [{ type: 'NpmStatus', id: root }] }),
-    npmPack: build.query<Record<string, unknown>, string>({ query: (root) => `publish/npm/pack?${new URLSearchParams({ root })}` }),
+    npmPack: build.query<Record<string, unknown>, { root: string; commit?: string }>({ query: ({ root, commit }) => `publish/npm/pack?${new URLSearchParams(commit ? { root, commit } : { root })}` }),
     robotOperation: build.mutation<RobotResult, Record<string, string>>({
       query: (body) => ({ url: 'robot', method: 'POST', body }),
       invalidatesTags: (_result, _error, body) => [{ type: 'GitStatus', id: body.root }, { type: 'NpmStatus', id: body.root }, { type: 'LocalPackages', id: body.root }],
@@ -58,4 +61,4 @@ export const workspaceApi = createApi({
   }),
 })
 
-export const { useGoalsQuery, useLazyEnvironmentReportQuery, useReleasesQuery, useLazySetupUpdateQuery, useSetupPluginsQuery, useSetSetupPluginEnabledMutation, useStartSetupPluginTaskMutation, useCatalogQuery, useCatalogDocumentQuery, useCatalogPackageConfigQuery, usePackageConfigQuery, useLocalPackagesQuery, usePackageManifestQuery, useRobotTasksQuery, useLazyRobotConsoleQuery, useLazyRobotFileQuery, useGitStatusQuery, useNpmStatusQuery, useLazyNpmPackQuery, useRobotOperationMutation, useStartRobotTaskMutation, useWriteRobotFileMutation, useWritePackageManifestMutation, useWritePackageConfigMutation, useInitializeGitMutation } = workspaceApi
+export const { useGoalsQuery, useLazyEnvironmentReportQuery, useReleasesQuery, useLazySetupUpdateQuery, useSetupPluginsQuery, useSetSetupPluginEnabledMutation, useStartSetupPluginTaskMutation, useCatalogQuery, useCatalogVersionsQuery, useCatalogDocumentQuery, useCatalogPackageConfigQuery, usePackageConfigQuery, useLocalPackagesQuery, usePackageManifestQuery, useRobotTasksQuery, useLazyRobotConsoleQuery, useLazyRobotProjectQuery, useLazyRobotFileQuery, useGitStatusQuery, useNpmStatusQuery, useLazyNpmPackQuery, useRobotOperationMutation, useStartRobotTaskMutation, useWriteRobotFileMutation, useWritePackageManifestMutation, useWritePackageConfigMutation, useInitializeGitMutation } = workspaceApi

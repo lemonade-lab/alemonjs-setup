@@ -2,6 +2,7 @@ package catalog
 
 import (
 	"net/url"
+	"strings"
 	"testing"
 )
 
@@ -36,5 +37,78 @@ func TestCatalogTableHeadersAreNotCatalogItems(t *testing.T) {
 	}
 	if isCatalogTableHeader("@alemonjs/qq-bot") {
 		t.Fatal("a real package must not be recognised as a table header")
+	}
+}
+
+func TestCatalogUsesDescriptionHeaderInsteadOfSecondColumn(t *testing.T) {
+	groups, _, err := parseCatalog(strings.NewReader(`### 官方
+| 项目 | 版本 | 说明 |
+| --- | --- | --- |
+| [@alemonjs/discord] | [![discord-s]][discord-p] | Discord |
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(groups) != 1 || len(groups[0].Items) != 1 {
+		t.Fatalf("unexpected catalog: %#v", groups)
+	}
+	if got := groups[0].Items[0].Description; got != "Discord" {
+		t.Fatalf("description = %q, want Discord", got)
+	}
+	if got := groups[0].Items[0].Name; got != "@alemonjs/discord" {
+		t.Fatalf("name = %q, want unbracketed package name", got)
+	}
+}
+
+func TestCatalogResolvesReferencesAfterWhitespaceTrim(t *testing.T) {
+	groups, references, err := parseCatalog(strings.NewReader(`### 官方
+| 项目 | 说明 |
+| --- | --- |
+| [@alemonjs/discord] | Discord |
+
+[@alemonjs/discord]: https://github.com/lemonade-lab/alemonjs/tree/main/packages/discord
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	item := &groups[0].Items[0]
+	item.URL = references[item.Name]
+	if item.URL == "" {
+		t.Fatal("reference URL was not resolved for trimmed package name")
+	}
+}
+
+func TestCatalogFallsBackToSecondColumnWithoutDescriptionHeader(t *testing.T) {
+	groups, _, err := parseCatalog(strings.NewReader(`### 旧目录
+| 项目 | 标签 |
+| --- | --- |
+| [example] | 旧目录说明 |
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := groups[0].Items[0].Description; got != "旧目录说明" {
+		t.Fatalf("description = %q, want second column", got)
+	}
+}
+
+func TestCatalogRecognisesDocsHeader(t *testing.T) {
+	groups, _, err := parseCatalog(strings.NewReader(`### 文档目录
+| Package | Version | docs |
+| --- | --- | --- |
+| [example] | 1.0.0 | 文档说明 |
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := groups[0].Items[0].Description; got != "文档说明" {
+		t.Fatalf("description = %q, want docs column", got)
+	}
+}
+
+func TestUniqueStringsKeepsNewestVersionFirst(t *testing.T) {
+	got := uniqueStrings([]string{"1.2.0", "1.2.0", "1.1.0", ""})
+	if len(got) != 2 || got[0] != "1.2.0" || got[1] != "1.1.0" {
+		t.Fatalf("unique strings = %#v", got)
 	}
 }
