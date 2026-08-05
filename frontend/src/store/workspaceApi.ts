@@ -15,6 +15,7 @@ export const workspaceApi = createApi({
     goals: build.query<unknown[], void>({ query: () => 'goals' }),
     environmentReport: build.query<Record<string, unknown>, { goalId: string; variant: string }>({ query: (body) => ({ url: 'checks', method: 'POST', body }), keepUnusedDataFor: 5 * 60 }),
     releases: build.query<unknown[], string>({ query: (app) => `releases?app=${encodeURIComponent(app)}` }),
+    setupUpdate: build.query<{ current: string; latest?: string; available: boolean; releaseUrl?: string; downloadUrl?: string; assetName?: string; platformMatched: boolean }, void>({ query: () => 'update' }),
     catalog: build.query<CatalogGroup[], 'apps' | 'environment'>({ query: (kind) => `catalog?kind=${kind}`, providesTags: (_result, _error, kind) => [{ type: 'Catalog', id: kind }] }),
     catalogDocument: build.query<CatalogDocument, string>({ query: (url) => `catalog/document?${new URLSearchParams({ url })}` }),
     catalogPackageConfig: build.query<PackageConfig, string>({ query: (url) => `catalog/package-config?${new URLSearchParams({ url })}` }),
@@ -43,4 +44,4 @@ export const workspaceApi = createApi({
   }),
 })
 
-export const { useGoalsQuery, useLazyEnvironmentReportQuery, useReleasesQuery, useCatalogQuery, useCatalogDocumentQuery, useCatalogPackageConfigQuery, usePackageConfigQuery, useLocalPackagesQuery, useLazyRobotFileQuery, useGitStatusQuery, useNpmStatusQuery, useLazyNpmPackQuery, useRobotOperationMutation, useWriteRobotFileMutation, useWritePackageConfigMutation, useInitializeGitMutation } = workspaceApi
+export const { useGoalsQuery, useLazyEnvironmentReportQuery, useReleasesQuery, useLazySetupUpdateQuery, useCatalogQuery, useCatalogDocumentQuery, useCatalogPackageConfigQuery, usePackageConfigQuery, useLocalPackagesQuery, useLazyRobotFileQuery, useGitStatusQuery, useNpmStatusQuery, useLazyNpmPackQuery, useRobotOperationMutation, useWriteRobotFileMutation, useWritePackageConfigMutation, useInitializeGitMutation } = workspaceApi

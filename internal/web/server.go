@@ -88,6 +88,7 @@ func NewServer(version string, staticFiles fs.FS, templateFiles ...fs.FS) http.H
 	mux.HandleFunc("/api/v1/checks", s.checksHandler)
 	mux.HandleFunc("/api/v1/projects", s.projectsHandler)
 	mux.HandleFunc("/api/v1/releases", s.releasesHandler)
+	mux.HandleFunc("/api/v1/update", s.updateHandler)
 	mux.HandleFunc("/api/v1/directories/select", s.directoryHandler)
 	mux.HandleFunc("/api/v1/catalog", s.catalogHandler)
 	mux.HandleFunc("/api/v1/catalog/document", s.catalogDocumentHandler)
@@ -205,6 +206,19 @@ func (s *server) releasesHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, items)
+}
+
+func (s *server) updateHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "该操作暂不支持。")
+		return
+	}
+	update, err := releases.SetupUpdate(s.version)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, update)
 }
 
 func (s *server) robotHandler(w http.ResponseWriter, r *http.Request) {

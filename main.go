@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"alemonjs-setup/internal/project"
+	"alemonjs-setup/internal/releases"
 	"alemonjs-setup/internal/robot"
 	"alemonjs-setup/internal/system"
 	"alemonjs-setup/internal/web"
@@ -80,6 +81,29 @@ func main() {
 				log.Fatal(err)
 			}
 			fmt.Printf("已打开 http://127.0.0.1:%s\n", port)
+			return
+		case "update":
+			if len(arguments) != 1 {
+				usage()
+				return
+			}
+			update, err := releases.SetupUpdate(Version)
+			if err != nil {
+				log.Fatal(err)
+			}
+			if !update.Available {
+				fmt.Printf("已是最新版本：%s\n", update.Current)
+				return
+			}
+			if !update.PlatformMatched {
+				fmt.Printf("发现新版本 %s，但未找到当前系统的安装包。\n%s\n", update.Latest, update.ReleaseURL)
+				return
+			}
+			result, err := system.ReplaceExecutable(update.DownloadURL, update.AssetName)
+			if err != nil {
+				log.Fatal(err)
+			}
+			fmt.Println(result)
 			return
 		case "status":
 			if len(arguments) != 1 {
@@ -244,6 +268,7 @@ func usage() {
   albs [serve] --port 17390           启动浏览器引导
   albs install --port 17390           注册为后台常驻服务
   albs open [--port 17390]            打开浏览器
+  albs update                         检查并更新 albs
   albs status                         查看后台服务状态
   albs start | stop | restart         管理后台服务
   albs uninstall --yes                移除后台服务
