@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Plus, Trash2 } from 'lucide-react'
+import { Tabs } from './Tabs'
 
 type Entry = { key: string; value: string }
 type Props = {
@@ -41,23 +42,16 @@ export function EnvConfigForm({ content, busy, onChange, onSave }: Props) {
       )
     )
   const editor = (
-    <div
-      className="inline-flex rounded-lg bg-slate-100 p-0.5"
-      aria-label=".env 编辑模式"
-    >
-      <button
-        className={`min-h-7 rounded-md px-2.5 text-xs font-semibold transition ${mode === 'visual' ? 'bg-white text-brand-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
-        onClick={() => setMode('visual')}
-      >
-        表单
-      </button>
-      <button
-        className={`min-h-7 rounded-md px-2.5 text-xs font-semibold transition ${mode === 'text' ? 'bg-white text-brand-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
-        onClick={() => setMode('text')}
-      >
-        文本
-      </button>
-    </div>
+    <Tabs
+      ariaLabel=".env 编辑模式"
+      value={mode}
+      onChange={setMode}
+      variant="segmented"
+      items={[
+        { id: 'visual', label: '表单' },
+        { id: 'text', label: '文本' }
+      ]}
+    />
   )
   const saveClass =
     'inline-flex min-h-9 items-center justify-center rounded-md bg-brand-600 px-3.5 text-xs font-semibold text-white transition hover:bg-brand-700 disabled:cursor-not-allowed disabled:opacity-50'

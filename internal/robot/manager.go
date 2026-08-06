@@ -15,8 +15,9 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/mod/semver"
+
 	"alemonx/internal/catalog"
-	"alemonx/internal/system"
 )
 
 type Manager struct{}
@@ -130,16 +131,7 @@ func packageGitVersions(root string) []string {
 }
 
 func newerGitTag(left, right string) bool {
-	leftParts := strings.Split(strings.TrimPrefix(left, "v"), ".")
-	rightParts := strings.Split(strings.TrimPrefix(right, "v"), ".")
-	for index := 0; index < 3; index++ {
-		leftValue, _ := strconv.Atoi(strings.Split(leftParts[index], "-")[0])
-		rightValue, _ := strconv.Atoi(strings.Split(rightParts[index], "-")[0])
-		if leftValue != rightValue {
-			return leftValue > rightValue
-		}
-	}
-	return left > right
+	return semver.Compare(left, right) > 0
 }
 
 // LocalPackageReadme reads only the README belonging to a discovered backpack
@@ -655,7 +647,7 @@ func (Manager) PM2Logs(root string, page int) (PM2LogPage, error) {
 	}
 	const pageSize = 120
 	requested := page * pageSize
-	output, err := run(root, "npx", "pm2", "logs", "--lines", strconv.Itoa(requested), "--nostream")
+	output, err := run(root, "npx", "--yes", "pm2", "logs", "--lines", strconv.Itoa(requested), "--nostream")
 	if err != nil {
 		return PM2LogPage{}, fmt.Errorf("无法读取 PM2 日志：%w", err)
 	}
@@ -677,7 +669,7 @@ func (Manager) PM2Status(root string) (PM2Status, error) {
 		}
 		return PM2Status{}, fmt.Errorf("无法读取 PM2 配置：%w", err)
 	}
-	output, err := run(path, "npx", "pm2", "jlist")
+	output, err := run(path, "npx", "--yes", "pm2", "jlist")
 	if err != nil {
 		return PM2Status{}, fmt.Errorf("无法读取 PM2 状态：%w", err)
 	}
@@ -793,8 +785,8 @@ func (Manager) RepairRuntime(root, mode string) (Result, error) {
 		}
 	}
 	if mode == "pm2" {
-		scripts["start"] = "npx pm2 startOrRestart pm2.config.cjs"
-		scripts["stop"] = "npx pm2 stop pm2.config.cjs"
+		scripts["start"] = "npx --yes pm2 startOrRestart pm2.config.cjs"
+		scripts["stop"] = "npx --yes pm2 stop pm2.config.cjs"
 		dependencies["pm2"] = "^5"
 		dependencies["yaml"] = "^2.6.0"
 		config := filepath.Join(path, "pm2.config.cjs")
@@ -826,25 +818,6 @@ func (Manager) RepairRuntime(root, mode string) (Result, error) {
 		return Result{}, err
 	}
 	return Result{Path: path, Output: "已补齐运行脚本与配置，请安装依赖后重试。"}, nil
-}
-
-type privilegedRequest struct {
-	Operation   string `json:"operation"`
-	Root        string `json:"root"`
-	File        string `json:"file,omitempty"`
-	Content     string `json:"content,omitempty"`
-	Action      string `json:"action,omitempty"`
-	Message     string `json:"message,omitempty"`
-	PackageName string `json:"packageName,omitempty"`
-	Version     string `json:"version,omitempty"`
-	Tag         string `json:"tag,omitempty"`
-	Token       string `json:"token,omitempty"`
-	Confirmed   bool   `json:"confirmed,omitempty"`
-}
-
-type privilegedResponse struct {
-	Result Result `json:"result"`
-	Error  string `json:"error,omitempty"`
 }
 
 func (m Manager) Read(root, name string) (Result, error) {
@@ -892,7 +865,6 @@ func (m Manager) Run(root, action, message, packageName, version, tag, token str
 			return Result{}, permissionAdvice("访问 Git 工作区")
 		}
 		// message carries the source commit selected in the Git publishing card.
-		// Keeping it on the existing task payload also preserves privileged runs.
 		var request struct {
 			Branch    string   `json:"branch"`
 			Commit    string   `json:"commit"`
@@ -983,15 +955,15 @@ func (m Manager) Run(root, action, message, packageName, version, tag, token str
 	case "pm2-stop":
 		name, args = manager, []string{"run", "stop"}
 	case "pm2-restart":
-		name, args = "npx", []string{"pm2", "restart", "pm2.config.cjs", "--update-env"}
+		name, args = "npx", []string{"--yes", "pm2", "restart", "pm2.config.cjs", "--update-env"}
 	case "pm2-reload":
-		name, args = "npx", []string{"pm2", "reload", "pm2.config.cjs", "--update-env"}
+		name, args = "npx", []string{"--yes", "pm2", "reload", "pm2.config.cjs", "--update-env"}
 	case "pm2-delete":
-		name, args = "npx", []string{"pm2", "delete", "pm2.config.cjs"}
+		name, args = "npx", []string{"--yes", "pm2", "delete", "pm2.config.cjs"}
 	case "pm2-status":
-		name, args = "npx", []string{"pm2", "list"}
+		name, args = "npx", []string{"--yes", "pm2", "list"}
 	case "pm2-logs":
-		name, args = "npx", []string{"pm2", "logs", "--lines", "120", "--nostream"}
+		name, args = "npx", []string{"--yes", "pm2", "logs", "--lines", "120", "--nostream"}
 	case "install-package":
 		if !allowedInstallPackage(packageName) {
 			return Result{}, errors.New("不支持的 AlemonJS 包")
@@ -1046,89 +1018,6 @@ func allowedInstallPackage(name string) bool {
 	return false
 }
 
-// ExecutePrivilegedRequest is called only by the same executable after the
-// operating system has authenticated the one requested action.
-func ExecutePrivilegedRequest(requestPath, resultPath string) error {
-	data, err := os.ReadFile(requestPath)
-	if err != nil {
-		return err
-	}
-	var request privilegedRequest
-	if err := json.Unmarshal(data, &request); err != nil {
-		return err
-	}
-	manager := Manager{}
-	var result Result
-	switch request.Operation {
-	case "read":
-		result, err = manager.Read(request.Root, request.File)
-	case "write":
-		result, err = manager.Write(request.Root, request.File, request.Content)
-	case "run":
-		result, err = manager.Run(request.Root, request.Action, request.Message, request.PackageName, request.Version, request.Tag, request.Token, request.Confirmed)
-	default:
-		err = errors.New("未知的权限操作")
-	}
-	response := privilegedResponse{Result: result}
-	if err != nil {
-		response.Error = err.Error()
-	}
-	data, err = json.Marshal(response)
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(resultPath, data, 0666)
-}
-
-func (Manager) withPrivileges(request privilegedRequest) (Result, error) {
-	executable, err := os.Executable()
-	if err != nil {
-		return Result{}, fmt.Errorf("无法申请系统权限：%w", err)
-	}
-	requestFile, err := os.CreateTemp("", "alx-robot-request-*.json")
-	if err != nil {
-		return Result{}, fmt.Errorf("无法准备权限申请：%w", err)
-	}
-	requestPath := requestFile.Name()
-	defer os.Remove(requestPath)
-	resultFile, err := os.CreateTemp("", "alx-robot-result-*.json")
-	if err != nil {
-		return Result{}, fmt.Errorf("无法准备权限申请：%w", err)
-	}
-	resultPath := resultFile.Name()
-	defer os.Remove(resultPath)
-	if err := resultFile.Chmod(0666); err != nil {
-		return Result{}, fmt.Errorf("无法准备权限申请：%w", err)
-	}
-	if err := resultFile.Close(); err != nil {
-		return Result{}, fmt.Errorf("无法准备权限申请：%w", err)
-	}
-	data, err := json.Marshal(request)
-	if err != nil {
-		return Result{}, fmt.Errorf("无法准备权限申请：%w", err)
-	}
-	if _, err := requestFile.Write(data); err != nil {
-		return Result{}, fmt.Errorf("无法准备权限申请：%w", err)
-	}
-	if err := requestFile.Close(); err != nil {
-		return Result{}, fmt.Errorf("无法准备权限申请：%w", err)
-	}
-	if _, err := system.RunWithPrivileges("", nil, executable, "--privileged-robot", requestPath, resultPath); err != nil {
-		return Result{}, err
-	}
-	data, err = os.ReadFile(resultPath)
-	if err != nil {
-		return Result{}, fmt.Errorf("权限操作未返回结果：%w", err)
-	}
-	var response privilegedResponse
-	if err := json.Unmarshal(data, &response); err != nil {
-		return Result{}, fmt.Errorf("权限操作返回格式无法识别：%w", err)
-	}
-	if response.Error != "" {
-		return response.Result, errors.New(response.Error)
-	}
-	return response.Result, nil
-}
 func allowedPackage(name string) bool {
 	if strings.HasPrefix(name, "git+https://github.com/") || strings.HasPrefix(name, "git+https://gitee.com/") {
 		return true

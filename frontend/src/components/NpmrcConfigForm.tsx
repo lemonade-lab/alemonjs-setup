@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { Tabs } from './Tabs'
 
 type Props = {
   content: string
@@ -43,23 +44,16 @@ export function NpmrcConfigForm({ content, busy, onChange, onSave }: Props) {
   }
 
   const mode = (
-    <div
-      className="inline-flex rounded-lg bg-slate-100 p-0.5"
-      aria-label="编辑模式"
-    >
-      <button
-        className={`min-h-7 rounded-md px-2.5 text-xs font-semibold transition ${editor === 'visual' ? 'bg-white text-brand-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
-        onClick={() => setEditor('visual')}
-      >
-        表单
-      </button>
-      <button
-        className={`min-h-7 rounded-md px-2.5 text-xs font-semibold transition ${editor === 'text' ? 'bg-white text-brand-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
-        onClick={() => setEditor('text')}
-      >
-        文本
-      </button>
-    </div>
+    <Tabs
+      ariaLabel="编辑模式"
+      value={editor}
+      onChange={setEditor}
+      variant="segmented"
+      items={[
+        { id: 'visual', label: '表单' },
+        { id: 'text', label: '文本' }
+      ]}
+    />
   )
   const fieldClass =
     'min-h-9 w-full rounded-md border border-slate-300 bg-white px-2.5 text-sm font-normal text-slate-800 outline-none transition focus:border-brand-600 focus:ring-2 focus:ring-brand-100'

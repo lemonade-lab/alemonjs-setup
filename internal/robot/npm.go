@@ -12,6 +12,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"golang.org/x/mod/semver"
 )
 
 const npmRegistry = "https://registry.npmjs.org"
@@ -75,7 +77,7 @@ func (Manager) NPMStatus(root string) (NPMStatus, error) {
 	if status.Name == "" {
 		status.Issues = append(status.Issues, "package.json 缺少包名，无法发布到 npm。")
 	}
-	if !semver(status.LocalVersion) {
+	if !isNpmVersion(status.LocalVersion) {
 		status.Issues = append(status.Issues, "本地版本号应为 1.2.3 这样的格式。")
 	}
 	if status.Private {
@@ -87,7 +89,7 @@ func (Manager) NPMStatus(root string) (NPMStatus, error) {
 			status.Issues = append(status.Issues, "暂时无法连接 npm 官方仓库，发布前请重新检查。")
 		} else if found {
 			status.Published, status.LatestVersion, status.LatestPublished = true, latest, publishedAt
-			if semver(status.LocalVersion) && compareSemver(status.LocalVersion, latest) <= 0 {
+			if isNpmVersion(status.LocalVersion) && compareSemver(status.LocalVersion, latest) <= 0 {
 				status.Issues = append(status.Issues, "本地版本必须高于 npm 当前最新版 "+latest+"。")
 			}
 			status.SuggestedVersion = nextPatch(latest)
@@ -307,7 +309,7 @@ func publishWithToken(root, target, tag, token string) (string, error) {
 
 var versionPattern = regexp.MustCompile(`^\d+\.\d+\.\d+$`)
 
-func semver(version string) bool { return versionPattern.MatchString(version) }
+func isNpmVersion(version string) bool { return versionPattern.MatchString(version) }
 
 func nextPatch(version string) string {
 	parts := strings.Split(version, ".")
@@ -322,20 +324,6 @@ func nextPatch(version string) string {
 }
 
 func compareSemver(left, right string) int {
-	var l1, l2, l3, r1, r2, r3 int
-	if _, err := fmt.Sscanf(left, "%d.%d.%d", &l1, &l2, &l3); err != nil {
-		return 0
-	}
-	if _, err := fmt.Sscanf(right, "%d.%d.%d", &r1, &r2, &r3); err != nil {
-		return 0
-	}
-	for _, pair := range [][2]int{{l1, r1}, {l2, r2}, {l3, r3}} {
-		if pair[0] < pair[1] {
-			return -1
-		}
-		if pair[0] > pair[1] {
-			return 1
-		}
-	}
-	return 0
+	// Inputs are bare x.y.z npm versions; semver.Compare requires the v prefix.
+	return semver.Compare("v"+left, "v"+right)
 }

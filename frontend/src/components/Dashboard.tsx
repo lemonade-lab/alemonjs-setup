@@ -17,6 +17,7 @@ import {
   ArrowLeft,
   ArrowRight,
   Check,
+  ChevronDown,
   ChevronRight,
   ClipboardList,
   Code2,
@@ -49,7 +50,7 @@ import { EnvConfigForm } from './EnvConfigForm'
 import { NpmPublishPanel } from './NpmPublishPanel'
 import { PackageManifestPanel } from './PackageManifestPanel'
 import { SetupUpdateButton } from './SetupUpdateButton'
-import { AIChatPage } from './AIControl'
+import { AgentChatPage } from './AgentChat'
 import { ErrorNotice } from './ErrorNotice'
 import { ConfirmDialog } from './ConfirmDialog'
 import { AuthControl } from './AuthControl'
@@ -62,6 +63,7 @@ import {
   useCatalogQuery,
   useCatalogVersionsQuery,
   useGitStatusQuery,
+  useGitWorkspaceQuery,
   useInitializeGitMutation,
   useLazyRobotConsoleQuery,
   useLazyRobotFileQuery,
@@ -652,6 +654,7 @@ export function Dashboard({
   const [gitProject, setGitProject] = useState<Project | null>(null)
   const [invalidDirectory, setInvalidDirectory] = useState('')
   const [pendingBackpackRemoval, setPendingBackpackRemoval] = useState('')
+  const [pendingProjectRemoval, setPendingProjectRemoval] = useState<string | null>(null)
   const [trackRuntimeTasks, setTrackRuntimeTasks] = useState(false)
   const [aiOpen, setAIOpen] = useState(false)
   useEffect(() => {
@@ -1080,7 +1083,13 @@ export function Dashboard({
   }
 
   function removeProject(id: string) {
-    dispatch(removeWorkspaceProject(id))
+    setPendingProjectRemoval(id)
+  }
+
+  function confirmRemoveProject() {
+    if (!pendingProjectRemoval) return
+    dispatch(removeWorkspaceProject(pendingProjectRemoval))
+    setPendingProjectRemoval(null)
     setOutput('')
   }
 
@@ -1132,9 +1141,7 @@ export function Dashboard({
     catalog.find(group => group.title === catalogTitle) ?? catalog[0]
   const readyCount =
     report?.checks.filter(item => item.status === 'ready').length ?? 0
-  const robotContent = aiOpen ? (
-    <AIChatPage root={root} />
-  ) : (
+  const robotContent = aiOpen ? <AgentChatPage root={root} /> : (
     <section className="workspace-content">
       {section === 'backpack' && (
         <BackpackPanel
@@ -1252,6 +1259,18 @@ export function Dashboard({
               item.action === 'app' &&
               item.status === 'running'
           )}
+          developmentStopping={operationTasks.some(
+            item =>
+              item.root === root &&
+              item.action === 'dev-stop' &&
+              item.status === 'running'
+          )}
+          foregroundStopping={operationTasks.some(
+            item =>
+              item.root === root &&
+              item.action === 'app-stop' &&
+              item.status === 'running'
+          )}
           onRefresh={() => {
             void refetchRuntime()
             if (runtime?.pm2Configured) void refetchPM2Status()
@@ -1267,6 +1286,7 @@ export function Dashboard({
               return success
             })
           }
+          pm2Running={Boolean(pm2Status?.running)}
           onSaveLogin={saveRuntimeLogin}
           onSavePackageConfig={savePackageConfig}
           developerMode={developerMode}
@@ -1535,6 +1555,16 @@ export function Dashboard({
                 setPendingBackpackRemoval('')
               })()
             }}
+          />
+          <ConfirmDialog
+            open={Boolean(pendingProjectRemoval)}
+            title="移除机器人目录"
+            subtitle="仅从管理列表中移除，不会删除磁盘上的项目文件。"
+            message={`确定将「${pendingProjectRemoval ? projects.find(p => p.id === pendingProjectRemoval)?.name ?? pendingProjectRemoval : ''}」从机器人目录移除吗？其磁盘文件保持不变，可随时重新添加。`}
+            confirmLabel="移除目录"
+            destructive
+            onCancel={() => setPendingProjectRemoval(null)}
+            onConfirm={confirmRemoveProject}
           />
           <DirectoryPicker
             open={directoryPickerOpen}
@@ -4097,6 +4127,9 @@ function RuntimePanel({
   busy,
   developmentRunning,
   foregroundRunning,
+  developmentStopping,
+  foregroundStopping,
+  pm2Running,
   onRefresh,
   onOpenConsole,
   onRun,
@@ -4112,6 +4145,9 @@ function RuntimePanel({
   busy: boolean
   developmentRunning: boolean
   foregroundRunning: boolean
+  developmentStopping: boolean
+  foregroundStopping: boolean
+  pm2Running: boolean
   onRefresh: () => void
   onOpenConsole: () => void
   onRun: (action: string, packageName?: string) => Promise<boolean>
@@ -4155,7 +4191,8 @@ function RuntimePanel({
   const [pm2LogsOpen, setPM2LogsOpen] = useState(false)
   const persistentReady = overview?.pm2Configured && overview.hasStartScript
   const pm2Managed = Boolean(pm2Status?.managed)
-  const pm2Running = Boolean(pm2Status?.running)
+  const pm2LocalRunning = pm2Running
+  const localRunning = developmentRunning || foregroundRunning
   const knownPlatform = (overview?.platforms ?? []).find(
     item => item.id === selectedPlatform
   )
@@ -4166,7 +4203,23 @@ function RuntimePanel({
     pending?.execute()
     setPending(null)
   }
+  // A local process and a background PM2 service both start the same robot
+  // directory. Block the second one before the start dialog even opens.
   const askStart = async (action: string, label: string, note: string) => {
+    const startingLocal = action === 'dev' || action === 'app'
+    const startingPM2 = action === 'pm2' || action === 'pm2-reload'
+    if (startingLocal && pm2LocalRunning) {
+      setValidationMessage(
+        '当前目录正在后台（PM2）运行；请先在“后台运行”中停止服务，再启动本机进程。'
+      )
+      return
+    }
+    if (startingPM2 && localRunning) {
+      setValidationMessage(
+        '当前目录正在本机（开发/前台）运行；请先停止本机进程，再启动后台服务。'
+      )
+      return
+    }
     try {
       const preflight = await loadRuntimePreflight(root, true).unwrap()
       const platform = (overview?.platforms ?? []).find(
@@ -4558,15 +4611,20 @@ function RuntimePanel({
         <section className="overflow-hidden rounded-xl border border-slate-200 bg-white">
           <header className="flex items-center justify-between gap-3 border-b border-slate-200 px-4 py-3">
             <div className="grid gap-1">
-              <strong className="text-sm font-semibold text-slate-800">
+              <strong className="flex items-center gap-2 text-sm font-semibold text-slate-800">
                 本机运行
+                <StatusDot active={developmentRunning || foregroundRunning} />
               </strong>
               <span className="text-xs text-slate-500">
-                适合调试。停止后，机器人就会下线。
+                {developmentRunning || foregroundRunning
+                  ? '正在运行，可随时停止。'
+                  : pm2LocalRunning
+                    ? '当前正在后台运行，请先停止后台服务后再启动本机进程。'
+                    : '适合调试。停止后，机器人就会下线。'}
               </span>
             </div>
             <button className="secondary-button" onClick={onOpenConsole}>
-              日志
+              运行终端
             </button>
           </header>
           <div className="divide-y divide-slate-200">
@@ -4619,32 +4677,45 @@ function RuntimePanel({
             {developerMode && (
               <section className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
                 <div>
-                  <strong className="block text-sm font-semibold text-slate-700">
+                  <strong className="flex items-center gap-2 text-sm font-semibold text-slate-700">
                     开发运行
+                    <StatusDot
+                      active={developmentRunning}
+                      stopping={developmentStopping}
+                    />
                   </strong>
                   <span className="block text-xs text-slate-500">
-                    {developmentRunning
-                      ? '正在运行，可随时停止。'
-                      : foregroundRunning
-                        ? '当前正在前台运行，请先停止前台进程。'
-                        : overview?.hasDevScript
-                          ? '适合改代码、排查问题。'
-                          : '还没有开发命令。'}
+                    {developmentStopping
+                      ? '正在停止…'
+                      : developmentRunning
+                        ? '正在运行，可随时停止。'
+                        : foregroundRunning
+                          ? '当前正在前台运行，请先停止前台进程。'
+                          : overview?.hasDevScript
+                            ? '适合改代码、排查问题。'
+                            : '还没有开发命令。'}
                   </span>
                 </div>
                 <div className="ml-auto flex shrink-0 justify-end">
                   {overview?.hasDevScript ? (
                     <button
                       className={
-                        developmentRunning
+                        developmentRunning || developmentStopping
                           ? 'secondary-button'
                           : 'primary-button'
                       }
-                      disabled={busy || foregroundRunning}
+                      disabled={
+                        busy ||
+                        foregroundRunning ||
+                        developmentStopping ||
+                        pm2LocalRunning
+                      }
                       title={
-                        foregroundRunning
-                          ? '当前目录正在前台运行，请先停止。'
-                          : ''
+                        pm2LocalRunning
+                          ? '当前目录正在后台运行，请先停止服务。'
+                          : foregroundRunning
+                            ? '当前目录正在前台运行，请先停止。'
+                            : ''
                       }
                       onClick={() =>
                         developmentRunning
@@ -4658,7 +4729,11 @@ function RuntimePanel({
                             )
                       }
                     >
-                      {developmentRunning ? '停止开发' : '启动开发'}
+                      {developmentStopping
+                        ? '正在停止…'
+                        : developmentRunning
+                          ? '停止开发'
+                          : '启动开发'}
                     </button>
                   ) : (
                     <button
@@ -4680,16 +4755,22 @@ function RuntimePanel({
             )}
             <section className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
               <div>
-                <strong className="block text-sm font-semibold text-slate-700">
+                <strong className="flex items-center gap-2 text-sm font-semibold text-slate-700">
                   前台运行
+                  <StatusDot
+                    active={foregroundRunning}
+                    stopping={foregroundStopping}
+                  />
                 </strong>
                 <span className="block text-xs text-slate-500">
                   {overview?.hasAppScript
-                    ? foregroundRunning
-                      ? '正在运行，可随时停止。'
-                      : developmentRunning
-                        ? '当前正在开发运行，请先停止开发进程。'
-                        : '直接启动机器人，方便查看输出。'
+                    ? foregroundStopping
+                      ? '正在停止…'
+                      : foregroundRunning
+                        ? '正在运行，可随时停止。'
+                        : developmentRunning
+                          ? '当前正在开发运行，请先停止开发进程。'
+                          : '直接启动机器人，方便查看输出。'
                     : '还没有前台运行命令。'}
                 </span>
               </div>
@@ -4697,13 +4778,22 @@ function RuntimePanel({
                 {overview?.hasAppScript ? (
                   <button
                     className={
-                      foregroundRunning ? 'secondary-button' : 'primary-button'
+                      foregroundRunning || foregroundStopping
+                        ? 'secondary-button'
+                        : 'primary-button'
                     }
-                    disabled={busy || developmentRunning}
+                    disabled={
+                      busy ||
+                      developmentRunning ||
+                      foregroundStopping ||
+                      pm2LocalRunning
+                    }
                     title={
-                      developmentRunning
-                        ? '当前目录正在开发运行，请先停止。'
-                        : ''
+                      pm2LocalRunning
+                        ? '当前目录正在后台运行，请先停止服务。'
+                        : developmentRunning
+                          ? '当前目录正在开发运行，请先停止。'
+                          : ''
                     }
                     onClick={() =>
                       foregroundRunning
@@ -4719,7 +4809,11 @@ function RuntimePanel({
                           )
                     }
                   >
-                    {foregroundRunning ? '停止运行' : '启动前台'}
+                    {foregroundStopping
+                      ? '正在停止…'
+                      : foregroundRunning
+                        ? '停止运行'
+                        : '启动前台'}
                   </button>
                 ) : developerMode ? (
                   <button
@@ -4743,8 +4837,20 @@ function RuntimePanel({
         <section className="overflow-hidden rounded-xl border border-slate-200 bg-white">
           <header className="flex items-center justify-between gap-3 border-b border-slate-200 px-4 py-3">
             <div className="grid gap-1">
-              <strong className="text-sm font-semibold text-slate-800">
+              <strong className="flex items-center gap-2 text-sm font-semibold text-slate-800">
                 后台运行
+                {persistentReady && (
+                  <StatusDot
+                    active={pm2Running}
+                    label={
+                      pm2Running
+                        ? '运行中'
+                        : pm2Managed
+                          ? `已注册 · ${pm2Status?.status || '未知'}`
+                          : '未启动'
+                    }
+                  />
+                )}
               </strong>
               <span className="text-xs text-slate-500">
                 {persistentReady
@@ -4752,7 +4858,7 @@ function RuntimePanel({
                     ? pm2Running
                       ? '服务运行中；关闭本窗口后仍会继续运行。'
                       : pm2Managed
-                        ? `服务状态：${pm2Status.status || '未知'}。可重启或删除。`
+                        ? '服务已注册，当前未运行；可重启或删除。'
                         : '服务尚未启动。'
                     : pm2StatusError
                       ? '无法读取服务状态；仍可尝试启动服务。'
@@ -4762,9 +4868,13 @@ function RuntimePanel({
             </div>
             <button
               className="primary-button"
-              disabled={busy || !persistentReady}
+              disabled={busy || !persistentReady || localRunning}
               title={
-                !persistentReady ? '补齐 start 脚本和 PM2 配置后可使用。' : ''
+                localRunning
+                  ? '当前目录正在本机运行，请先停止本机进程。'
+                  : !persistentReady
+                    ? '补齐 start 脚本和 PM2 配置后可使用。'
+                    : ''
               }
               onClick={() =>
                 void askStart(
@@ -4833,19 +4943,9 @@ function RuntimePanel({
               <button
                 className="text-button"
                 disabled={busy || !pm2Managed}
-                title={
-                  overview?.pm2Configured ? '' : '当前目录没有 pm2.config.cjs。'
-                }
-                onClick={() => onRun('pm2-status')}
-              >
-                状态
-              </button>
-              <button
-                className="text-button"
-                disabled={busy || !pm2Managed}
                 onClick={() => setPM2LogsOpen(true)}
               >
-                日志
+                PM2 日志
               </button>
               <button
                 className="text-button danger-action"
@@ -5142,6 +5242,18 @@ function ControlCard({
   onCatalog: (title: string) => void
   onGit: () => void
 }) {
+  const gitRoot = project?.path ?? ''
+  const { data: gitBranches } = useGitWorkspaceQuery(
+    { root: gitRoot, view: 'branch' },
+    { skip: !gitRoot || page !== 'robot' || section !== 'runtime' }
+  )
+  const { data: gitChanges } = useGitWorkspaceQuery(
+    { root: gitRoot, view: 'commit' },
+    { skip: !gitRoot || page !== 'robot' || section !== 'runtime' }
+  )
+  const gitOverview = gitBranches && gitChanges
+    ? { ...gitBranches, changes: gitChanges.changes }
+    : gitBranches ?? gitChanges ?? undefined
   const activePrimary =
     page === 'robot'
       ? section === 'backpack'
@@ -5216,6 +5328,65 @@ function ControlCard({
             <GitBranch className="size-4" />
           </button>
         </header>
+        {project && gitOverview && (
+          <div className="grid gap-1 border-b border-slate-100 px-3.5 py-2.5">
+            {gitOverview.repository ? (
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px]">
+                <span className="inline-flex items-center gap-1 font-medium text-slate-700">
+                  <GitBranch className="size-3 text-slate-400" />
+                  {gitOverview.branch || '未知分支'}
+                </span>
+                <span
+                  className={
+                    gitOverview.changes.length
+                      ? 'inline-flex items-center gap-1 font-medium text-amber-700'
+                      : 'inline-flex items-center gap-1 font-medium text-emerald-600'
+                  }
+                  title={
+                    gitOverview.changes.length
+                      ? `${gitOverview.changes.length} 个文件有未提交改动`
+                      : '工作区干净'
+                  }
+                >
+                  {gitOverview.changes.length
+                    ? `${gitOverview.changes.length} 项未提交`
+                    : '已提交'}
+                </span>
+                {gitOverview.remotes.length > 0 && (
+                  <span
+                    className="inline-flex items-center gap-1 text-slate-400"
+                    title={
+                      gitOverview.upstream
+                        ? `领先 ${gitOverview.ahead} · 落后 ${gitOverview.behind}`
+                        : '分支尚未关联远程'
+                    }
+                  >
+                    <Network className="size-3" />
+                    {gitOverview.upstream
+                      ? `领先 ${gitOverview.ahead} · 落后 ${gitOverview.behind}`
+                      : '未关联远程'}
+                  </span>
+                )}
+                <button
+                  className="ml-auto text-[11px] font-medium text-brand-600 hover:underline"
+                  onClick={onGit}
+                >
+                  管理 Git
+                </button>
+              </div>
+            ) : (
+              <div className="flex items-center justify-between gap-2 text-[11px] text-slate-500">
+                <span>尚未初始化 Git</span>
+                <button
+                  className="font-medium text-brand-600 hover:underline"
+                  onClick={onGit}
+                >
+                  初始化
+                </button>
+              </div>
+            )}
+          </div>
+        )}
         <div className="grid gap-1 p-2">
           {directoryActions
             .filter(item => developerMode || item.id !== 'build')
@@ -5276,8 +5447,8 @@ function ControlCard({
             <button
               className="icon-button size-8 p-0"
               onClick={onOpenAI}
-              aria-label="打开编程对话"
-              title="编程对话"
+              aria-label="打开 Agent"
+              title="打开 Agent"
             >
               <Bot className="size-4" />
             </button>
@@ -5308,6 +5479,42 @@ function ControlCard({
     </aside>
   )
 }
+// StatusDot is a small state indicator for a running process. active means
+// running (pulsing green dot), stopping means a graceful shutdown is in
+// progress (amber), and muted with a label means "registered but not running".
+function StatusDot({
+  active,
+  stopping,
+  label
+}: {
+  active?: boolean
+  stopping?: boolean
+  label?: string
+}) {
+  if (!active && !stopping && !label) return null
+  const tone = active
+    ? 'bg-emerald-500'
+    : stopping
+      ? 'bg-amber-500'
+      : 'bg-slate-300 dark:bg-slate-600'
+  return (
+    <span className="inline-flex items-center gap-1.5">
+      <i
+        className={cn(
+          'inline-block size-2 rounded-full',
+          tone,
+          active && 'animate-pulse'
+        )}
+        aria-hidden="true"
+      />
+      {label && (
+        <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
+          {label}
+        </span>
+      )}
+    </span>
+  )
+}
 function ReadonlyConsole({
   open,
   root,
@@ -5320,17 +5527,26 @@ function ReadonlyConsole({
   const [load, { data, error, isFetching }] = useLazyRobotConsoleQuery()
   const outputRef = useRef<HTMLPreElement>(null)
   const followLatest = useRef(true)
-  const message = error
+  const [showSnapshot, setShowSnapshot] = useState(false)
+  const runError = error
     ? operationErrorMessage(error, '无法读取当前目录的运行终端信息。')
-    : (data?.output ?? '')
+    : ''
+  const running = Boolean(data?.running)
+  const message = runError || data?.output || ''
+  // The live output changes frequently; the static project snapshot (pwd,
+  // scripts, git status, node version) barely changes. Poll fast only while a
+  // process is running, and reuse the server-side snapshot cache otherwise.
   useEffect(() => {
     if (!open || !root) return
-    void load(root)
-    const timer = window.setInterval(() => {
-      void load(root)
-    }, 900)
+    void load({ root })
+    const timer = window.setInterval(
+      () => {
+        void load({ root })
+      },
+      running ? 900 : 5000
+    )
     return () => window.clearInterval(timer)
-  }, [load, open, root])
+  }, [load, open, root, running])
   useEffect(() => {
     if (open) followLatest.current = true
   }, [open])
@@ -5361,14 +5577,16 @@ function ReadonlyConsole({
               运行终端
             </strong>
             <small className="hidden text-xs text-slate-400 sm:inline">
-              实时显示前台或开发运行过程 · 不支持输入命令
+              {running
+                ? `${data?.mode ?? '进程'}实时输出 · 不支持输入命令`
+                : '查看最近运行输出 · 不支持输入命令'}
             </small>
           </div>
           <div className="flex items-center gap-1">
             <button
               className="inline-flex size-8 items-center justify-center rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-800"
               disabled={isFetching}
-              onClick={() => void load(root)}
+              onClick={() => void load({ root, refresh: true })}
               aria-label="刷新运行终端"
               title="刷新"
             >
@@ -5384,17 +5602,40 @@ function ReadonlyConsole({
             </button>
           </div>
         </header>
-        <pre
-          ref={outputRef}
-          className="m-0 min-h-0 overflow-auto bg-slate-950 p-4 font-mono text-xs leading-5 text-emerald-200"
-          onScroll={event => {
-            const output = event.currentTarget
-            followLatest.current =
-              output.scrollHeight - output.scrollTop - output.clientHeight < 24
-          }}
-        >
-          {isFetching && !message ? '正在读取当前目录…' : message}
-        </pre>
+        <div className="grid min-h-0 grid-rows-[minmax(0,1fr)_auto_auto]">
+          <pre
+            ref={outputRef}
+            className="m-0 min-h-0 overflow-auto bg-slate-950 p-4 font-mono text-xs leading-5 text-emerald-200"
+            onScroll={event => {
+              const output = event.currentTarget
+              followLatest.current =
+                output.scrollHeight - output.scrollTop - output.clientHeight <
+                24
+            }}
+          >
+            {isFetching && !message ? '正在读取当前目录…' : message}
+          </pre>
+          {data?.snapshot && (
+            <button
+              className="flex items-center justify-center gap-1 border-t border-slate-700 bg-slate-900 px-3 py-1.5 text-[11px] font-semibold text-slate-400 transition hover:text-slate-200"
+              onClick={() => setShowSnapshot(value => !value)}
+              aria-expanded={showSnapshot}
+            >
+              {showSnapshot ? '收起' : '展开'}目录信息（版本 / 脚本 / Git）
+              <ChevronDown
+                className={cn(
+                  'size-3.5 transition-transform',
+                  showSnapshot && 'rotate-180'
+                )}
+              />
+            </button>
+          )}
+          {showSnapshot && data?.snapshot && (
+            <pre className="m-0 max-h-48 overflow-auto border-t border-slate-700 bg-slate-900 px-4 py-3 font-mono text-[11px] leading-5 text-slate-400">
+              {data.snapshot}
+            </pre>
+          )}
+        </div>
       </section>
     </div>
   )
@@ -5504,17 +5745,17 @@ function PM2LogsPanel({
             disabled={loading || page <= 1}
             onClick={() => setPage(current => current - 1)}
           >
-            上一页
+            更新
           </button>
           <span className="text-xs text-slate-500">
-            第 {data?.page ?? page} 页{page === 1 ? ' · 最新' : ''}
+            第 {data?.page ?? page} 页 · 每页 120 行
           </span>
           <button
             className="inline-flex min-h-8 items-center justify-center rounded-lg border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-600 disabled:opacity-40 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-300"
             disabled={loading || !data?.hasOlder}
             onClick={() => setPage(current => current + 1)}
           >
-            更早一页
+            更早
           </button>
         </footer>
       </section>
@@ -5616,282 +5857,6 @@ function OperationLog({
     </aside>
   )
 }
-function GitReleasePanel({
-  root,
-  busy,
-  version,
-  confirmed,
-  onVersionChange,
-  onConfirm,
-  onInitialize,
-  onRun
-}: {
-  root: string
-  busy: boolean
-  version: string
-  confirmed: boolean
-  onVersionChange: (value: string) => void
-  onConfirm: () => void
-  onInitialize: (values: {
-    authorName: string
-    authorEmail: string
-    repository: string
-    message: string
-  }) => Promise<boolean>
-  onRun: () => void
-}) {
-  type GitStatus = {
-    root?: string
-    packageName?: string
-    packageVersion?: string
-    packageManager?: string
-    repository?: string
-    branch?: string
-    remoteBranch?: string
-    remoteReachable?: boolean
-    remoteAdvice?: string
-    suggestedVersion?: string
-    tags?: string[]
-    commits?: string[]
-    gitReady?: boolean
-    checks?: string[]
-    issues?: string[]
-  }
-  const {
-    data,
-    isFetching: loading,
-    error,
-    refetch
-  } = useGitStatusQuery(root, { skip: !root })
-  const [initializing, setInitializing] = useState(false)
-  const [gitInit, setGitInit] = useState({
-    authorName: '',
-    authorEmail: '',
-    repository: '',
-    message: 'chore: initialize project'
-  })
-  const status = error
-    ? { issues: ['无法读取 Git 发布状态。'] }
-    : (data as GitStatus | undefined)
-  const refresh = () => {
-    void refetch()
-  }
-  const issues = status?.issues ?? []
-  const blockingIssues = issues.filter(item => !item.startsWith('尚未发现 lib'))
-  const ready = !loading && blockingIssues.length === 0
-  const tags = status?.tags ?? []
-  const commits = status?.commits ?? []
-  const needsInitialize =
-    !status?.gitReady ||
-    issues.some(item => item.includes('不是 Git 仓库根目录'))
-  const submitInitialize = async () => {
-    setInitializing(true)
-    try {
-      if (await onInitialize(gitInit)) await refetch()
-    } finally {
-      setInitializing(false)
-    }
-  }
-  return (
-    <section className="git-release-panel grid max-w-[920px] content-start gap-4">
-      <header className="release-toolbar flex flex-wrap items-end justify-between gap-3 border-b border-slate-200 pb-3 dark:border-slate-700">
-        <span className="min-w-0 truncate text-sm font-semibold text-slate-900 dark:text-slate-100">
-          {status?.packageName
-            ? `${status.packageName}@${status.packageVersion || '未设置版本'} · ${status.packageManager}`
-            : 'GIT 发布'}
-        </span>
-        <div className="release-toolbar-actions flex flex-wrap items-end justify-end gap-2">
-          <label className="release-version-field grid gap-1 text-xs font-semibold text-slate-500">
-            <span>版本</span>
-            <input
-              className="min-h-9 w-32 rounded-lg border border-slate-200 bg-white px-2 text-sm font-normal text-slate-700 outline-none focus:border-brand-600 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-200"
-              value={version || status?.suggestedVersion || ''}
-              onChange={event => onVersionChange(event.target.value)}
-              placeholder="v0.0.1"
-            />
-          </label>
-          {confirmed && (
-            <button
-              className="min-h-9 rounded-lg px-3 text-xs font-semibold text-slate-500 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800"
-              onClick={onConfirm}
-            >
-              取消
-            </button>
-          )}
-          <button
-            className="inline-flex min-h-9 items-center justify-center rounded-lg border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-600 disabled:opacity-40 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-300"
-            onClick={refresh}
-            disabled={loading || busy}
-          >
-            <RefreshCw className="size-4" />
-          </button>
-          <button
-            className="inline-flex min-h-9 items-center justify-center rounded-lg bg-brand-600 px-3 text-xs font-semibold text-white transition hover:bg-brand-700 disabled:cursor-not-allowed disabled:opacity-50"
-            disabled={busy || !ready}
-            onClick={confirmed ? onRun : onConfirm}
-          >
-            {busy ? '打包中…' : confirmed ? '确认打包' : '准备打包'}
-          </button>
-        </div>
-      </header>
-      {loading ? (
-        <p className="m-0 rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-500 dark:bg-slate-800 dark:text-slate-400">
-          正在读取所选目录的 Git 状态…
-        </p>
-      ) : (
-        <>
-          <p
-            className={cn(
-              'rounded-lg border px-3 py-2 text-xs font-semibold',
-              ready
-                ? 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950/30 dark:text-emerald-300'
-                : 'border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-300'
-            )}
-          >
-            {ready ? '✓ 发布条件已就绪' : '！ 发布前需要处理以下问题'}
-          </p>
-          {issues.length > 0 && (
-            <section className="grid gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4 dark:border-amber-900 dark:bg-amber-950/30">
-              <ul className="m-0 grid gap-1 pl-4 text-xs leading-5 text-amber-800 dark:text-amber-300">
-                {issues.map(item => (
-                  <li key={item}>{item}</li>
-                ))}
-              </ul>
-              {needsInitialize && (
-                <section className="grid gap-3 rounded-lg border border-amber-200 bg-white/70 p-3 dark:border-amber-800 dark:bg-slate-900/50">
-                  <strong className="text-sm font-semibold text-slate-900 dark:text-slate-100">
-                    初始化当前项目仓库
-                  </strong>
-                  <p className="m-0 text-xs leading-5 text-slate-600 dark:text-slate-300">
-                    将在所选目录创建独立 Git 仓库，不会修改父目录仓库或全局 Git
-                    身份。
-                  </p>
-                  <div className="grid gap-3 sm:grid-cols-2">
-                    <label className="grid gap-1 text-xs font-semibold text-slate-600 dark:text-slate-300">
-                      提交姓名
-                      <input
-                        className="min-h-9 rounded-lg border border-slate-200 bg-white px-2 text-sm font-normal text-slate-700 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-200"
-                        value={gitInit.authorName}
-                        onChange={event =>
-                          setGitInit({
-                            ...gitInit,
-                            authorName: event.target.value
-                          })
-                        }
-                        placeholder="你的姓名"
-                      />
-                    </label>
-                    <label className="grid gap-1 text-xs font-semibold text-slate-600 dark:text-slate-300">
-                      提交邮箱
-                      <input
-                        type="email"
-                        className="min-h-9 rounded-lg border border-slate-200 bg-white px-2 text-sm font-normal text-slate-700 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-200"
-                        value={gitInit.authorEmail}
-                        onChange={event =>
-                          setGitInit({
-                            ...gitInit,
-                            authorEmail: event.target.value
-                          })
-                        }
-                        placeholder="name@example.com"
-                      />
-                    </label>
-                    <label className="grid gap-1 text-xs font-semibold text-slate-600 dark:text-slate-300 sm:col-span-2">
-                      origin（可选）
-                      <input
-                        className="min-h-9 rounded-lg border border-slate-200 bg-white px-2 text-sm font-normal text-slate-700 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-200"
-                        value={gitInit.repository}
-                        onChange={event =>
-                          setGitInit({
-                            ...gitInit,
-                            repository: event.target.value
-                          })
-                        }
-                        placeholder="https://github.com/owner/repo.git"
-                      />
-                    </label>
-                    <label className="grid gap-1 text-xs font-semibold text-slate-600 dark:text-slate-300 sm:col-span-2">
-                      首个提交
-                      <input
-                        className="min-h-9 rounded-lg border border-slate-200 bg-white px-2 text-sm font-normal text-slate-700 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-200"
-                        value={gitInit.message}
-                        onChange={event =>
-                          setGitInit({
-                            ...gitInit,
-                            message: event.target.value
-                          })
-                        }
-                      />
-                    </label>
-                  </div>
-                  <button
-                    className="inline-flex min-h-9 w-fit items-center justify-center rounded-lg bg-brand-600 px-3 text-xs font-semibold text-white transition hover:bg-brand-700 disabled:cursor-not-allowed disabled:opacity-50"
-                    disabled={
-                      busy ||
-                      initializing ||
-                      !gitInit.authorName.trim() ||
-                      !gitInit.authorEmail.trim()
-                    }
-                    onClick={() => void submitInitialize()}
-                  >
-                    {initializing ? '正在初始化…' : '确认初始化 Git'}
-                  </button>
-                </section>
-              )}
-            </section>
-          )}
-          <section className="release-records" hidden>
-            <details className="release-history">
-              <summary>
-                release commits <small>{commits.length} 条</small>
-              </summary>
-              <div>
-                <p>
-                  这是已推送到 <code>release</code> 分支的发布提交；每次 Git
-                  打包会新增一条。
-                </p>
-                {commits.length ? (
-                  <ol>
-                    {commits.map(item => (
-                      <li key={item}>
-                        <code>{item}</code>
-                      </li>
-                    ))}
-                  </ol>
-                ) : (
-                  <p className="release-history-empty">
-                    尚未创建 release 发布提交。
-                  </p>
-                )}
-              </div>
-            </details>
-            <details className="release-history">
-              <summary>
-                Tags <small>{tags.length} 个</small>
-              </summary>
-              <div>
-                <p>
-                  Tag 是不可覆盖的发布版本标记，例如 <code>v0.0.666</code>
-                  ；它用于定位、下载或回退到对应版本。
-                </p>
-                {tags.length ? (
-                  <div className="release-tags">
-                    {tags.map(item => (
-                      <code key={item}>{item}</code>
-                    ))}
-                  </div>
-                ) : (
-                  <p className="release-history-empty">尚未创建发布 Tag。</p>
-                )}
-              </div>
-            </details>
-          </section>
-        </>
-      )}
-    </section>
-  )
-}
-void GitReleasePanel
 
 function GitReleasePanelNext({
   root,

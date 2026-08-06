@@ -1,6 +1,15 @@
 import { createApi, fetchBaseQuery } from '@reduxjs/toolkit/query/react'
 
 type RobotResult = { output: string; path?: string }
+// ConsolePayload splits the terminal's live process output from its static
+// project context so the terminal can render them at different refresh rates.
+type ConsolePayload = {
+  output: string
+  snapshot: string
+  running: boolean
+  mode: string
+  path?: string
+}
 type RobotTask = {
   id: string
   root: string
@@ -275,8 +284,9 @@ export const workspaceApi = createApi({
       query: () => 'robot/tasks',
       providesTags: ['OperationTasks']
     }),
-    robotConsole: build.query<RobotResult, string>({
-      query: root => `robot/console?${new URLSearchParams({ root })}`
+    robotConsole: build.query<ConsolePayload, { root: string; refresh?: boolean }>({
+      query: ({ root, refresh }) =>
+        `robot/console?${new URLSearchParams(refresh ? { root, refresh: '1' } : { root })}`
     }),
     robotRuntime: build.query<RuntimeOverview, string>({
       query: root => `robot/runtime?${new URLSearchParams({ root })}`,

@@ -87,19 +87,3 @@ func (c *Checker) command(id, name, argument, suggestion string) Check {
 	return Check{ID: id, Name: name, Status: "ready", Detail: version}
 }
 
-func (c *Checker) npmLogin() Check {
-	path, err := exec.LookPath("npm")
-	if err != nil {
-		return Check{ID: "npm-login", Name: "npm 登录", Status: "missing", Detail: "未检测到 npm", Suggestion: "请先安装 Node.js 和 npm。"}
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), c.timeout)
-	defer cancel()
-	output, err := exec.CommandContext(ctx, path, "whoami").CombinedOutput()
-	if ctx.Err() != nil {
-		return Check{ID: "npm-login", Name: "npm 登录", Status: "warning", Detail: "检测超时", Suggestion: "请确认网络正常，或稍后重新检查。"}
-	}
-	if err != nil {
-		return Check{ID: "npm-login", Name: "npm 登录", Status: "missing", Detail: "尚未登录", Suggestion: "发布前请在终端执行 npm login 完成登录。"}
-	}
-	return Check{ID: "npm-login", Name: "npm 登录", Status: "ready", Detail: "已登录为 " + strings.TrimSpace(string(output))}
-}

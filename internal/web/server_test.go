@@ -2,19 +2,215 @@ package web
 
 import (
 	"bytes"
+	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"testing/fstest"
+	"time"
 
 	"alemonx/internal/access"
 	"alemonx/internal/robot"
 )
 
+var errInternalTest = errors.New("internal test failure")
+
 func newTestServer() http.Handler {
 	return NewServer("test", fstest.MapFS{"dist/index.html": &fstest.MapFile{Data: []byte("<!doctype html>")}})
+}
+
+// newStatefulTestServer builds a server whose internal maps are populated so
+// tests can exercise the console, stop and mutual-exclusion paths directly
+// without a real PM2 daemon or a listening listener.
+func newStatefulTestServer() *server {
+	return &server{
+		robots:        robot.Manager{},
+		operations:    []operationTask{},
+		development:   map[string]developmentProcess{},
+		stopping:      map[string]bool{},
+		consoleCache:  map[string]consoleSnapshot{},
+		pm2Status:     func(string) (robot.PM2Status, error) { return robot.PM2Status{}, nil },
+		directoryRoots: managedDirectoryRoots(),
+	}
+}
+
+func writeFixture(t *testing.T, root, name, content string) {
+	t.Helper()
+	path := filepath.Join(root, name)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRobotConsoleSeparatesSnapshotAndOutput(t *testing.T) {
+	root := t.TempDir()
+	writeFixture(t, root, "package.json", `{"name":"bot","version":"1.0.0","scripts":{"dev":"node index.js"}}`)
+	writeFixture(t, root, "index.js", "console.log('hi')\n")
+	s := newStatefulTestServer()
+	s.operations = []operationTask{
+		{ID: "dev-1", Root: root, Action: "dev", Status: "running", Output: "ready line"},
+	}
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/robot/console?root="+url.QueryEscape(root), nil)
+	s.robotConsoleHandler(recorder, request)
+
+	var payload consolePayload
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	if !payload.Running {
+		t.Fatalf("running = false, want true for a live dev task")
+	}
+	if !strings.Contains(payload.Output, "开发模式实时输出") || !strings.Contains(payload.Output, "ready line") {
+		t.Fatalf("output = %q, want live dev output", payload.Output)
+	}
+	if !strings.Contains(payload.Snapshot, "$ pwd") || !strings.Contains(payload.Snapshot, "$ package.json") {
+		t.Fatalf("snapshot = %q, want static project context", payload.Snapshot)
+	}
+	if payload.Mode != "开发模式" {
+		t.Fatalf("mode = %q, want 开发模式", payload.Mode)
+	}
+}
+
+func TestRobotConsoleRefreshBypassesSnapshotCache(t *testing.T) {
+	root := t.TempDir()
+	writeFixture(t, root, "package.json", `{"name":"bot","version":"1.0.0"}`)
+	s := newStatefulTestServer()
+	// Prime the cache with stale content; a non-refresh poll must return it.
+	s.consoleCache[root] = consoleSnapshot{output: "STALE-SNAPSHOT", at: time.Now()}
+
+	plain := httptest.NewRecorder()
+	s.robotConsoleHandler(plain, httptest.NewRequest(http.MethodGet, "/api/v1/robot/console?root="+url.QueryEscape(root), nil))
+	var stalePayload consolePayload
+	if err := json.Unmarshal(plain.Body.Bytes(), &stalePayload); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stalePayload.Snapshot, "STALE-SNAPSHOT") {
+		t.Fatalf("non-refresh poll did not reuse cache: %q", stalePayload.Snapshot)
+	}
+
+	fresh := httptest.NewRecorder()
+	s.robotConsoleHandler(fresh, httptest.NewRequest(http.MethodGet, "/api/v1/robot/console?root="+url.QueryEscape(root)+"&refresh=1", nil))
+	var freshPayload consolePayload
+	if err := json.Unmarshal(fresh.Body.Bytes(), &freshPayload); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(freshPayload.Snapshot, "STALE-SNAPSHOT") {
+		t.Fatalf("refresh=1 reused stale snapshot: %q", freshPayload.Snapshot)
+	}
+	if !strings.Contains(freshPayload.Snapshot, "$ pwd") {
+		t.Fatalf("refresh did not regenerate snapshot: %q", freshPayload.Snapshot)
+	}
+}
+
+func TestRobotConsoleShowsExitReasonOnFailure(t *testing.T) {
+	root := t.TempDir()
+	writeFixture(t, root, "package.json", `{"name":"bot","version":"1.0.0"}`)
+	s := newStatefulTestServer()
+	finished := time.Now()
+	s.operations = []operationTask{
+		{ID: "dev-1", Root: root, Action: "dev", Status: "failed", Output: "boom\n", Error: "开发进程已退出：exit status 1", FinishedAt: &finished},
+	}
+
+	recorder := httptest.NewRecorder()
+	s.robotConsoleHandler(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/robot/console?root="+url.QueryEscape(root), nil))
+	var payload consolePayload
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(payload.Output, "开发进程已退出：exit status 1") {
+		t.Fatalf("output misses exit reason: %q", payload.Output)
+	}
+	if payload.Running {
+		t.Fatalf("failed task must not be reported as running")
+	}
+}
+
+func TestLocalStartBlockedByPM2Running(t *testing.T) {
+	root := t.TempDir()
+	s := newStatefulTestServer()
+	s.pm2Status = func(string) (robot.PM2Status, error) {
+		return robot.PM2Status{Configured: true, Managed: true, Running: true, Status: "online"}, nil
+	}
+	message, blocked := s.localStartBlockedByPM2(root)
+	if !blocked || !strings.Contains(message, "后台（PM2）运行") {
+		t.Fatalf("blocked = %v, message = %q", blocked, message)
+	}
+}
+
+func TestLocalStartNotBlockedWhenPM2Idle(t *testing.T) {
+	root := t.TempDir()
+	s := newStatefulTestServer()
+	if _, blocked := s.localStartBlockedByPM2(root); blocked {
+		t.Fatalf("idle PM2 must not block local start")
+	}
+	// A PM2 status read failure must also never block.
+	s.pm2Status = func(string) (robot.PM2Status, error) {
+		return robot.PM2Status{}, errInternalTest
+	}
+	if _, blocked := s.localStartBlockedByPM2(root); blocked {
+		t.Fatalf("PM2 read error must not block local start")
+	}
+}
+
+func TestPM2StartBlockedByLocalRunning(t *testing.T) {
+	root := t.TempDir()
+	s := newStatefulTestServer()
+	s.development[root] = developmentProcess{TaskID: "dev-1"}
+	message, blocked := s.pm2StartBlockedByLocal(root)
+	if !blocked || !strings.Contains(message, "本机（开发/前台）运行") {
+		t.Fatalf("blocked = %v, message = %q", blocked, message)
+	}
+	delete(s.development, root)
+	if _, blocked := s.pm2StartBlockedByLocal(root); blocked {
+		t.Fatalf("no local process must not block PM2 start")
+	}
+}
+
+func TestStopDevelopmentWithoutProcessFinishesImmediately(t *testing.T) {
+	root := t.TempDir()
+	s := newStatefulTestServer()
+	if s.stopDevelopment(root, "开发模式") {
+		t.Fatalf("stopDevelopment reported a running process that does not exist")
+	}
+}
+
+func TestCompletePendingStopTasks(t *testing.T) {
+	root := t.TempDir()
+	finished := time.Now()
+	s := newStatefulTestServer()
+	s.operations = []operationTask{
+		{ID: "stop-1", Root: root, Action: "dev-stop", Status: "running"},
+		{ID: "stop-2", Root: root, Action: "app-stop", Status: "running"},
+		{ID: "other-root", Root: "/elsewhere", Action: "dev-stop", Status: "running"},
+		{ID: "install-1", Root: root, Action: "install", Status: "running"},
+	}
+	s.completePendingStopTasks(root, finished)
+	byID := map[string]operationTask{}
+	for _, item := range s.operations {
+		byID[item.ID] = item
+	}
+	if byID["stop-1"].Status != "completed" || !strings.Contains(byID["stop-1"].Output, "已停止开发模式") {
+		t.Fatalf("stop-1 = %+v, want completed 开发模式", byID["stop-1"])
+	}
+	if byID["stop-2"].Status != "completed" || !strings.Contains(byID["stop-2"].Output, "已停止前台运行") {
+		t.Fatalf("stop-2 = %+v, want completed 前台运行", byID["stop-2"])
+	}
+	if byID["other-root"].Status != "running" {
+		t.Fatalf("a stop task on another root must stay running")
+	}
+	if byID["install-1"].Status != "running" {
+		t.Fatalf("a non-stop task must stay running")
+	}
 }
 
 func TestWebViewHTMLRewriteAndRestrictedBridge(t *testing.T) {
@@ -59,20 +255,12 @@ func TestHealth(t *testing.T) {
 	}
 }
 
-func TestGoalsAndTaskCreation(t *testing.T) {
+func TestGoals(t *testing.T) {
 	handler := newTestServer()
 	goals := httptest.NewRecorder()
 	handler.ServeHTTP(goals, httptest.NewRequest(http.MethodGet, "/api/v1/goals", nil))
 	if goals.Code != http.StatusOK || !bytes.Contains(goals.Body.Bytes(), []byte(`"id":"develop"`)) {
 		t.Fatalf("goals response = %d %s", goals.Code, goals.Body.String())
-	}
-
-	task := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/api/v1/tasks", bytes.NewBufferString(`{"goalId":"develop"}`))
-	request.Header.Set("Content-Type", "application/json")
-	handler.ServeHTTP(task, request)
-	if task.Code != http.StatusCreated || !bytes.Contains(task.Body.Bytes(), []byte(`"status":"ready"`)) {
-		t.Fatalf("task response = %d %s", task.Code, task.Body.String())
 	}
 }
 
@@ -81,19 +269,6 @@ func TestRobotTasksStartsAsJSONArray(t *testing.T) {
 	newTestServer().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/robot/tasks", nil))
 	if response.Code != http.StatusOK || response.Body.String() != "[]\n" {
 		t.Fatalf("empty robot tasks = %d %q, want JSON array", response.Code, response.Body.String())
-	}
-}
-
-func TestInvalidTaskGoalReturnsChineseError(t *testing.T) {
-	response := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/api/v1/tasks", bytes.NewBufferString(`{"goalId":"unknown"}`))
-	newTestServer().ServeHTTP(response, request)
-
-	if response.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want %d", response.Code, http.StatusBadRequest)
-	}
-	if !bytes.Contains(response.Body.Bytes(), []byte("不存在")) {
-		t.Fatalf("error should be Chinese: %s", response.Body.String())
 	}
 }
 

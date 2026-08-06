@@ -718,7 +718,25 @@ func canonicalPath(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.EvalSymlinks(abs)
+	resolved, err := filepath.EvalSymlinks(abs)
+	if err == nil {
+		return resolved, nil
+	}
+	// EvalSymlinks fails when the leaf does not exist yet, such as a brand-new
+	// project directory being created. Resolve the deepest existing ancestor
+	// and re-attach the trailing component so authorization still works.
+	if os.IsNotExist(err) {
+		parent := filepath.Dir(abs)
+		if parent == abs {
+			return "", err
+		}
+		parentResolved, parentErr := canonicalPath(parent)
+		if parentErr != nil {
+			return "", err
+		}
+		return filepath.Join(parentResolved, filepath.Base(abs)), nil
+	}
+	return "", err
 }
 
 func (s *Server) authorizeDestination(destination string) error {
@@ -785,6 +803,7 @@ func (s *Server) startTask(root, action string, run func() (string, error)) oper
 			current.Status = "completed"
 		}
 		s.tasks[id] = current
+		s.pruneFinishedTasksLocked(time.Now())
 		s.mu.Unlock()
 	}()
 	return task
@@ -842,6 +861,7 @@ func (s *Server) startDevelopment(root string) operationTask {
 		}
 		s.tasks[id] = current
 		delete(s.processes, id)
+		s.pruneFinishedTasksLocked(time.Now())
 		s.mu.Unlock()
 	}()
 	return task
@@ -878,6 +898,20 @@ func (s *Server) getTask(id string) (operationTask, bool) {
 	defer s.mu.RUnlock()
 	task, ok := s.tasks[id]
 	return task, ok
+}
+
+// finishedTaskRetention bounds the in-memory task map on a long-running server.
+// Running development tasks are always retained; finished entries older than
+// this window are dropped after a task completes.
+const finishedTaskRetention = time.Hour
+
+func (s *Server) pruneFinishedTasksLocked(now time.Time) {
+	for id, task := range s.tasks {
+		if task.FinishedAt != nil && now.Sub(*task.FinishedAt) > finishedTaskRetention {
+			delete(s.tasks, id)
+			delete(s.processes, id)
+		}
+	}
 }
 
 func (s *Server) listTasks(root string) []operationTask {

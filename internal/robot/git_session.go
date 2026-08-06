@@ -247,6 +247,83 @@ func RetryPreparedGitTag(id string) (Result, error) {
 	return result, err
 }
 
+// publishRelease is the single implementation of the Git release step: it
+// normalizes the version, verifies the tag is unused, and commits the already
+// built files from sourceWorktree to the target release branch, then pushes
+// the branch and the version tag. It never touches the caller's working tree.
+// releaseCommit is non-empty once the branch push succeeded, so a failed tag
+// push can be retried without rebuilding.
+func publishRelease(root, sourceWorktree, sourceBranch, sourceCommit, version, suggestedVersion string, artifacts []string, targetBranch string, confirmed bool) (releaseCommit string, result Result, err error) {
+	if version == "" {
+		version = suggestedVersion
+	} else {
+		version = "v" + strings.TrimPrefix(version, "v")
+	}
+	if !gitVersionPattern.MatchString(version) {
+		return "", Result{}, errors.New("版本号应为 v1.2.3 或 1.2.3")
+	}
+	if _, err := gitRun(root, "rev-parse", "-q", "--verify", "refs/tags/"+version); err == nil {
+		return "", Result{}, errors.New("版本标签 " + version + " 已存在，已发布版本不可覆盖")
+	}
+	if !confirmed {
+		return "", Result{Path: root, Output: "检查通过：将发布 " + version + " 到 " + targetBranch + " 并创建标签"}, errors.New("请确认后再开始 GIT 发布")
+	}
+	logs := []string{"使用已完成的构建 " + shortGitSHA(sourceCommit)}
+	worktree, err := os.MkdirTemp("", "alx-release-")
+	if err != nil {
+		return "", Result{}, err
+	}
+	defer os.RemoveAll(worktree)
+	start := "HEAD"
+	if _, err := gitRun(root, "ls-remote", "--exit-code", "--heads", "origin", "refs/heads/"+targetBranch); err == nil {
+		output, err := gitRun(root, "fetch", "origin", targetBranch)
+		if err != nil {
+			return "", Result{Path: root, Output: strings.Join(append(logs, output), "\n")}, errors.New("无法同步远程 " + targetBranch + " 分支：" + output)
+		}
+		start = "origin/" + targetBranch
+	}
+	output, err := gitRun(root, "worktree", "add", "--detach", worktree, start)
+	if err != nil {
+		return "", Result{Path: root, Output: strings.Join(append(logs, output), "\n")}, errors.New("无法创建安全的临时发布目录：" + output)
+	}
+	defer gitRun(root, "worktree", "remove", "--force", worktree)
+	if output, err = gitRun(worktree, "rm", "-rf", "."); err != nil {
+		return "", Result{}, errors.New("无法准备发布目录：" + output)
+	}
+	if output, err = gitRun(worktree, "clean", "-fdx"); err != nil {
+		return "", Result{}, errors.New("无法清理发布目录：" + output)
+	}
+	if err := copyReleaseFiles(sourceWorktree, worktree, strings.TrimPrefix(version, "v"), artifacts); err != nil {
+		return "", Result{}, err
+	}
+	mappingData, err := json.MarshalIndent(ReleaseMapping{Version: version, SourceBranch: sourceBranch, SourceCommit: sourceCommit}, "", "  ")
+	if err != nil {
+		return "", Result{}, err
+	}
+	if err := os.WriteFile(filepath.Join(worktree, ".alx-release.json"), append(mappingData, '\n'), 0644); err != nil {
+		return "", Result{}, err
+	}
+	if _, err := gitRun(worktree, "add", "-A"); err != nil {
+		return "", Result{}, err
+	}
+	commitMessage := "release: " + version + " (" + sourceBranch + "@" + shortGitSHA(sourceCommit) + ")"
+	if output, err = gitRun(worktree, "commit", "-m", commitMessage); err != nil {
+		return "", Result{}, errors.New("无法创建 release 提交（请先配置 Git 用户名和邮箱）：" + output)
+	}
+	if output, err = gitRun(worktree, "push", "origin", "HEAD:refs/heads/"+targetBranch); err != nil {
+		return "", Result{Path: root, Output: strings.Join(append(logs, output), "\n")}, errors.New(targetBranch + " 分支推送失败：" + output)
+	}
+	releaseCommit, _ = gitRun(worktree, "rev-parse", "HEAD")
+	if output, err = gitRun(worktree, "tag", "-a", version, "-m", "Release "+version+"\n\nSource: "+sourceBranch+"@"+sourceCommit); err != nil {
+		return releaseCommit, Result{}, errors.New("release 分支已推送，但无法创建标签：" + output)
+	}
+	if output, err = gitRun(worktree, "push", "origin", version); err != nil {
+		return releaseCommit, Result{Path: root, Output: strings.Join(append(logs, output), "\n")}, errors.New("release 分支已推送，但标签未推送；请修复权限或网络后重试标签推送：" + output)
+	}
+	logs = append(logs, "已发布 "+version+"："+targetBranch+" 分支、标签及源码映射已推送（"+sourceBranch+"@"+shortGitSHA(sourceCommit)+"）。")
+	return releaseCommit, Result{Path: root, Output: strings.Join(logs, "\n")}, nil
+}
+
 // publishPreparedWorktree deliberately consumes the exact worktree inspected by
 // the user. Rebuilding here would make the selected artifact list misleading.
 func publishPreparedWorktree(state *gitBuildState, version string, artifacts []string, confirmed bool) (Result, error) {
@@ -257,76 +334,18 @@ func publishPreparedWorktree(state *gitBuildState, version string, artifacts []s
 	if len(status.Issues) > 0 {
 		return Result{}, errors.New("发布前检查未通过：" + strings.Join(status.Issues, "；"))
 	}
-	if version == "" {
-		version = status.SuggestedVersion
-	} else {
-		version = "v" + strings.TrimPrefix(version, "v")
-	}
-	if !gitVersionPattern.MatchString(version) {
-		return Result{}, errors.New("版本号应为 v1.2.3 或 1.2.3")
-	}
-	if _, err := gitRun(state.root, "rev-parse", "-q", "--verify", "refs/tags/"+version); err == nil {
-		return Result{}, errors.New("版本标签 " + version + " 已存在，已发布版本不可覆盖")
-	}
-	if !confirmed {
-		return Result{}, errors.New("请确认后再开始 GIT 发布")
-	}
-	logs := []string{"使用已完成的构建 " + shortGitSHA(state.Commit)}
-	worktree, err := os.MkdirTemp("", "alx-release-")
-	if err != nil {
-		return Result{}, err
-	}
-	defer os.RemoveAll(worktree)
-	start := "HEAD"
-	if _, err := gitRun(state.root, "ls-remote", "--exit-code", "--heads", "origin", "refs/heads/"+state.Target); err == nil {
-		output, err := gitRun(state.root, "fetch", "origin", state.Target)
-		if err != nil {
-			return Result{Path: state.root, Output: strings.Join(append(logs, output), "\n")}, errors.New("无法同步远程 " + state.Target + " 分支：" + output)
+	releaseCommit, result, err := publishRelease(state.root, state.worktree, state.Branch, state.Commit, version, status.SuggestedVersion, artifacts, state.Target, confirmed)
+	// A failed tag push still leaves the branch pushed, so record the commit and
+	// version for RetryPreparedGitTag whenever publishRelease got that far.
+	state.releaseCommit = releaseCommit
+	if releaseCommit != "" {
+		state.releaseVersion = "v" + strings.TrimPrefix(version, "v")
+		if version == "" {
+			state.releaseVersion = status.SuggestedVersion
 		}
-		start = "origin/" + state.Target
+		state.branchPushed = true
 	}
-	output, err := gitRun(state.root, "worktree", "add", "--detach", worktree, start)
-	if err != nil {
-		return Result{Path: state.root, Output: strings.Join(append(logs, output), "\n")}, errors.New("无法创建安全的临时发布目录：" + output)
-	}
-	defer gitRun(state.root, "worktree", "remove", "--force", worktree)
-	if output, err = gitRun(worktree, "rm", "-rf", "."); err != nil {
-		return Result{}, errors.New("无法准备发布目录：" + output)
-	}
-	if output, err = gitRun(worktree, "clean", "-fdx"); err != nil {
-		return Result{}, errors.New("无法清理发布目录：" + output)
-	}
-	if err := copyReleaseFiles(state.worktree, worktree, strings.TrimPrefix(version, "v"), artifacts); err != nil {
-		return Result{}, err
-	}
-	mappingData, err := json.MarshalIndent(ReleaseMapping{Version: version, SourceBranch: state.Branch, SourceCommit: state.Commit}, "", "  ")
-	if err != nil {
-		return Result{}, err
-	}
-	if err := os.WriteFile(filepath.Join(worktree, ".alx-release.json"), append(mappingData, '\n'), 0644); err != nil {
-		return Result{}, err
-	}
-	if _, err := gitRun(worktree, "add", "-A"); err != nil {
-		return Result{}, err
-	}
-	commitMessage := "release: " + version + " (" + state.Branch + "@" + shortGitSHA(state.Commit) + ")"
-	if output, err = gitRun(worktree, "commit", "-m", commitMessage); err != nil {
-		return Result{}, errors.New("无法创建 release 提交（请先配置 Git 用户名和邮箱）：" + output)
-	}
-	if output, err = gitRun(worktree, "push", "origin", "HEAD:refs/heads/"+state.Target); err != nil {
-		return Result{Path: state.root, Output: strings.Join(append(logs, output), "\n")}, errors.New(state.Target + " 分支推送失败：" + output)
-	}
-	state.releaseCommit, _ = gitRun(worktree, "rev-parse", "HEAD")
-	state.releaseVersion = version
-	state.branchPushed = true
-	if output, err = gitRun(worktree, "tag", "-a", version, "-m", "Release "+version+"\n\nSource: "+state.Branch+"@"+state.Commit); err != nil {
-		return Result{}, errors.New("release 分支已推送，但无法创建标签：" + output)
-	}
-	if output, err = gitRun(worktree, "push", "origin", version); err != nil {
-		return Result{Path: state.root, Output: strings.Join(append(logs, output), "\n")}, errors.New("release 分支已推送，但标签未推送；请修复权限或网络后重试标签推送：" + output)
-	}
-	logs = append(logs, "已发布 "+version+"："+state.Target+" 分支、标签及源码映射已推送（"+state.Branch+"@"+shortGitSHA(state.Commit)+"）。")
-	return Result{Path: state.root, Output: strings.Join(logs, "\n")}, nil
+	return result, err
 }
 
 func retryPreparedGitTag(state gitBuildState) (Result, error) {

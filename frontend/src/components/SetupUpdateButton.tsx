@@ -9,6 +9,7 @@ import {
 } from 'lucide-react'
 import { useEffect, useId, useState } from 'react'
 import { ConfirmDialog } from './ConfirmDialog'
+import { Tabs } from './Tabs'
 import {
   useLazySetupUpdateQuery,
   useReleasesQuery
@@ -148,8 +149,6 @@ export function SetupUpdateButton() {
     void check()
   }
 
-  const modeClass = (active: boolean) =>
-    `min-h-8 rounded-md px-2 text-xs font-semibold transition ${active ? 'bg-white text-brand-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`
   return (
     <div className="relative">
       <button
@@ -189,20 +188,17 @@ export function SetupUpdateButton() {
               <X className="size-4" />
             </button>
           </header>
-          <div className="grid grid-cols-2 gap-0.5 rounded-lg bg-slate-100 p-0.5">
-            <button
-              className={modeClass(mode === 'now')}
-              onClick={() => setMode('now')}
-            >
-              自动更新
-            </button>
-            <button
-              className={modeClass(mode === 'manual')}
-              onClick={() => setMode('manual')}
-            >
-              手动安装
-            </button>
-          </div>
+          <Tabs
+            ariaLabel="更新方式"
+            value={mode}
+            onChange={setMode}
+            variant="segmented"
+            className="grid grid-cols-2"
+            items={[
+              { id: 'now', label: '自动更新' },
+              { id: 'manual', label: '手动安装' }
+            ]}
+          />
           {mode === 'now' && (
             <section className="grid gap-2.5">
               {isFetching ? (
@@ -244,10 +240,10 @@ export function SetupUpdateButton() {
                           : '下载更新'}
                     </button>
                   ) : (
-                    <p className="rounded-lg border border-slate-200 bg-slate-50 p-2.5 text-xs leading-5 text-slate-500">
+                    <p className="rounded-lg border border-amber-200 bg-amber-50 p-2.5 text-xs leading-5 text-amber-800">
                       {data.platformMatched
-                        ? '该版本未提供校验文件，请使用手动安装。'
-                        : '当前系统没有匹配的更新包，请使用手动安装。'}
+                        ? '该版本未提供校验文件，无法自动更新；请切换到「手动安装」。'
+                        : '当前系统没有匹配的更新包，无法自动更新；请切换到「手动安装」。'}
                     </p>
                   )}
                 </>

@@ -101,7 +101,7 @@ func GitWorkspaceView(root, view string) (GitWorkspaceStatus, error) {
 		}
 		for _, name := range gitLines(path, "for-each-ref", "--format=%(refname:short)", "refs/remotes") {
 			parts := strings.SplitN(name, "/", 2)
-			if len(parts) == 2 && !strings.HasSuffix(parts[1], "/HEAD") {
+			if len(parts) == 2 && parts[1] != "HEAD" {
 				status.RemoteBranches = append(status.RemoteBranches, GitRemoteBranch{Name: name, Remote: parts[0], Branch: parts[1]})
 			}
 		}
@@ -120,9 +120,11 @@ func GitWorkspaceView(root, view string) (GitWorkspaceStatus, error) {
 		}
 	}
 	loadRemotes := func() {
-		status.Remote, _ = gitRun(path, "remote", "get-url", "origin")
-		status.Upstream, _ = gitRun(path, "rev-parse", "--abbrev-ref", "@{upstream}")
-		if status.Upstream != "" {
+		if output, err := gitRun(path, "remote", "get-url", "origin"); err == nil {
+			status.Remote = output
+		}
+		if upstream, err := gitRun(path, "rev-parse", "--abbrev-ref", "@{upstream}"); err == nil {
+			status.Upstream = upstream
 			if counts, err := gitRun(path, "rev-list", "--left-right", "--count", "HEAD...@{upstream}"); err == nil {
 				_, _ = fmt.Sscanf(counts, "%d\t%d", &status.Ahead, &status.Behind)
 			}

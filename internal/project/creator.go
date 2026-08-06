@@ -11,8 +11,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
-
-	"alemonx/internal/system"
 )
 
 type Config struct {
@@ -92,6 +90,9 @@ func (c *Creator) Create(config Config) (Result, error) {
 	if err := patchDevelopmentSource(path, config); err != nil {
 		return result, fmt.Errorf("调整开发模板失败：%w", err)
 	}
+	if err := writeAgentsFile(path, config); err != nil {
+		return result, fmt.Errorf("写入开发约定失败：%w", err)
+	}
 	log("已按你的选择配置项目。")
 
 	packageCommand := config.PackageManager
@@ -142,63 +143,6 @@ func (c *Creator) Create(config Config) (Result, error) {
 	return result, nil
 }
 
-type elevatedResult struct {
-	Result Result `json:"result"`
-	Error  string `json:"error,omitempty"`
-}
-
-// createWithPrivileges hands the complete creation flow to the same executable
-// after the OS has authenticated it.  This is necessary because copying a
-// template involves many filesystem writes, not just a single shell command.
-func (c *Creator) createWithPrivileges(config Config) (Result, error) {
-	executable, err := os.Executable()
-	if err != nil {
-		return Result{}, fmt.Errorf("无法申请系统权限：%w", err)
-	}
-	configFile, err := os.CreateTemp("", "alx-create-request-*.json")
-	if err != nil {
-		return Result{}, fmt.Errorf("无法准备权限申请：%w", err)
-	}
-	configPath := configFile.Name()
-	defer os.Remove(configPath)
-	resultFile, err := os.CreateTemp("", "alx-create-result-*.json")
-	if err != nil {
-		return Result{}, fmt.Errorf("无法准备权限申请：%w", err)
-	}
-	resultPath := resultFile.Name()
-	defer os.Remove(resultPath)
-	if err := resultFile.Chmod(0666); err != nil {
-		return Result{}, fmt.Errorf("无法准备权限申请：%w", err)
-	}
-	if err := resultFile.Close(); err != nil {
-		return Result{}, fmt.Errorf("无法准备权限申请：%w", err)
-	}
-	data, err := json.Marshal(config)
-	if err != nil {
-		return Result{}, fmt.Errorf("无法准备权限申请：%w", err)
-	}
-	if _, err := configFile.Write(data); err != nil {
-		return Result{}, fmt.Errorf("无法准备权限申请：%w", err)
-	}
-	if err := configFile.Close(); err != nil {
-		return Result{}, fmt.Errorf("无法准备权限申请：%w", err)
-	}
-	if _, err := system.RunWithPrivileges("", nil, executable, "--privileged-create", configPath, resultPath); err != nil {
-		return Result{}, err
-	}
-	data, err = os.ReadFile(resultPath)
-	if err != nil {
-		return Result{}, fmt.Errorf("权限操作未返回结果：%w", err)
-	}
-	var response elevatedResult
-	if err := json.Unmarshal(data, &response); err != nil {
-		return Result{}, fmt.Errorf("权限操作返回格式无法识别：%w", err)
-	}
-	if response.Error != "" {
-		return response.Result, errors.New(response.Error)
-	}
-	return response.Result, nil
-}
 
 func validate(c Config) error {
 	if c.Template != "" && c.Template != "bot" && c.Template != "dev" {
@@ -350,6 +294,48 @@ var developmentPackageVersions = map[string]string{
 	"discord":  "^2.1.23",
 	"onebot":   "^2.1.16",
 	"qqbot":    "^2.1.23",
+}
+
+// writeAgentsFile writes an AGENTS.md that documents the project's conventions
+// so coding agents (built-in or external) follow them. It reflects the chosen
+// language and whether ESLint was enabled.
+func writeAgentsFile(root string, config Config) error {
+	extension := "ts"
+	if config.Language == "js" {
+		extension = "js"
+	}
+	verify := "npx tsc --noEmit"
+	if config.ESLint {
+		verify += "\nnpx eslint src --ext ." + extension
+	}
+	content := `# AGENTS.md
+
+这是一个 AlemonJS（聊天平台机器人开发框架）项目，基于 Node.js 开发。
+
+## 工作原则
+
+- 在开始修改前，先查看 package.json、相关源码目录 src 和已有实现方式。
+- 优先做最小改动，只修改完成当前任务所必需的文件。
+- 优先复用现有模块、工具函数和数据结构，不要随意新增依赖。
+- 不要无故重构、重命名或移动文件；不要修改与当前任务无关的代码。
+- 修改代码时，保持现有项目结构、编码风格和运行方式一致。
+
+## 验证
+
+改完代码后运行项目验证命令，确认没有破坏现有功能：
+
+` + "```" + `bash
+` + verify + `
+` + "```" + `
+
+如果由于环境、依赖、权限或上下文限制无法执行，请明确说明原因，不要假装已经完成验证。
+
+## 项目目录说明
+
+- src/：项目源码目录
+- lvy.config.ts：基于 tsx 和 rollup 的开发工具配置，修改代码时需要符合其中的构建与运行约定
+`
+	return os.WriteFile(filepath.Join(root, "AGENTS.md"), []byte(content), 0644)
 }
 
 func patchDevelopmentSource(root string, config Config) error {

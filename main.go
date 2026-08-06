@@ -2,7 +2,6 @@ package main
 
 import (
 	"embed"
-	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -12,7 +11,6 @@ import (
 
 	"alemonx/internal/access"
 	"alemonx/internal/mcp"
-	"alemonx/internal/project"
 	"alemonx/internal/releases"
 	"alemonx/internal/robot"
 	"alemonx/internal/setupplugin"
@@ -34,16 +32,6 @@ var Version = "dev"
 
 func main() {
 	defer robot.CleanupGitBuildSessions()
-	if len(os.Args) == 4 && os.Args[1] == "--privileged-create" {
-		privilegedCreate(os.Args[2], os.Args[3])
-		return
-	}
-	if len(os.Args) == 4 && os.Args[1] == "--privileged-robot" {
-		if err := robot.ExecutePrivilegedRequest(os.Args[2], os.Args[3]); err != nil {
-			log.Printf("执行权限操作失败：%v", err)
-		}
-		return
-	}
 	arguments := normalizeArgs(os.Args[1:])
 	port, arguments, err := option(arguments, "--port", env("PORT", "17390"))
 	if err != nil {
@@ -248,34 +236,6 @@ func authCommand(arguments []string, confirmed bool, account, password, confirma
 		return
 	}
 	usage()
-}
-
-func privilegedCreate(configPath, resultPath string) {
-	data, err := os.ReadFile(configPath)
-	if err != nil {
-		log.Printf("读取创建请求失败：%v", err)
-		return
-	}
-	var config project.Config
-	if err := json.Unmarshal(data, &config); err != nil {
-		log.Printf("创建请求无效：%v", err)
-		return
-	}
-	result, createErr := project.NewCreator(templateFiles).Create(config)
-	response := struct {
-		Result project.Result `json:"result"`
-		Error  string         `json:"error,omitempty"`
-	}{Result: result}
-	if createErr != nil {
-		response.Error = createErr.Error()
-	}
-	data, err = json.Marshal(response)
-	if err == nil {
-		err = os.WriteFile(resultPath, data, 0666)
-	}
-	if err != nil {
-		log.Printf("写入创建结果失败：%v", err)
-	}
 }
 
 func serve(host, port string) {

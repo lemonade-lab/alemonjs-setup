@@ -1,7 +1,6 @@
 package system
 
 import (
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"os"
@@ -119,23 +118,6 @@ func windowsScript(directory string, values map[string]string, name string, args
 
 func powershellQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "''") + "'"
-}
-
-// WriteFileWithPrivileges is used only after a normal write has failed with a
-// permission error. Content is base64 encoded so it is never interpreted as a
-// shell fragment.
-func WriteFileWithPrivileges(path string, content []byte) error {
-	encoded := base64.StdEncoding.EncodeToString(content)
-	if runtime.GOOS == "windows" {
-		_, err := RunWithPrivileges("", nil, "powershell.exe", "-NoProfile", "-Command", "[System.IO.File]::WriteAllBytes("+powershellQuote(path)+", [System.Convert]::FromBase64String("+powershellQuote(encoded)+"))")
-		return err
-	}
-	decoder := "-d"
-	if runtime.GOOS == "darwin" {
-		decoder = "-D"
-	}
-	_, err := RunWithPrivileges("", nil, "sh", "-lc", "printf %s "+shellQuote(encoded)+" | base64 "+decoder+" > "+shellQuote(path))
-	return err
 }
 
 func privilegedScript(directory string, values map[string]string, name string, args []string) string {

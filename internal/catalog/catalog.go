@@ -11,9 +11,10 @@ import (
 	"path"
 	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
+
+	"golang.org/x/mod/semver"
 )
 
 type Item struct {
@@ -350,37 +351,25 @@ func loadRepositoryReleases(source string) (PackageVersions, error) {
 }
 
 // gitTagHigher keeps semantic-looking release tags ahead of arbitrary tags,
-// then compares numeric components. It intentionally accepts the common v1.2.3
-// form without introducing a new semantic-version dependency.
+// then compares numeric components via the standard semver module.
 func gitTagHigher(left, right string) bool {
-	parse := func(tag string) ([]int, bool) {
-		tag = strings.TrimPrefix(strings.TrimSpace(tag), "v")
-		core := strings.SplitN(tag, "-", 2)[0]
-		parts := strings.Split(core, ".")
-		if len(parts) < 2 || len(parts) > 3 {
-			return nil, false
+	canonical := func(tag string) (string, bool) {
+		tag = strings.TrimSpace(tag)
+		if !strings.HasPrefix(tag, "v") {
+			tag = "v" + tag
 		}
-		values := make([]int, 3)
-		for index, part := range parts {
-			value, err := strconv.Atoi(part)
-			if err != nil || value < 0 {
-				return nil, false
-			}
-			values[index] = value
+		if !semver.IsValid(tag) {
+			return "", false
 		}
-		return values, true
+		return semver.Canonical(tag), true
 	}
-	leftValues, leftOK := parse(left)
-	rightValues, rightOK := parse(right)
+	leftVersion, leftOK := canonical(left)
+	rightVersion, rightOK := canonical(right)
 	if leftOK != rightOK {
 		return leftOK
 	}
 	if leftOK {
-		for index := range leftValues {
-			if leftValues[index] != rightValues[index] {
-				return leftValues[index] > rightValues[index]
-			}
-		}
+		return semver.Compare(leftVersion, rightVersion) > 0
 	}
 	return left > right
 }

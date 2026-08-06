@@ -60,6 +60,16 @@ const tabItems: Array<{
   { id: 'remote', label: '远程', icon: Network }
 ]
 
+const changeStatusLabel = (status: string) => {
+  const codes = status.replace(/\s/g, '')
+  if (codes === '??') return '新增'
+  if (codes.includes('D')) return '删除'
+  if (codes.includes('R')) return '重命名'
+  if (codes.includes('A')) return '新增'
+  if (codes.includes('M')) return '修改'
+  return status || '变更'
+}
+
 const actionCopy: Record<
   Action,
   { title: string; confirm: string; destructive?: boolean }
@@ -126,8 +136,10 @@ function ChangeTree({ nodes }: { nodes: ChangeTreeNode[] }) {
                   <Folder className="size-3.5 text-slate-400" />
                   <span className="min-w-0 flex-1 truncate">{node.name}</span>
                   {node.change && (
-                    <code className="text-[10px] text-slate-400">
-                      {node.change.status || '??'}
+                    <code
+                      className={`rounded px-1 text-[10px] font-medium ${node.change.status.trim() === '??' ? 'bg-slate-100 text-slate-500' : 'bg-brand-50 text-brand-700'}`}
+                    >
+                      {changeStatusLabel(node.change.status)}
                     </code>
                   )}
                 </summary>
@@ -141,8 +153,10 @@ function ChangeTree({ nodes }: { nodes: ChangeTreeNode[] }) {
                   <File className="size-3.5 text-slate-400" />
                 )}
                 <span className="min-w-0 flex-1 truncate">{node.name}</span>
-                <code className="text-[10px] text-slate-400">
-                  {node.change?.status || '??'}
+                <code
+                  className={`rounded px-1 text-[10px] font-medium ${node.change && node.change.status.trim() === '??' ? 'bg-slate-100 text-slate-500' : 'bg-brand-50 text-brand-700'}`}
+                >
+                  {node.change ? changeStatusLabel(node.change.status) : '变更'}
                 </code>
               </div>
             )}
@@ -231,6 +245,13 @@ export function RobotGitControl({
             className="primary-button"
             disabled={isLoading || !changes.length || !commitMessage.trim()}
             onClick={() => request('commit', undefined, commitMessage)}
+            title={
+              !changes.length
+                ? '工作区没有变更可提交'
+                : !commitMessage.trim()
+                  ? '请先填写提交说明'
+                  : '提交全部变更'
+            }
           >
             提交全部变更
           </button>
@@ -240,7 +261,7 @@ export function RobotGitControl({
         <ChangeTree nodes={changeTree} />
       ) : (
         <p className="grid min-h-24 place-items-center text-xs text-slate-500">
-          工作区干净，没有待提交文件。
+          工作区很干净，没有需要提交的改动。
         </p>
       )}
     </section>
@@ -287,7 +308,7 @@ export function RobotGitControl({
         </ul>
       ) : (
         <p className="grid min-h-24 place-items-center text-xs text-slate-500">
-          尚无提交记录。
+          还没有提交记录。在「提交」页填写说明后，就能创建第一条。
         </p>
       )}
     </section>
@@ -539,8 +560,13 @@ export function RobotGitControl({
         <div className="flex flex-wrap items-center gap-2">
           <button
             className="secondary-button"
-            disabled={isLoading}
+            disabled={isLoading || !data?.remotes.length}
             onClick={() => request('fetch')}
+            title={
+              data?.remotes.length
+                ? '读取远程仓库的最新状态'
+                : '还没有配置远程仓库，无法拉取'
+            }
           >
             <CloudDownload className="mr-1.5 size-3.5" />
             拉取远程
@@ -549,6 +575,15 @@ export function RobotGitControl({
             className="secondary-button"
             disabled={isLoading || !data?.upstream || !data.behind}
             onClick={() => request('pull')}
+            title={
+              !data?.remotes.length
+                ? '还没有配置远程仓库，无法同步'
+                : !data?.upstream
+                  ? '当前分支尚未关联远程分支，无法同步'
+                  : !data.behind
+                    ? '没有落后于远程，无需同步'
+                    : '把远程的新提交合并到本机'
+            }
           >
             <RefreshCw className="mr-1.5 size-3.5" />
             同步
@@ -557,6 +592,11 @@ export function RobotGitControl({
             className="primary-button"
             disabled={isLoading || !data?.remotes.length}
             onClick={() => request('push')}
+            title={
+              data?.remotes.length
+                ? '把本机提交上传到远程仓库'
+                : '还没有配置远程仓库，无法推送'
+            }
           >
             <Upload className="mr-1.5 size-3.5" />
             推送当前分支
@@ -757,11 +797,16 @@ export function RobotGitControl({
               : '操作将只在当前机器人目录执行。'
           }
           message={
-            pending?.value
-              ? `目标：${pending.value}${pending.message ? `\n说明：${pending.message}` : ''}`
-              : pending?.message
-                ? `说明：${pending.message}`
-                : '请确认继续。'
+            pending?.action === 'commit'
+              ? `将提交工作区全部 ${changes.length} 项变更：\n${changes
+                  .map(item => item.path)
+                  .slice(0, 5)
+                  .join('\n')}${changes.length > 5 ? `\n… 共 ${changes.length} 项` : ''}\n\n说明：${pending.message}`
+              : pending?.value
+                ? `目标：${pending.value}${pending.message ? `\n说明：${pending.message}` : ''}`
+                : pending?.message
+                  ? `说明：${pending.message}`
+                  : '请确认继续。'
           }
           confirmLabel={confirm?.confirm || '确认'}
           busy={isLoading}

@@ -1,11 +1,15 @@
 import { useEffect, useRef, useState } from 'react'
 import { useDispatch, useSelector } from 'react-redux'
 import { useLocation, useNavigate } from 'react-router-dom'
-import { setDeveloper, setProject, type RootState } from './store/guideStore'
+import {
+  setDeveloper,
+  setProject,
+  toggleCapability as toggleCapabilityAction,
+  type RootState
+} from './store/guideStore'
 import { Dashboard } from './components/Dashboard'
 import { EnvironmentFixDialog } from './components/EnvironmentFixDialog'
 import { ErrorNotice } from './components/ErrorNotice'
-import { Tabs } from './components/Tabs'
 import {
   useGoalsQuery,
   useLazyEnvironmentReportQuery,
@@ -234,7 +238,12 @@ function FlowView({
       : goal?.id === 'web' && webEdition === 'clean'
         ? 'alx'
         : null
-  const { data: releaseData = [] } = useReleasesQuery(releaseApp ?? '', {
+  const {
+    data: releaseData = [],
+    isError: releaseError,
+    isFetching: releaseFetching,
+    refetch: refetchReleases
+  } = useReleasesQuery(releaseApp ?? '', {
     skip: !releaseApp
   })
   const releases = releaseData as Release[]
@@ -285,13 +294,7 @@ function FlowView({
   const choose = (key: keyof typeof config, value: string) =>
     dispatch(setDeveloper({ [key]: value }))
   const toggleCapability = (value: string) =>
-    dispatch(
-      setDeveloper({
-        capabilities: capabilities.includes(value)
-          ? capabilities.filter(item => item !== value)
-          : [...capabilities, value]
-      })
-    )
+    dispatch(toggleCapabilityAction(value))
   const chooseDestination = () => {
     setFolderError('')
     window.dispatchEvent(new Event('alemon:choose-directory'))
@@ -338,23 +341,35 @@ function FlowView({
     return index === -1 ? url : mirror.url.slice(0, index) + url
   }
   const releasePicker = () => (
-    <label className="release-picker">
-      选择版本
-      <select
-        value={releaseURL ?? ''}
-        onChange={event => {
-          setReleaseURL(event.target.value)
-          setSelectedAssetURL(null)
-        }}
-      >
-        {releases.map(item => (
-          <option value={item.url} key={item.tag}>
-            {item.tag} · {item.name}
-          </option>
-        ))}
-      </select>
-      {!releases.length && <small>正在获取正式版本列表…</small>}
-    </label>
+    <div className="release-picker">
+      <label>
+        选择版本
+        <select
+          value={releaseURL ?? ''}
+          onChange={event => {
+            setReleaseURL(event.target.value)
+            setSelectedAssetURL(null)
+          }}
+        >
+          {releases.map(item => (
+            <option value={item.url} key={item.tag}>
+              {item.tag} · {item.name}
+            </option>
+          ))}
+        </select>
+      </label>
+      {!releases.length && !releaseError && releaseFetching && (
+        <small>正在获取正式版本列表…</small>
+      )}
+      {!releases.length && releaseError && (
+        <small className="text-[var(--theme-danger-text)]">
+          正式版本列表获取失败，可能是网络或代理问题。
+          <button type="button" onClick={() => void refetchReleases()}>
+            重试
+          </button>
+        </small>
+      )}
+    </div>
   )
   const selectedRelease = releases.find(item => item.url === releaseURL)
   const releaseAssets = recommendReleaseAssets(
@@ -1312,424 +1327,5 @@ function FlowView({
         </footer>
       </section>
     </section>
-  )
-}
-
-function LegacyDashboard({
-  goals,
-  goal,
-  report,
-  checking,
-  error,
-  onSelect,
-  onOpenGuide,
-  onCheck
-}: {
-  goals: Goal[]
-  goal?: Goal
-  report: Report | null
-  checking: boolean
-  error: string
-  onSelect: (id: string) => void
-  onOpenGuide: () => void
-  onCheck: () => void
-}) {
-  const readyCount =
-    report?.checks.filter(check => check.status === 'ready').length ?? 0
-  return (
-    <main className="dashboard-shell">
-      <header className="dashboard-bar">
-        <div className="brand dark">
-          <span>λ</span>
-          <div>
-            <strong>ALemonX</strong>
-            <small>后台中心</small>
-          </div>
-        </div>
-        <button className="primary-button" onClick={onOpenGuide}>
-          ？
-        </button>
-      </header>
-      <section className="dashboard-heading">
-        <div>
-          <p className="text-[var(--theme-accent-text)] text-xs font-extrabold uppercase tracking-[0.1em] mb-3">
-            后台中心
-          </p>
-          <h1>管理已创建的流程</h1>
-          <p>
-            在这里手动检查环境、查看准备状态；需要新建或继续引导时，随时重新打开引导。
-          </p>
-        </div>
-      </section>
-      {error && (
-        <p className="error" role="alert">
-          {error}
-        </p>
-      )}
-      <section className="console-goals">
-        {goals.map(item => (
-          <button
-            className={
-              item.id === goal?.id ? 'console-goal active' : 'console-goal'
-            }
-            key={item.id}
-            onClick={() => onSelect(item.id)}
-          >
-            <i>{icons[item.id] ?? '·'}</i>
-            <div>
-              <strong>{item.title}</strong>
-              <small>{item.description}</small>
-            </div>
-          </button>
-        ))}
-      </section>
-      {goal && (
-        <section className="dashboard-detail">
-          <div className="detail-heading">
-            <div>
-              <p className="text-[var(--theme-accent-text)] text-xs font-extrabold uppercase tracking-[0.1em] mb-3">
-                当前功能
-              </p>
-              <h2>{goal.title}</h2>
-              <p>{goal.description}</p>
-            </div>
-            <button
-              className="primary-button"
-              onClick={onCheck}
-              disabled={checking}
-            >
-              {checking ? '检查中…' : '手动检查环境'}
-            </button>
-          </div>
-          <section className="summary-grid">
-            <article>
-              <span>当前状态</span>
-              <strong className={report?.ready ? 'success' : ''}>
-                {report ? (report.ready ? '已准备' : '需要处理') : '未检查'}
-              </strong>
-              <small>
-                {report
-                  ? `检测于 ${new Date(report.checkedAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}`
-                  : '可在此手动检查'}
-              </small>
-            </article>
-            <article>
-              <span>环境通过项</span>
-              <strong>
-                {report ? `${readyCount} / ${report.checks.length}` : '—'}
-              </strong>
-              <small>{report?.platform ?? '等待检测本机信息'}</small>
-            </article>
-            <article>
-              <span>引导状态</span>
-              <strong>可重新打开</strong>
-              <small>关闭引导不会影响已有项目或环境</small>
-            </article>
-          </section>
-          <section className="content-card">
-            <h2>环境准备情况</h2>
-            {report ? (
-              <div className="check-list">
-                {report.checks.map(check => (
-                  <article
-                    className={`check-row ${check.status}`}
-                    key={check.id}
-                  >
-                    <span className="check-state">
-                      {check.status === 'ready' ? '✓' : '!'}
-                    </span>
-                    <div>
-                      <strong>{check.name}</strong>
-                      <p>{check.detail}</p>
-                    </div>
-                    {check.suggestion && <small>{check.suggestion}</small>}
-                  </article>
-                ))}
-              </div>
-            ) : (
-              <div className="empty-state">
-                <span>◌</span>
-                <p>尚未进行环境检查</p>
-                <small>点击“手动检查环境”即可查看本机准备状态。</small>
-              </div>
-            )}
-          </section>
-        </section>
-      )}
-    </main>
-  )
-}
-
-void LegacyDashboard
-
-void DashboardDeprecated
-function DashboardDeprecated({
-  report,
-  checking,
-  error,
-  defaultPage,
-  onOpenGuide,
-  onCheck
-}: {
-  goals: Goal[]
-  goal?: Goal
-  report: Report | null
-  checking: boolean
-  error: string
-  defaultPage: string
-  onSelect: (id: string) => void
-  onOpenGuide: () => void
-  onCheck: () => void
-}) {
-  const [page, setPage] = useState<string>(defaultPage)
-  const [root, setRoot] = useState(
-    () => new URLSearchParams(window.location.search).get('root') ?? '.'
-  )
-  const [file, setFile] = useState('.npmrc')
-  const [content, setContent] = useState('')
-  const [output, setOutput] = useState('')
-  const [message, setMessage] = useState('chore: update robot')
-  const [busy, setBusy] = useState(false)
-  useEffect(() => setPage(defaultPage), [defaultPage])
-  const api = async (method: string, data: Record<string, string>) => {
-    setBusy(true)
-    try {
-      const query = method === 'GET' ? `?${new URLSearchParams(data)}` : ''
-      const response = await fetch(
-        `/api/v1/robot${query}`,
-        method === 'GET'
-          ? {}
-          : {
-              method,
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(data)
-            }
-      )
-      const json = (await response.json()) as {
-        output?: string
-        error?: string
-      }
-      if (!response.ok) throw new Error(json.error)
-      setOutput(json.output ?? '操作完成。')
-      if (method === 'GET') setContent(json.output ?? '')
-    } catch (reason) {
-      setOutput(reason instanceof Error ? reason.message : '操作未完成。')
-    } finally {
-      setBusy(false)
-    }
-  }
-  const editorFile = (next: string) => {
-    setFile(next)
-    api('GET', { root, file: next })
-  }
-  const operations: Array<[string, string, string]> = [
-    ['install', '重载依赖', '重新安装项目需要的包。'],
-    ['dev', '开发模式启动', '在开发模式运行机器人。'],
-    ['build', '构建应用', '生成可发布的构建产物。'],
-    ['pm2', '后台模式启动', '先构建，再交给 PM2 在后台守护运行。']
-  ]
-  const catalogs =
-    page === 'plugins'
-      ? [
-          ['alemonjs', 'AlemonJS 核心', '机器人框架核心包。'],
-          ['@alemonjs/db', '数据存储', '为机器人增加数据库能力。'],
-          ['@alemonjs/bubble', '气泡服务', '接入气泡相关能力。']
-        ]
-      : [
-          ['@alemonjs/onebot', 'OneBot 连接', '连接支持 OneBot 协议的平台。'],
-          ['@alemonjs/qq-bot', 'QQ Bot 连接', '连接 QQ 官方机器人平台。'],
-          ['@alemonjs/discord', 'Discord 连接', '连接 Discord 平台。']
-        ]
-  return (
-    <main className="guide-shell">
-      <section className="guide-window dashboard-window">
-        <header className="guide-bar">
-          <span className="console-title">后台中心</span>
-          <button className="primary-button" onClick={onOpenGuide}>
-            ？
-          </button>
-        </header>
-        <section className="console-layout">
-          <aside className="console-nav">
-            <button
-              className={page === 'environment' ? 'active' : ''}
-              onClick={() => setPage('environment')}
-            >
-              环境管理
-            </button>
-            <button
-              className={page === 'robot' ? 'active' : ''}
-              onClick={() => setPage('robot')}
-            >
-              机器人管理
-            </button>
-            <button
-              className={page === 'plugins' ? 'active' : ''}
-              onClick={() => setPage('plugins')}
-            >
-              插件管理
-            </button>
-            <button
-              className={page === 'connections' ? 'active' : ''}
-              onClick={() => setPage('connections')}
-            >
-              连接管理
-            </button>
-          </aside>
-          <section className="console-page">
-            {page === 'environment' ? (
-              <>
-                <p className="text-[var(--theme-accent-text)] text-xs font-extrabold uppercase tracking-[0.1em] mb-3">
-                  环境管理
-                </p>
-                <h1>检查当前电脑的开发环境</h1>
-                <p>这里会检查 Node.js、Git 等机器人需要的工具。</p>
-                <button
-                  className="primary-button"
-                  onClick={onCheck}
-                  disabled={checking}
-                >
-                  {checking ? '检查中…' : '开始检查'}
-                </button>
-                {report && (
-                  <div className="compact-checks">
-                    {report.checks.map(check => (
-                      <span className={check.status} key={check.id}>
-                        {check.status === 'ready' ? '✓' : '!'} {check.name}：
-                        {check.detail}
-                      </span>
-                    ))}
-                  </div>
-                )}
-              </>
-            ) : (
-              <>
-                <p className="text-[var(--theme-accent-text)] text-xs font-extrabold uppercase tracking-[0.1em] mb-3">
-                  {page === 'plugins'
-                    ? '插件管理'
-                    : page === 'connections'
-                      ? '连接管理'
-                      : '机器人管理'}
-                </p>
-                <h1>
-                  {page === 'plugins'
-                    ? '安装机器人能力'
-                    : page === 'connections'
-                      ? '安装平台连接包'
-                      : '管理你的机器人项目'}
-                </h1>
-                {page !== 'robot' && page !== 'environment' && (
-                  <section className="package-catalog">
-                    {catalogs.map(([pkg, title, note]) => (
-                      <article key={pkg}>
-                        <strong>{title}</strong>
-                        <small>{note}</small>
-                        <code>{pkg}</code>
-                        <button
-                          className="primary-button"
-                          disabled={busy}
-                          onClick={() =>
-                            api('POST', {
-                              root,
-                              action: 'install-package',
-                              package: pkg
-                            })
-                          }
-                        >
-                          安装
-                        </button>
-                      </article>
-                    ))}
-                  </section>
-                )}
-                <div className="robot-root">
-                  <button
-                    className={root === '.' ? 'choice selected' : 'choice'}
-                    onClick={() => setRoot('.')}
-                  >
-                    <strong>当前运行目录</strong>
-                    <small>管理启动本工具所在的机器人项目。</small>
-                  </button>
-                  <button
-                    className={root !== '.' ? 'choice selected' : 'choice'}
-                    onClick={() => setRoot('')}
-                  >
-                    <strong>指定机器人目录</strong>
-                    <small>输入包含 package.json 的机器人文件夹。</small>
-                  </button>
-                  {root !== '.' && (
-                    <input
-                      value={root}
-                      onChange={event => setRoot(event.target.value)}
-                      placeholder="/完整/机器人/目录"
-                    />
-                  )}
-                </div>
-                {page === 'robot' && (
-                  <>
-                    <Tabs
-                      ariaLabel="机器人文件"
-                      className="robot-tabs"
-                      items={[
-                        { id: '.npmrc', label: '镜像设置' },
-                        { id: 'alemon.config.yaml', label: 'AlemonJS 配置' },
-                        { id: 'README.md', label: 'README' }
-                      ]}
-                      onChange={editorFile}
-                      value={file}
-                      variant="segmented"
-                    />
-                    <div className="file-editor">
-                      <textarea
-                        value={content}
-                        onChange={event => setContent(event.target.value)}
-                        placeholder="点击上方标签读取文件内容"
-                      />
-                      <button
-                        className="primary-button"
-                        disabled={busy}
-                        onClick={() => api('PUT', { root, file, content })}
-                      >
-                        保存 {file}
-                      </button>
-                    </div>
-                    <section className="robot-actions">
-                      {operations.map(([action, title, note]) => (
-                        <button
-                          key={action}
-                          disabled={busy}
-                          onClick={() => api('POST', { root, action })}
-                        >
-                          <strong>{title}</strong>
-                          <small>{note}</small>
-                        </button>
-                      ))}
-                      <div className="commit-action">
-                        <input
-                          value={message}
-                          onChange={event => setMessage(event.target.value)}
-                          placeholder="提交说明"
-                        />
-                        <button
-                          disabled={busy}
-                          onClick={() =>
-                            api('POST', { root, action: 'commit', message })
-                          }
-                        >
-                          提交代码
-                        </button>
-                      </div>
-                    </section>
-                  </>
-                )}
-                {(output || error) && (
-                  <pre className="robot-output">{output || error}</pre>
-                )}
-              </>
-            )}
-          </section>
-        </section>
-      </section>
-    </main>
   )
 }

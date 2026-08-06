@@ -24,6 +24,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"alemonx/internal/access"
+	"alemonx/internal/agent"
 	"alemonx/internal/ai"
 	"alemonx/internal/catalog"
 	"alemonx/internal/project"
@@ -45,14 +46,6 @@ type goal struct {
 type mirror struct {
 	Name string `json:"name"`
 	URL  string `json:"url"`
-}
-
-type task struct {
-	ID        string    `json:"id"`
-	GoalID    string    `json:"goalId"`
-	Status    string    `json:"status"`
-	Title     string    `json:"title"`
-	CreatedAt time.Time `json:"createdAt"`
 }
 
 type operationTask struct {
@@ -91,14 +84,35 @@ type server struct {
 	plugins         setupplugin.Registry
 	auth            *access.Manager
 	ai              *ai.Manager
+	agentSessions   *agent.SessionStore
+	agentConfirms   *agentConfirmManager
 	mu              sync.RWMutex
-	tasks           []task
 	operations      []operationTask
 	development     map[string]developmentProcess
 	webviewRuntimes map[string]*webViewRuntime
 	stopping        map[string]bool
-	requestID       atomic.Uint64
-	directoryRoots  []string
+	consoleCache    map[string]consoleSnapshot
+	// pm2Status lets tests substitute a fake PM2 state. The default read runs a
+	// real `npx pm2 jlist` behind a short timeout so a missing pm2 never blocks
+	// a local start request for the full package-manager timeout.
+	pm2Status      func(string) (robot.PM2Status, error)
+	requestID      atomic.Uint64
+	directoryRoots []string
+}
+
+// pm2StatusResult carries the outcome of a bounded PM2 status read.
+type pm2StatusResult struct {
+	status robot.PM2Status
+	err    error
+}
+
+// consoleSnapshot is a short-lived copy of the terminal's static context
+// (pwd, scripts, git status, node version). It barely changes and is far more
+// expensive to produce than the in-memory process output, so the terminal
+// polling loop reuses it instead of spawning git/node on every tick.
+type consoleSnapshot struct {
+	output string
+	at     time.Time
 }
 
 var goals = []goal{
@@ -139,7 +153,11 @@ func NewServerWithAuth(version string, staticFiles fs.FS, identity *access.Manag
 	if err != nil {
 		panic(err)
 	}
-	s := &server{version: version, assets: assets, static: http.FileServer(http.FS(assets)), checker: system.NewChecker(), plugins: setupplugin.NewRegistry(), auth: identity, ai: aiManager, development: map[string]developmentProcess{}, webviewRuntimes: map[string]*webViewRuntime{}, stopping: map[string]bool{}, directoryRoots: managedDirectoryRoots()}
+	sessionStore, err := agent.NewSessionStore()
+	if err != nil {
+		panic(err)
+	}
+	s := &server{version: version, assets: assets, static: http.FileServer(http.FS(assets)), checker: system.NewChecker(), plugins: setupplugin.NewRegistry(), auth: identity, ai: aiManager, agentSessions: sessionStore, agentConfirms: newAgentConfirmManager(), development: map[string]developmentProcess{}, webviewRuntimes: map[string]*webViewRuntime{}, stopping: map[string]bool{}, consoleCache: map[string]consoleSnapshot{}, directoryRoots: managedDirectoryRoots()}
 	if len(templateFiles) > 0 {
 		templates, err := fs.Sub(templateFiles[0], "templates")
 		if err != nil {
@@ -153,9 +171,7 @@ func NewServerWithAuth(version string, staticFiles fs.FS, identity *access.Manag
 	mux.HandleFunc("/api/v1/auth/setup", s.authSetupHandler)
 	mux.HandleFunc("/api/v1/auth/login", s.authLoginHandler)
 	mux.HandleFunc("/api/v1/auth/logout", s.authLogoutHandler)
-	mux.HandleFunc("/api/v1/app", s.app)
 	mux.HandleFunc("/api/v1/goals", s.listGoals)
-	mux.HandleFunc("/api/v1/tasks", s.tasksHandler)
 	mux.HandleFunc("/api/v1/checks", s.checksHandler)
 	mux.HandleFunc("/api/v1/projects", s.projectsHandler)
 	mux.HandleFunc("/api/v1/releases", s.releasesHandler)
@@ -166,6 +182,10 @@ func NewServerWithAuth(version string, staticFiles fs.FS, identity *access.Manag
 	mux.HandleFunc("/api/v1/ai/providers", s.aiProvidersHandler)
 	mux.HandleFunc("/api/v1/ai/models", s.aiModelsHandler)
 	mux.HandleFunc("/api/v1/ai/chat", s.aiChatHandler)
+	mux.HandleFunc("/api/v1/agent/chat", s.agentChatHandler)
+	mux.HandleFunc("/api/v1/agent/sessions", s.agentSessionsHandler)
+	mux.HandleFunc("/api/v1/agent/sessions/", s.agentSessionHandler)
+	mux.HandleFunc("/api/v1/agent/approve", s.agentConfirmHandler)
 	mux.HandleFunc("/api/v1/system/ssh", s.sshHandler)
 	mux.HandleFunc("/api/v1/directories", s.directoryHandler)
 	mux.HandleFunc("/api/v1/catalog", s.catalogHandler)
@@ -1095,33 +1115,82 @@ func (s *server) robotHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, result)
 }
 
+// consolePayload splits the terminal's live process output from its static
+// project context. The two have different update rates, so returning them as
+// one blob forces the browser to re-render the expensive snapshot on every poll.
+type consolePayload struct {
+	Path     string `json:"path"`
+	Output   string `json:"output"`
+	Snapshot string `json:"snapshot"`
+	Mode     string `json:"mode"`
+	Running  bool   `json:"running"`
+}
+
 func (s *server) robotConsoleHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "该操作暂不支持。")
 		return
 	}
 	root := r.URL.Query().Get("root")
-	result, err := s.robots.Console(root)
+	// The refresh flag bypasses the snapshot cache so a manual terminal refresh
+	// reflects just-saved package.json / config changes instead of stale context.
+	var console robot.Result
+	var err error
+	if r.URL.Query().Get("refresh") == "1" {
+		console, err = s.robots.Console(root)
+		if err == nil {
+			s.mu.Lock()
+			s.consoleCache[root] = consoleSnapshot{output: console.Output, at: time.Now()}
+			s.mu.Unlock()
+		}
+	} else {
+		console, err = s.cachedRobotConsole(root)
+	}
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	output, status := s.operationOutput(root, "app")
+	output, status, runError := s.operationOutput(root, "app")
 	mode := "前台运行"
-	if output == "" {
-		output, status = s.operationOutput(root, "dev")
+	if output == "" && status == "" {
+		output, status, runError = s.operationOutput(root, "dev")
 		mode = "开发模式"
 	}
-	if output != "" {
-		label := "最近一次" + mode + "输出"
-		if status == "running" {
-			label = mode + "实时输出"
+	payload := consolePayload{Path: root, Snapshot: console.Output, Mode: mode}
+	switch {
+	case status == "running":
+		payload.Output = "$ " + mode + "实时输出\n" + output
+		payload.Running = true
+	case output != "":
+		payload.Output = "$ 最近一次" + mode + "输出\n" + output
+		if status == "failed" && runError != "" {
+			// runError already reads like "开发进程已退出：exit status 1".
+			// Appending it as its own paragraph avoids a redundant heading.
+			payload.Output += "\n\n" + runError
 		}
-		result.Output += "\n\n$ " + label + "\n" + output
-	} else {
-		result.Output += "\n\n$ 运行终端\n当前没有正在运行的前台或开发进程。"
+	default:
+		payload.Output = "当前没有正在运行的前台或开发进程。"
 	}
-	writeJSON(w, http.StatusOK, result)
+	writeJSON(w, http.StatusOK, payload)
+}
+
+// cachedRobotConsole reuses the terminal's static context for a short window so
+// the polling loop never spawns git/node just to render an unchanged header.
+func (s *server) cachedRobotConsole(root string) (robot.Result, error) {
+	s.mu.RLock()
+	cached, ok := s.consoleCache[root]
+	s.mu.RUnlock()
+	if ok && time.Since(cached.at) < 15*time.Second {
+		return robot.Result{Path: root, Output: cached.output}, nil
+	}
+	result, err := s.robots.Console(root)
+	if err != nil {
+		return robot.Result{}, err
+	}
+	s.mu.Lock()
+	s.consoleCache[root] = consoleSnapshot{output: result.Output, at: time.Now()}
+	s.mu.Unlock()
+	return result, nil
 }
 
 func (s *server) robotPM2LogsHandler(w http.ResponseWriter, r *http.Request) {
@@ -1248,15 +1317,35 @@ func (s *server) robotTasksHandler(w http.ResponseWriter, r *http.Request) {
 	created := operationTask{ID: "robot-" + time.Now().Format("20060102150405.000000000"), Root: input.Root, Action: input.Action, Status: "running", CreatedAt: time.Now()}
 	if input.Action == "dev-stop" || input.Action == "app-stop" {
 		mode := map[string]string{"dev-stop": "开发模式", "app-stop": "前台运行"}[input.Action]
-		if err := s.stopDevelopment(input.Root, mode); err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
+		if !s.developmentRunning(input.Root) {
+			finished := time.Now()
+			created.Status = "completed"
+			created.Output = "当前没有正在运行的" + mode + "进程。"
+			created.FinishedAt = &finished
+			s.addOperation(created)
+			writeJSON(w, http.StatusAccepted, created)
 			return
 		}
-		finished := time.Now()
-		created.Status = "completed"
-		created.Output = "已请求停止" + mode + "；等待进程退出。"
-		created.FinishedAt = &finished
+		// The stop task stays "running" until the process actually exits, so the
+		// UI shows a real "正在停止" state instead of claiming success early.
+		created.Status = "running"
+		created.Output = "正在请求停止" + mode + "…"
 		s.addOperation(created)
+		if !s.stopDevelopment(input.Root, mode) {
+			// The process vanished between the check and the stop request. Finish
+			// the task immediately so it never hangs as "running" forever.
+			finished := time.Now()
+			s.mu.Lock()
+			for index := range s.operations {
+				if s.operations[index].ID == created.ID {
+					s.operations[index].Status = "completed"
+					s.operations[index].Output = "进程已退出，无需停止。"
+					s.operations[index].FinishedAt = &finished
+					break
+				}
+			}
+			s.mu.Unlock()
+		}
 		writeJSON(w, http.StatusAccepted, created)
 		return
 	}
@@ -1272,6 +1361,12 @@ func (s *server) robotTasksHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		if s.developmentRunning(input.Root) {
 			writeError(w, http.StatusConflict, "当前目录已有前台或开发进程正在运行；请先停止后再启动。")
+			return
+		}
+		// A local process and a background PM2 service would each start their own
+		// bot instance for the same directory. Block the second one.
+		if message, blocked := s.localStartBlockedByPM2(input.Root); blocked {
+			writeError(w, http.StatusConflict, message)
 			return
 		}
 		command, err := s.robots.DevelopmentCommand(input.Root)
@@ -1308,6 +1403,12 @@ func (s *server) robotTasksHandler(w http.ResponseWriter, r *http.Request) {
 		go s.watchDevelopmentTask(created.ID, input.Root, input.Action, command, stdout, stderr)
 		writeJSON(w, http.StatusAccepted, created)
 		return
+	}
+	if input.Action == "pm2" || input.Action == "pm2-reload" {
+		if message, blocked := s.pm2StartBlockedByLocal(input.Root); blocked {
+			writeError(w, http.StatusConflict, message)
+			return
+		}
 	}
 	log.Printf("[ROBOT %s] 开始 action=%s root=%q", created.ID, created.Action, created.Root)
 	s.addOperation(created)
@@ -1346,15 +1447,60 @@ func (s *server) addOperation(created operationTask) {
 	}
 }
 
-func (s *server) operationOutput(root, action string) (string, string) {
+func (s *server) operationOutput(root, action string) (output, status, runError string) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	for _, item := range s.operations {
 		if item.Root == root && item.Action == action {
-			return item.Output, item.Status
+			return item.Output, item.Status, item.Error
 		}
 	}
-	return "", ""
+	return "", "", ""
+}
+
+// pm2StatusFor returns the PM2 state, or an error after a short window. A
+// bounded read keeps a broken pm2 install (which would otherwise trigger a
+// package-manager download) from holding up a local start request for minutes.
+func (s *server) pm2StatusFor(root string) (robot.PM2Status, error) {
+	if s.pm2Status != nil {
+		return s.pm2Status(root)
+	}
+	return s.pm2StatusWithin(root, 3*time.Second)
+}
+
+func (s *server) pm2StatusWithin(root string, window time.Duration) (robot.PM2Status, error) {
+	done := make(chan pm2StatusResult, 1)
+	go func() {
+		status, err := s.robots.PM2Status(root)
+		done <- pm2StatusResult{status: status, err: err}
+	}()
+	select {
+	case result := <-done:
+		return result.status, result.err
+	case <-time.After(window):
+		// The goroutine may still be reading; it only queries PM2 and never
+		// mutates server state, so it is safe to abandon.
+		return robot.PM2Status{}, fmt.Errorf("读取 PM2 状态超时")
+	}
+}
+
+// localStartBlockedByPM2 reports whether the background PM2 service is running
+// and therefore blocks starting a local (dev/app) process for the same root.
+func (s *server) localStartBlockedByPM2(root string) (string, bool) {
+	status, err := s.pm2StatusFor(root)
+	if err != nil || !status.Running {
+		return "", false
+	}
+	return "当前目录正在后台（PM2）运行；请先在“后台运行”中停止服务，再启动本机进程。", true
+}
+
+// pm2StartBlockedByLocal reports whether a local process is running and
+// therefore blocks starting the background PM2 service for the same root.
+func (s *server) pm2StartBlockedByLocal(root string) (string, bool) {
+	if !s.developmentRunning(root) {
+		return "", false
+	}
+	return "当前目录正在本机（开发/前台）运行；请先停止本机进程，再启动后台服务。", true
 }
 
 func (s *server) developmentRunning(root string) bool {
@@ -1374,12 +1520,16 @@ func (s *server) registerDevelopment(root, taskID string, command *exec.Cmd) boo
 	return true
 }
 
-func (s *server) stopDevelopment(root, mode string) error {
+// stopDevelopment requests a graceful stop of the supervised process and
+// reports whether a process was actually running. A false result lets the
+// caller finish its stop task immediately instead of waiting for an exit that
+// already happened.
+func (s *server) stopDevelopment(root, mode string) bool {
 	s.mu.Lock()
 	process, running := s.development[root]
 	if !running {
 		s.mu.Unlock()
-		return nil
+		return false
 	}
 	s.stopping[root] = true
 	s.mu.Unlock()
@@ -1403,7 +1553,7 @@ func (s *server) stopDevelopment(root, mode string) error {
 			_ = forceStopManagedProcess(current.Command)
 		}
 	})
-	return nil
+	return true
 }
 
 func (s *server) appendOperationOutput(id, output string) {
@@ -1452,6 +1602,9 @@ func (s *server) watchDevelopmentTask(id, root, action string, command *exec.Cmd
 		delete(s.development, root)
 		delete(s.stopping, root)
 	}
+	// A pending stop task only becomes "completed" once the process has really
+	// exited, which is exactly the moment we reach here.
+	s.completePendingStopTasks(root, finished)
 	for index := range s.operations {
 		if s.operations[index].ID != id {
 			continue
@@ -1475,6 +1628,23 @@ func (s *server) watchDevelopmentTask(id, root, action string, command *exec.Cmd
 			log.Printf("[ROBOT %s] %s正常退出", id, processName)
 		}
 		return
+	}
+}
+
+// completePendingStopTasks marks every in-flight dev-stop/app-stop task for a
+// root as completed once the supervised process has really exited.
+func (s *server) completePendingStopTasks(root string, finished time.Time) {
+	for index := range s.operations {
+		item := &s.operations[index]
+		if item.Root != root || item.Status != "running" {
+			continue
+		}
+		if item.Action != "dev-stop" && item.Action != "app-stop" {
+			continue
+		}
+		item.Status = "completed"
+		item.FinishedAt = &finished
+		item.Output = "已停止" + map[string]string{"dev-stop": "开发模式", "app-stop": "前台运行"}[item.Action] + "。"
 	}
 }
 
@@ -2147,29 +2317,8 @@ func (s *server) health(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "version": s.version})
 }
 
-func (s *server) app(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"name": "alemonx", "version": s.version})
-}
-
 func (s *server) listGoals(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, goals)
-}
-
-func (s *server) listTasks(w http.ResponseWriter, _ *http.Request) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	writeJSON(w, http.StatusOK, s.tasks)
-}
-
-func (s *server) tasksHandler(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case http.MethodGet:
-		s.listTasks(w, r)
-	case http.MethodPost:
-		s.createTask(w, r)
-	default:
-		writeError(w, http.StatusMethodNotAllowed, "该操作暂不支持。")
-	}
 }
 
 func (s *server) checksHandler(w http.ResponseWriter, r *http.Request) {
@@ -2197,34 +2346,6 @@ func (s *server) checksHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, s.checker.CheckGoal(input.GoalID, input.Variant))
-}
-
-func (s *server) createTask(w http.ResponseWriter, r *http.Request) {
-	var input struct {
-		GoalID string `json:"goalId"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-		writeError(w, http.StatusBadRequest, "请求内容无法识别，请重新选择操作目标。")
-		return
-	}
-
-	selected, ok := findGoal(input.GoalID)
-	if !ok {
-		writeError(w, http.StatusBadRequest, "所选操作目标不存在，请返回首页重新选择。")
-		return
-	}
-
-	created := task{
-		ID:        input.GoalID + "-" + time.Now().Format("20060102150405.000000000"),
-		GoalID:    input.GoalID,
-		Status:    "ready",
-		Title:     selected.Title,
-		CreatedAt: time.Now(),
-	}
-	s.mu.Lock()
-	s.tasks = append([]task{created}, s.tasks...)
-	s.mu.Unlock()
-	writeJSON(w, http.StatusCreated, created)
 }
 
 func findGoal(id string) (goal, bool) {

@@ -63,6 +63,40 @@ func TestDevelopmentTemplatePackagesFollowSelections(t *testing.T) {
 	}
 }
 
+func TestWriteAgentsFileReflectsSelections(t *testing.T) {
+	root := t.TempDir()
+	if err := writeAgentsFile(root, Config{Language: "ts", ESLint: true}); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(root, "AGENTS.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(data)
+	for _, want := range []string{"AlemonJS", "npx tsc --noEmit", "npx eslint src --ext .ts", "src/"} {
+		if !strings.Contains(content, want) {
+			t.Errorf("AGENTS.md 缺少 %q：\n%s", want, content)
+		}
+	}
+	if strings.Contains(content, "main.ts") {
+		t.Errorf("JS 项目不应含 .ts 验证命令")
+	}
+}
+
+func TestWriteAgentsFileJSWithoutESLint(t *testing.T) {
+	root := t.TempDir()
+	if err := writeAgentsFile(root, Config{Language: "js", ESLint: false}); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(filepath.Join(root, "AGENTS.md"))
+	if strings.Contains(string(data), "eslint") {
+		t.Error("未启用 ESLint 时不应写入 eslint 验证命令")
+	}
+	if strings.Contains(string(data), "--ext .js") {
+		t.Error("未启用 ESLint 时不应有 .js 扩展验证")
+	}
+}
+
 func TestPatchPackageDeclaresSelectedPackageManager(t *testing.T) {
 	root := t.TempDir()
 	if err := copyTemplate(os.DirFS("../../templates"), "bot", root); err != nil {

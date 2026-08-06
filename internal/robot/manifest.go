@@ -117,7 +117,7 @@ func validateManifest(input PackageManifest) error {
 	if !npmNamePattern.MatchString(input.Name) {
 		return errors.New("包名只能使用小写字母、数字、短横线、下划线和一个可选的 @scope/")
 	}
-	if !semver(input.Version) {
+	if !isNpmVersion(input.Version) {
 		return errors.New("版本号应为 1.2.3 格式")
 	}
 	if len(input.Description) > 512 || strings.ContainsAny(input.Description, "\r\n") {

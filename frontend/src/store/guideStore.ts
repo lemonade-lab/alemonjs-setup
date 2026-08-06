@@ -57,6 +57,12 @@ const guideSlice = createSlice({
     },
     setProject(state, action: PayloadAction<Partial<ProjectDraft>>) {
       Object.assign(state.project, action.payload)
+    },
+    toggleCapability(state, action: PayloadAction<string>) {
+      const current = state.developer.capabilities ?? []
+      state.developer.capabilities = current.includes(action.payload)
+        ? current.filter(item => item !== action.payload)
+        : [...current, action.payload]
     }
   }
 })
@@ -75,5 +81,5 @@ export const store = configureStore({
     getDefault({ serializableCheck: false }).concat(workspaceApi.middleware)
 })
 export const persistor = persistStore(store)
-export const { setDeveloper, setProject } = guideSlice.actions
+export const { setDeveloper, setProject, toggleCapability } = guideSlice.actions
 export type RootState = ReturnType<typeof store.getState>
