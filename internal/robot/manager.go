@@ -23,6 +23,14 @@ type Result struct {
 	Path   string `json:"path"`
 }
 
+// PM2LogPage is a read-only slice of PM2 output. Page 1 is always the newest
+// output, so users see the current problem before choosing to inspect history.
+type PM2LogPage struct {
+	Output   string `json:"output"`
+	Page     int    `json:"page"`
+	HasOlder bool   `json:"hasOlder"`
+}
+
 // Validate confirms that a saved robot directory still exists and is an
 // eligible Node.js project. It is intentionally side-effect free.
 func (Manager) Validate(root string) (Result, error) {
@@ -176,10 +184,11 @@ type RuntimePackage struct {
 }
 
 type RuntimePreflight struct {
-	Login   string   `json:"login"`
-	Package string   `json:"package,omitempty"`
-	Missing []string `json:"missing"`
-	Summary []string `json:"summary"`
+	Login                string   `json:"login"`
+	Package              string   `json:"package,omitempty"`
+	Missing              []string `json:"missing"`
+	Summary              []string `json:"summary"`
+	DependenciesComplete bool     `json:"dependenciesComplete"`
 }
 
 var runtimePlatforms = []struct{ id, label, pkg string }{
@@ -375,6 +384,17 @@ func (m Manager) RuntimePreflight(root string) (RuntimePreflight, error) {
 		return RuntimePreflight{}, fmt.Errorf("无法读取机器人运行配置：%w", err)
 	}
 	preflight := RuntimePreflight{Missing: []string{}, Summary: []string{}}
+	dependencies, dependencyErr := m.RuntimeDependencies(root)
+	if dependencyErr != nil {
+		return RuntimePreflight{}, dependencyErr
+	}
+	preflight.DependenciesComplete = len(dependencies) == 0
+	if preflight.DependenciesComplete {
+		preflight.Summary = append(preflight.Summary, "项目依赖：完整")
+	} else {
+		preflight.Missing = append(preflight.Missing, dependencies...)
+		preflight.Summary = append(preflight.Summary, "项目依赖：需要重载")
+	}
 	match := regexp.MustCompile(`(?m)^login:\s*['\"]?([^'\"\r\n#]+)`).FindStringSubmatch(string(content))
 	if len(match) < 2 || strings.TrimSpace(match[1]) == "" {
 		preflight.Summary = append(preflight.Summary, "登录连接：未配置（可选择无 login 启动）")
@@ -407,6 +427,49 @@ func (m Manager) RuntimePreflight(root string) (RuntimePreflight, error) {
 	}
 	preflight.Summary = append(preflight.Summary, "自定义登录对象：未声明可校验字段")
 	return preflight, nil
+}
+
+// RuntimeDependencies checks every direct project dependency on disk. A lock
+// file alone is not enough: a partially completed install can leave the bot
+// unable to start even though package.json looks correct.
+func (Manager) RuntimeDependencies(root string) ([]string, error) {
+	path, err := projectPath(root)
+	if err != nil {
+		return nil, err
+	}
+	var manifest struct {
+		Dependencies    map[string]string `json:"dependencies"`
+		DevDependencies map[string]string `json:"devDependencies"`
+	}
+	data, err := os.ReadFile(filepath.Join(path, "package.json"))
+	if err != nil || json.Unmarshal(data, &manifest) != nil {
+		return nil, errors.New("无法读取 package.json")
+	}
+	if _, err := os.Stat(filepath.Join(path, "node_modules")); err != nil {
+		if os.IsNotExist(err) {
+			return []string{"未发现 node_modules，请先重载依赖"}, nil
+		}
+		return nil, fmt.Errorf("无法检查 node_modules：%w", err)
+	}
+	packages := map[string]bool{}
+	for name := range manifest.Dependencies {
+		packages[name] = true
+	}
+	for name := range manifest.DevDependencies {
+		packages[name] = true
+	}
+	missing := []string{}
+	for name := range packages {
+		if _, err := os.Stat(filepath.Join(path, "node_modules", filepath.FromSlash(name), "package.json")); err != nil {
+			if os.IsNotExist(err) {
+				missing = append(missing, name+" 未安装")
+				continue
+			}
+			return nil, fmt.Errorf("无法检查依赖 %s：%w", name, err)
+		}
+	}
+	sort.Strings(missing)
+	return missing, nil
 }
 
 // Console returns a fixed, read-only project snapshot. There is deliberately
@@ -454,6 +517,46 @@ func (Manager) Console(root string) (Result, error) {
 		lines = append(lines, "未检测到 Node.js。")
 	}
 	return Result{Path: path, Output: strings.Join(lines, "\n")}, nil
+}
+
+func (Manager) PM2Logs(root string, page int) (PM2LogPage, error) {
+	if _, err := projectPath(root); err != nil {
+		return PM2LogPage{}, err
+	}
+	if page < 1 {
+		page = 1
+	}
+	const pageSize = 120
+	requested := page * pageSize
+	output, err := run(root, "npx", "pm2", "logs", "--lines", strconv.Itoa(requested), "--nostream")
+	if err != nil {
+		return PM2LogPage{}, fmt.Errorf("无法读取 PM2 日志：%w", err)
+	}
+	lines := strings.Split(strings.TrimSpace(output), "\n")
+	if len(lines) == 1 && lines[0] == "" {
+		lines = nil
+	}
+	return paginatePM2LogLines(lines, page), nil
+}
+
+func paginatePM2LogLines(lines []string, page int) PM2LogPage {
+	if page < 1 {
+		page = 1
+	}
+	const pageSize = 120
+	end := len(lines) - (page-1)*pageSize
+	if end <= 0 {
+		return PM2LogPage{Output: "没有更早的 PM2 日志。", Page: page}
+	}
+	start := end - pageSize
+	if start < 0 {
+		start = 0
+	}
+	result := strings.Join(lines[start:end], "\n")
+	if result == "" {
+		result = "PM2 暂无可读取的日志。"
+	}
+	return PM2LogPage{Output: result, Page: page, HasOlder: start > 0}
 }
 
 // DevelopmentCommand prepares the project's declared development command for
@@ -618,6 +721,15 @@ func (m Manager) Run(root, action, message, packageName, version, tag, token str
 		}
 		return Result{}, err
 	}
+	if action == "dev" || action == "app" || action == "pm2" {
+		missing, err := (Manager{}).RuntimeDependencies(root)
+		if err != nil {
+			return Result{}, err
+		}
+		if len(missing) > 0 {
+			return Result{}, errors.New("项目依赖不完整：" + strings.Join(missing, "、") + "。请先执行“重载依赖”后再运行")
+		}
+	}
 	manager := "npm"
 	if _, err := os.Stat(filepath.Join(root, "yarn.lock")); err == nil {
 		manager = "yarn"
@@ -683,8 +795,16 @@ func (m Manager) Run(root, action, message, packageName, version, tag, token str
 		name, args = manager, []string{"run", "start"}
 	case "pm2-stop":
 		name, args = manager, []string{"run", "stop"}
+	case "pm2-restart":
+		name, args = "npx", []string{"pm2", "restart", "pm2.config.cjs", "--update-env"}
+	case "pm2-reload":
+		name, args = "npx", []string{"pm2", "reload", "pm2.config.cjs", "--update-env"}
+	case "pm2-delete":
+		name, args = "npx", []string{"pm2", "delete", "pm2.config.cjs"}
 	case "pm2-status":
 		name, args = "npx", []string{"pm2", "list"}
+	case "pm2-logs":
+		name, args = "npx", []string{"pm2", "logs", "--lines", "120", "--nostream"}
 	case "install-package":
 		if !allowedInstallPackage(packageName) {
 			return Result{}, errors.New("不支持的 AlemonJS 包")

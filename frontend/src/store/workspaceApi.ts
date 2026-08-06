@@ -10,7 +10,8 @@ type LocalPackages = { items: Array<{ name: string; version?: string; descriptio
 type LocalPackageVersions = { source: 'git' | 'npm'; current: string; latest?: string; versions: string[] }
 export type RobotWebView = { id: string; package: string; name: string; description?: string }
 export type RuntimeOverview = { name: string; version: string; packageManager: string; hasAppScript: boolean; hasDevScript: boolean; hasBuildScript: boolean; hasStartScript: boolean; pm2Configured: boolean; platforms: Array<{ id: string; label: string; package: string; declared: boolean; installed: boolean; version?: string }> }
-export type RuntimePreflight = { login: string; package?: string; missing: string[]; summary: string[] }
+export type GitWorkspace = { root: string; repository: boolean; gitRoot?: string; remote?: string; branch?: string; upstream?: string; ahead: number; behind: number; changes: Array<{ status: string; path: string }>; branches: string[]; commits: Array<{ sha: string; shortSha: string; subject: string; createdAt: string }>; tags: string[] }
+export type RuntimePreflight = { login: string; package?: string; missing: string[]; summary: string[]; dependenciesComplete: boolean }
 type PackageManifest = { name: string; version: string; description: string; homepage: string; repository: string; license: string; private: boolean; access: string }
 export type SetupPlugin = { id: string; name: string; version: string; description?: string; platforms?: string[]; navigation: { label: string; icon?: string; order?: number }; pages: Array<{ id: string; label: string; description?: string }>; actions?: Array<{ id: string; label: string; description?: string; confirm?: boolean; page?: string; fields?: Array<{ key: string; label: string; type: 'select' | 'number' | 'text'; default?: string; options?: Array<{ label: string; value: string }> }> }>; runnable: boolean; enabled: boolean }
 
@@ -44,12 +45,14 @@ export const workspaceApi = createApi({
     robotProject: build.query<{ valid: boolean; path?: string; error?: string }, string>({ query: (root) => `robot/validate?${new URLSearchParams({ root })}`, keepUnusedDataFor: 60 }),
     robotFile: build.query<RobotResult, { root: string; file: string }>({ query: ({ root, file }) => `robot?${new URLSearchParams({ root, file })}`, providesTags: (_result, _error, arg) => [{ type: 'RobotFile', id: `${arg.root}:${arg.file}` }] }),
     gitStatus: build.query<Record<string, unknown>, string>({ query: (root) => `publish/git/status?${new URLSearchParams({ root })}`, providesTags: (_result, _error, root) => [{ type: 'GitStatus', id: root }] }),
+    gitWorkspace: build.query<GitWorkspace, string>({ query: (root) => `robot/git?${new URLSearchParams({ root })}`, providesTags: (_result, _error, root) => [{ type: 'GitStatus', id: root }] }),
     npmStatus: build.query<Record<string, unknown>, string>({ query: (root) => `publish/npm/status?${new URLSearchParams({ root })}`, providesTags: (_result, _error, root) => [{ type: 'NpmStatus', id: root }] }),
     npmPack: build.query<Record<string, unknown>, { root: string; commit?: string }>({ query: ({ root, commit }) => `publish/npm/pack?${new URLSearchParams(commit ? { root, commit } : { root })}` }),
     robotOperation: build.mutation<RobotResult, Record<string, string>>({
       query: (body) => ({ url: 'robot', method: 'POST', body }),
       invalidatesTags: (_result, _error, body) => [{ type: 'GitStatus', id: body.root }, { type: 'NpmStatus', id: body.root }, { type: 'LocalPackages', id: body.root }, { type: 'RobotWebViews', id: body.root }],
     }),
+    gitWorkspaceAction: build.mutation<RobotResult, { root: string; action: 'fetch' | 'pull' | 'commit'; message?: string }>({ query: (body) => ({ url: 'robot/git', method: 'POST', body }), invalidatesTags: (_result, _error, body) => [{ type: 'GitStatus', id: body.root }] }),
     startRobotTask: build.mutation<RobotTask, Record<string, string>>({
       query: (body) => ({ url: 'robot/tasks', method: 'POST', body }),
       invalidatesTags: (_result, _error, body) => [{ type: 'GitStatus', id: body.root }, { type: 'NpmStatus', id: body.root }, { type: 'RobotWebViews', id: body.root }, { type: 'Runtime', id: body.root }, 'OperationTasks'],
@@ -74,4 +77,4 @@ export const workspaceApi = createApi({
   }),
 })
 
-export const { useGoalsQuery, useLazyEnvironmentReportQuery, useReleasesQuery, useLazySetupUpdateQuery, useSetupPluginsQuery, useSetSetupPluginEnabledMutation, useStartSetupPluginTaskMutation, useCatalogQuery, useCatalogVersionsQuery, useCatalogDocumentQuery, useCatalogPackageConfigQuery, usePackageConfigQuery, useLazyPackageConfigQuery, useLocalPackagesQuery, useLocalPackageVersionsQuery, useLocalPackageReadmeQuery, useRobotWebViewsQuery, usePackageManifestQuery, useRobotTasksQuery, useLazyRobotConsoleQuery, useRobotRuntimeQuery, useLazyRobotRuntimePreflightQuery, useLazyRobotProjectQuery, useLazyRobotFileQuery, useGitStatusQuery, useNpmStatusQuery, useLazyNpmPackQuery, useRobotOperationMutation, useStartRobotTaskMutation, useWriteRobotFileMutation, useWritePackageManifestMutation, useWritePackageConfigMutation, useSaveRobotLoginMutation, useInitializeGitMutation } = workspaceApi
+export const { useGoalsQuery, useLazyEnvironmentReportQuery, useReleasesQuery, useLazySetupUpdateQuery, useSetupPluginsQuery, useSetSetupPluginEnabledMutation, useStartSetupPluginTaskMutation, useCatalogQuery, useCatalogVersionsQuery, useCatalogDocumentQuery, useCatalogPackageConfigQuery, usePackageConfigQuery, useLazyPackageConfigQuery, useLocalPackagesQuery, useLocalPackageVersionsQuery, useLocalPackageReadmeQuery, useRobotWebViewsQuery, usePackageManifestQuery, useRobotTasksQuery, useLazyRobotConsoleQuery, useRobotRuntimeQuery, useLazyRobotRuntimePreflightQuery, useLazyRobotProjectQuery, useLazyRobotFileQuery, useGitStatusQuery, useGitWorkspaceQuery, useGitWorkspaceActionMutation, useNpmStatusQuery, useLazyNpmPackQuery, useRobotOperationMutation, useStartRobotTaskMutation, useWriteRobotFileMutation, useWritePackageManifestMutation, useWritePackageConfigMutation, useSaveRobotLoginMutation, useInitializeGitMutation } = workspaceApi

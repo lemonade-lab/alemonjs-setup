@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { useDispatch, useSelector } from 'react-redux'
 import Markdown from 'markdown-to-jsx'
 import {
@@ -35,6 +35,7 @@ import { SetupUpdateButton } from './SetupUpdateButton'
 import { ErrorNotice } from './ErrorNotice'
 import { ConfirmDialog } from './ConfirmDialog'
 import { AuthControl } from './AuthControl'
+import { RobotGitControl } from './RobotGitControl'
 import { SSHControl } from './SSHControl'
 import {
   workspaceApi,
@@ -125,9 +126,9 @@ const directoryActions: Array<{
 }> = [
   { id: 'runtime', label: '运行', icon: <Play />, kind: 'section' },
   { id: 'config', label: '配置', icon: <Settings />, kind: 'section' },
-  { id: 'connections', label: '连接', icon: <Link />, kind: 'page' },
   { id: 'backpack', label: '背包', icon: <Archive />, kind: 'section' },
   { id: 'plugins', label: '插件', icon: <Package />, kind: 'page' },
+  { id: 'connections', label: '连接', icon: <Link />, kind: 'page' },
   { id: 'build', label: '发布', icon: <Send />, kind: 'page' }
 ]
 const emptyGitCommits: Array<{
@@ -416,6 +417,7 @@ export function Dashboard({
   const [gitCloneOpen, setGitCloneOpen] = useState(false)
   const [gitDestinationPickerOpen, setGitDestinationPickerOpen] = useState(false)
   const [gitDestination, setGitDestination] = useState('')
+  const [gitProject, setGitProject] = useState<Project | null>(null)
   const [invalidDirectory, setInvalidDirectory] = useState('')
   const [pendingBackpackRemoval, setPendingBackpackRemoval] = useState('')
   const [trackRuntimeTasks, setTrackRuntimeTasks] = useState(false)
@@ -895,7 +897,14 @@ export function Dashboard({
               item.action === 'dev' &&
               item.status === 'running'
           )}
+          foregroundRunning={operationTasks.some(
+            item =>
+              item.root === root &&
+              item.action === 'app' &&
+              item.status === 'running'
+          )}
           onRefresh={() => void refetchRuntime()}
+          onOpenConsole={() => setConsoleOpen(true)}
           onRun={(action, packageName) => {
             void api('POST', {
               root,
@@ -1212,6 +1221,7 @@ export function Dashboard({
                     setCatalogTitle(title)
                     setCatalogItem(null)
                   }}
+                  onGit={() => setGitProject(activeProject)}
                 />
               )}
             </section>
@@ -1223,6 +1233,7 @@ export function Dashboard({
         root={root}
         onClose={() => setConsoleOpen(false)}
       />
+      <RobotGitControl project={gitProject} onClose={() => setGitProject(null)} />
       {invalidDirectory && (
         <InvalidDirectoryDialog
           path={invalidDirectory}
@@ -1629,12 +1640,21 @@ function OperationTasksButton({ root }: { root: string }) {
           'install': '安装依赖',
           'dependency-status': '检查依赖',
           'dev': '开发启动',
+          'dev-stop': '停止开发模式',
+          'app': '前台运行',
+          'app-stop': '停止前台运行',
           'pm2': '后台启动',
+          'pm2-stop': '停止 PM2',
+          'pm2-restart': '重启 PM2',
+          'pm2-reload': '重载 PM2',
+          'pm2-delete': '删除 PM2 进程',
+          'pm2-status': '查看 PM2 状态',
+          'pm2-logs': '查看 PM2 日志',
           'install-package': '安装插件',
           'uninstall-package': '卸载插件',
           'install-connection': 'Yarn 安装连接包',
           'uninstall-connection': 'Yarn 卸载连接包',
-          'git-release': 'Git 打包',
+          'git-release': 'GIT 发布',
           'npm-publish': 'NPM 发布'
         }[action] ?? action)
   return (
@@ -2890,7 +2910,9 @@ function RuntimePanel({
   loading,
   busy,
   developmentRunning,
+  foregroundRunning,
   onRefresh,
+  onOpenConsole,
   onRun,
   onSaveLogin,
   developerMode
@@ -2900,7 +2922,9 @@ function RuntimePanel({
   loading: boolean
   busy: boolean
   developmentRunning: boolean
+  foregroundRunning: boolean
   onRefresh: () => void
+  onOpenConsole: () => void
   onRun: (action: string, packageName?: string) => void
   onSaveLogin: (login: string, packageName?: string) => Promise<boolean>
   developerMode: boolean
@@ -2920,6 +2944,7 @@ function RuntimePanel({
   const [loadPackageConfig] = useLazyPackageConfigQuery()
   const [loadRuntimePreflight] = useLazyRobotRuntimePreflightQuery()
   const [loginChoice, setLoginChoice] = useState<LoginChoice | null>(null)
+  const [pm2LogsOpen, setPM2LogsOpen] = useState(false)
   const loginControlRef = useRef<HTMLElement>(null)
   const loginInputRef = useRef<HTMLInputElement>(null)
   const persistentReady = overview?.pm2Configured && overview.hasStartScript
@@ -2975,7 +3000,7 @@ function RuntimePanel({
       }
       if (preflight.missing.length) {
         setValidationMessage(
-          `当前登录连接“${preflight.login}”还缺少必填配置：${preflight.missing.join('、')}。请先在机器人 → 连接中填写后再启动。`
+          `运行前检查未通过：${preflight.missing.join('、')}。${preflight.dependenciesComplete === false ? '请先在“运行”中执行“重载依赖”。' : '请先在机器人 → 连接中填写必填配置后再启动。'}`
         )
         return
       }
@@ -3067,116 +3092,93 @@ function RuntimePanel({
         }}
       />
       <section className="runtime-command-list">
-
-        {developerMode && (
-          <section className="overview-actions">
+        <section className="runtime-operation-card runtime-session-card">
+          <header>
             <div>
-              <strong>开发运行</strong>
-              <span>
-                {developmentRunning
-                  ? '正在由本机服务托管，可随时停止。'
-                  : overview?.hasDevScript
-                    ? '执行 yarn dev，日志进入运行终端。'
-                    : '当前项目没有 dev 脚本。'}
-              </span>
+              <strong>本机运行</strong>
+              <span>适合调试。停止后，机器人就会下线。</span>
             </div>
-            {overview?.hasDevScript ? (
-              <button
-                className={
-                  developmentRunning ? 'secondary-button' : 'primary-button'
-                }
-                disabled={busy || !overview?.hasDevScript}
-                title={
-                  overview?.hasDevScript
-                    ? ''
-                    : '当前 package.json 没有 dev 命令，暂不能启动。'
-                }
-                onClick={() =>
-                  developmentRunning
-                    ? ask(
-                        '停止开发模式',
-                        '会停止此目录正在托管的开发进程。',
-                        () => onRun('dev-stop')
-                      )
-                    : void askStart(
-                        'dev',
-                        '运行',
-                        '会执行此项目的 dev 命令，并打开运行终端。'
-                      )
-                }
-              >
-                {developmentRunning ? '停止开发模式' : '运行'}
-              </button>
-            ) : (
-              <button
-                className="secondary-button"
-                disabled={busy}
-                onClick={() =>
-                  ask(
-                    '修复开发模式',
-                    '会补齐 dev 脚本，并保留现有 app 脚本。',
-                    () => onRun('repair-dev')
-                  )
-                }
-              >
-                修复
-              </button>
+            <button className="secondary-button" onClick={onOpenConsole}>
+              日志
+            </button>
+          </header>
+          <div className="runtime-operation-rows">
+            <section className="overview-actions">
+              <div>
+                <strong>依赖</strong>
+                <span>运行前会自动检查；有问题时可重新安装。</span>
+              </div>
+              <button className="text-button" disabled={busy} onClick={() => onRun('dependency-status')}>检查</button>
+              <button className="secondary-button" disabled={busy} onClick={() => ask('重新安装依赖', '会根据 package.json 重新安装当前机器人的全部依赖。', () => onRun('install'))}>重新安装</button>
+            </section>
+            {developerMode && (
+              <section className="overview-actions">
+                <div>
+                  <strong>开发运行</strong>
+                  <span>
+                    {developmentRunning
+                      ? '正在运行，可随时停止。'
+                      : foregroundRunning
+                        ? '当前正在前台运行，请先停止前台进程。'
+                      : overview?.hasDevScript
+                        ? '适合改代码、排查问题。'
+                        : '还没有开发命令。'}
+                  </span>
+                </div>
+                {overview?.hasDevScript ? (
+                  <button
+                    className={developmentRunning ? 'secondary-button' : 'primary-button'}
+                    disabled={busy || foregroundRunning}
+                    title={foregroundRunning ? '当前目录正在前台运行，请先停止。' : ''}
+                    onClick={() => developmentRunning
+                      ? ask('停止开发', '会停止当前项目的开发运行。', () => onRun('dev-stop'))
+                      : void askStart('dev', '启动开发', '会以开发模式启动，并打开运行日志。')}
+                  >
+                    {developmentRunning ? '停止开发' : '启动开发'}
+                  </button>
+                ) : (
+                  <button className="secondary-button" disabled={busy} onClick={() => ask('修复开发命令', '会补齐开发所需的运行命令，并保留现有设置。', () => onRun('repair-dev'))}>修复</button>
+                )}
+              </section>
             )}
-          </section>
-        )}
-        <section className="overview-actions">
-          <div>
-            <strong>前台运行</strong>
-            <span>
-              {overview?.hasAppScript
-                ? '执行 yarn app；适合直接观察程序输出。'
-                : '当前项目没有 app 脚本。'}
-            </span>
+            <section className="overview-actions">
+              <div>
+                <strong>前台运行</strong>
+                <span>
+                  {overview?.hasAppScript
+                    ? foregroundRunning
+                      ? '正在运行，可随时停止。'
+                      : developmentRunning
+                        ? '当前正在开发运行，请先停止开发进程。'
+                        : '直接启动机器人，方便查看输出。'
+                    : '还没有前台运行命令。'}
+                </span>
+              </div>
+              {overview?.hasAppScript ? (
+                <button
+                  className={foregroundRunning ? 'secondary-button' : 'primary-button'}
+                  disabled={busy || developmentRunning}
+                  title={developmentRunning ? '当前目录正在开发运行，请先停止。' : ''}
+                  onClick={() => foregroundRunning
+                    ? ask('停止前台运行', '会停止当前项目的前台运行。', () => onRun('app-stop'))
+                    : void askStart('app', '启动前台', '会直接启动机器人，并打开运行日志。')}
+                >
+                  {foregroundRunning ? '停止运行' : '启动前台'}
+                </button>
+              ) : developerMode ? (
+                <button className="secondary-button" disabled={busy} onClick={() => ask('修复前台运行', '会补齐前台运行所需的命令。', () => onRun('repair-dev'))}>修复</button>
+              ) : <small>还没有可直接运行的命令。</small>}
+            </section>
           </div>
-          {overview?.hasAppScript ? (
-            <button
-              className="secondary-button"
-              disabled={busy}
-              onClick={() =>
-                void askStart(
-                  'app',
-                  '前台运行',
-                  '会执行 yarn app，进程会保持在当前终端。'
-                )
-              }
-            >
-              运行
-            </button>
-          ) : developerMode ? (
-            <button
-              className="secondary-button"
-              disabled={busy}
-              onClick={() =>
-                ask(
-                  '修复前台运行',
-                  '会补齐标准 app 脚本（node index.js）。',
-                  () => onRun('repair-dev')
-                )
-              }
-            >
-              修复
-            </button>
-          ) : (
-            <small>当前项目没有可直接运行的 app 命令。</small>
-          )}
         </section>
-        {
-          <section className="overview-actions">
+        <section className="runtime-operation-card runtime-persistent-card">
+          <header>
             <div>
-              <strong>持久化运行</strong>
-              <span>
-                {persistentReady
-                  ? '执行 yarn start，由 PM2 守护，适合持续在线。'
-                  : '需要 start 脚本和 PM2 配置。'}
-              </span>
+              <strong>后台运行</strong>
+              <span>{persistentReady ? '适合长期在线；关闭本窗口后仍会继续运行。' : '还未准备好，修复后可长期在线。'}</span>
             </div>
             <button
-              className="secondary-button"
+              className="primary-button"
               disabled={busy || !persistentReady}
               title={
                 persistentReady ? '' : '补齐 start 脚本和 PM2 配置后可使用。'
@@ -3184,13 +3186,15 @@ function RuntimePanel({
               onClick={() =>
                 void askStart(
                   'pm2',
-                  '启动或重载 PM2',
-                  '会执行 yarn start，按此目录的 PM2 配置启动或重载服务。'
+                  '启动服务',
+                  '会在后台启动机器人；如已运行，将应用最新设置。'
                 )
               }
-            >
-              运行
+              >
+              启动服务
             </button>
+          </header>
+          <div className="runtime-operation-rows runtime-persistent-actions">
             <button
               className="secondary-button"
               disabled={busy || !overview?.pm2Configured}
@@ -3198,12 +3202,28 @@ function RuntimePanel({
                 overview?.pm2Configured ? '' : '当前目录没有 pm2.config.cjs。'
               }
               onClick={() =>
-                ask('杀死所有', '会停止此目录由 PM2 托管的服务。', () =>
+                ask('停止服务', '会停止当前项目在后台运行的机器人。', () =>
                   onRun('pm2-stop')
                 )
               }
             >
-              杀死所有
+              停止服务
+            </button>
+            <button
+              className="secondary-button"
+              disabled={busy || !overview?.pm2Configured}
+              title={overview?.pm2Configured ? '' : '当前目录没有 pm2.config.cjs。'}
+              onClick={() => ask('重启服务', '会停止并重新启动后台运行的机器人。', () => onRun('pm2-restart'))}
+            >
+              重启
+            </button>
+            <button
+              className="secondary-button"
+              disabled={busy || !overview?.pm2Configured}
+              title={overview?.pm2Configured ? '' : '当前目录没有 pm2.config.cjs。'}
+              onClick={() => ask('更新服务', '会尽量不中断服务地应用最新设置。', () => onRun('pm2-reload'))}
+            >
+              重载
             </button>
             {!persistentReady && (
               <button
@@ -3212,7 +3232,7 @@ function RuntimePanel({
                 onClick={() =>
                   ask(
                     '修复后台运行',
-                    '会补齐 start / stop 脚本、PM2 配置和所需依赖声明。',
+                    '会补齐后台运行所需的设置和依赖。',
                     () => onRun('repair-pm2')
                   )
                 }
@@ -3220,16 +3240,25 @@ function RuntimePanel({
                 修复
               </button>
             )}
+            <div className="runtime-persistent-utilities">
+              <button className="text-button" disabled={busy} onClick={() => onRun('pm2-status')}>状态</button>
+              <button className="text-button" disabled={busy || !overview?.pm2Configured} onClick={() => setPM2LogsOpen(true)}>日志</button>
             <button
-              className="text-button"
-              disabled={busy}
-              onClick={() => onRun('pm2-status')}
+              className="text-button danger-action"
+              disabled={busy || !overview?.pm2Configured}
+              onClick={() => ask('移除后台服务', '会移除后台运行记录；以后仍可再次启动。', () => onRun('pm2-delete'))}
             >
-              查看状态
+              删除
             </button>
+            </div>
+          </div>
           </section>
-        }
       </section>
+      <PM2LogsPanel
+        open={pm2LogsOpen}
+        root={root}
+        onClose={() => setPM2LogsOpen(false)}
+      />
       <section className="runtime-platforms">
         <header>
           <div>
@@ -3394,7 +3423,8 @@ function ControlCard({
   onPage,
   onSection,
   onBuildMode,
-  onCatalog
+  onCatalog,
+  onGit
 }: {
   page: Page
   section: Section
@@ -3411,6 +3441,7 @@ function ControlCard({
   onSection: (section: Section) => void
   onBuildMode: (mode: 'manifest' | 'npm' | 'git') => void
   onCatalog: (title: string) => void
+  onGit: () => void
 }) {
   const activePrimary =
     page === 'robot'
@@ -3431,7 +3462,7 @@ function ControlCard({
       : activePrimary === 'build'
         ? [
             { id: 'manifest', label: '包配置' },
-            { id: 'git', label: 'Git 打包' },
+            { id: 'git', label: 'GIT 发布' },
             { id: 'npm', label: 'NPM 发布' }
           ]
         : activePrimary === 'backpack' || activePrimary === 'runtime'
@@ -3470,7 +3501,14 @@ function ControlCard({
             <span>当前机器人</span>
             <strong>{project?.name ?? '未选择目录'}</strong>
           </div>
-          <i>◈</i>
+          <button
+            className="control-git"
+            onClick={onGit}
+            aria-label={`管理 ${project?.name ?? '当前机器人'} 的 Git`}
+            title="Git 管理"
+          >
+            <GitBranch />
+          </button>
         </header>
         <div className="control-list">
           {directoryActions
@@ -3504,7 +3542,7 @@ function ControlCard({
             </div>
           </>
         )}
-        {project && developerMode && (
+        {project && (
           <footer title={project.path}>
             <button
               className="icon-button"
@@ -3599,6 +3637,27 @@ function ReadonlyConsole({
       </section>
     </div>
   )
+}
+
+function PM2LogsPanel({ open, root, onClose }: { open: boolean; root: string; onClose: () => void }) {
+  const [page, setPage] = useState(1)
+  const [data, setData] = useState<{ output: string; page: number; hasOlder: boolean } | null>(null)
+  const [error, setError] = useState('')
+  const [loading, setLoading] = useState(false)
+  const load = useCallback(async (targetPage: number) => {
+    setLoading(true)
+    try {
+      const response = await fetch(`/api/v1/robot/pm2-logs?${new URLSearchParams({ root, page: String(targetPage) })}`)
+      const result = await response.json() as { output?: string; page?: number; hasOlder?: boolean; error?: string }
+      if (!response.ok) throw new Error(result.error || '无法读取 PM2 日志。')
+      setData({ output: result.output ?? 'PM2 暂无可读取的日志。', page: result.page ?? targetPage, hasOlder: Boolean(result.hasOlder) })
+      setError('')
+    } catch (reason) { setError(operationErrorMessage(reason, '无法读取 PM2 日志。')) } finally { setLoading(false) }
+  }, [root])
+  useEffect(() => { if (open) setPage(1) }, [open])
+  useEffect(() => { if (open && root) void load(page) }, [load, open, page, root])
+  if (!open) return null
+  return <div className="readonly-console-backdrop" role="presentation"><section className="readonly-console pm2-log-panel" role="dialog" aria-modal="true" aria-label="PM2 日志"><header><div><Terminal /><strong>PM2 运行日志</strong><small>默认显示最新一页；每页 120 行，只能查看。</small></div><div><button className="icon-button" disabled={loading} onClick={() => void load(page)} aria-label="刷新 PM2 日志" title="刷新"><RefreshCw /></button><button className="icon-button" onClick={onClose} aria-label="关闭 PM2 日志" title="关闭"><X /></button></div></header><pre>{loading && !data ? '正在读取最新 PM2 日志…' : error || data?.output || '暂无日志。'}</pre><footer className="pm2-log-pagination"><button className="secondary-button" disabled={loading || page <= 1} onClick={() => setPage(current => current - 1)}>更新一页</button><span>第 {data?.page ?? page} 页{page === 1 ? ' · 最新' : ''}</span><button className="secondary-button" disabled={loading || !data?.hasOlder} onClick={() => setPage(current => current + 1)}>更早一页</button></footer></section></div>
 }
 function EditorMode({
   active,
@@ -3760,7 +3819,7 @@ function GitReleasePanel({
         <span>
           {status?.packageName
             ? `${status.packageName}@${status.packageVersion || '未设置版本'} · ${status.packageManager}`
-            : 'Git 打包'}
+            : 'GIT 发布'}
         </span>
         <div className="release-toolbar-actions">
           <label className="release-version-field">
@@ -4032,7 +4091,7 @@ function GitReleasePanelNext({
         <span>
           {status?.packageName
             ? `${status.packageName}@${status.packageVersion || '未设置版本'} · ${status.packageManager}`
-            : 'Git 打包'}
+            : 'GIT 发布'}
         </span>
         <div className="release-toolbar-actions">
           <button
@@ -4152,7 +4211,7 @@ function GitReleasePanelNext({
                   </ol>
                 ) : (
                   <p className="release-history-empty">
-                    后续每次 Git 打包都会在 release 中记录源码分支与 commit。
+                    后续每次 GIT 发布都会在 release 中记录源码分支与 commit。
                   </p>
                 )}
               </div>

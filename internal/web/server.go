@@ -152,6 +152,7 @@ func NewServerWithAuth(version string, staticFiles fs.FS, identity *access.Manag
 	mux.HandleFunc("/api/v1/robot", s.robotHandler)
 	mux.HandleFunc("/api/v1/robot/validate", s.robotValidateHandler)
 	mux.HandleFunc("/api/v1/robot/console", s.robotConsoleHandler)
+	mux.HandleFunc("/api/v1/robot/pm2-logs", s.robotPM2LogsHandler)
 	mux.HandleFunc("/api/v1/robot/runtime", s.robotRuntimeHandler)
 	mux.HandleFunc("/api/v1/robot/runtime/preflight", s.robotRuntimePreflightHandler)
 	mux.HandleFunc("/api/v1/robot/tasks", s.robotTasksHandler)
@@ -164,6 +165,7 @@ func NewServerWithAuth(version string, staticFiles fs.FS, identity *access.Manag
 	mux.HandleFunc("/api/v1/robot/login", s.robotLoginHandler)
 	mux.HandleFunc("/api/v1/robot/manifest", s.robotManifestHandler)
 	mux.HandleFunc("/api/v1/robot/git-init", s.robotGitInitHandler)
+	mux.HandleFunc("/api/v1/robot/git", s.robotGitHandler)
 	mux.HandleFunc("/api/v1/robot/git-clone", s.robotGitCloneHandler)
 	mux.HandleFunc("/api/v1/robot/git-clone/check", s.robotGitCloneCheckHandler)
 	mux.HandleFunc("/api/v1/publish/npm/status", s.npmPublishStatusHandler)
@@ -639,6 +641,26 @@ func (s *server) robotConsoleHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, result)
 }
 
+func (s *server) robotPM2LogsHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "该操作暂不支持。")
+		return
+	}
+	page := 1
+	if raw := r.URL.Query().Get("page"); raw != "" {
+		if _, err := fmt.Sscanf(raw, "%d", &page); err != nil || page < 1 {
+			writeError(w, http.StatusBadRequest, "日志页码无效。")
+			return
+		}
+	}
+	result, err := s.robots.PM2Logs(r.URL.Query().Get("root"), page)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
 func (s *server) robotRuntimeHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "该操作暂不支持。")
@@ -727,20 +749,30 @@ func (s *server) robotTasksHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	created := operationTask{ID: "robot-" + time.Now().Format("20060102150405.000000000"), Root: input.Root, Action: input.Action, Status: "running", CreatedAt: time.Now()}
-	if input.Action == "dev-stop" {
+	if input.Action == "dev-stop" || input.Action == "app-stop" {
+		mode := map[string]string{"dev-stop": "开发模式", "app-stop": "前台运行"}[input.Action]
 		if err := s.stopDevelopment(input.Root); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
 		finished := time.Now()
 		created.Status = "completed"
-		created.Output = "已请求停止开发模式；等待开发进程退出。"
+		created.Output = "已请求停止" + mode + "；等待进程退出。"
 		created.FinishedAt = &finished
 		s.addOperation(created)
 		writeJSON(w, http.StatusAccepted, created)
 		return
 	}
 	if input.Action == "dev" || input.Action == "app" {
+		missing, dependencyErr := s.robots.RuntimeDependencies(input.Root)
+		if dependencyErr != nil {
+			writeError(w, http.StatusBadRequest, dependencyErr.Error())
+			return
+		}
+		if len(missing) > 0 {
+			writeError(w, http.StatusBadRequest, "项目依赖不完整："+strings.Join(missing, "、")+"。请先执行“重载依赖”后再运行")
+			return
+		}
 		if s.developmentRunning(input.Root) {
 			writeError(w, http.StatusConflict, "当前目录的开发模式正在运行；请先停止后再启动。")
 			return
@@ -849,11 +881,11 @@ func (s *server) stopDevelopment(root string) error {
 	process, running := s.development[root]
 	if !running {
 		s.mu.Unlock()
-		return fmt.Errorf("当前目录没有正在运行的开发模式")
+		return fmt.Errorf("当前目录没有正在运行的前台或开发进程")
 	}
 	s.stopping[root] = true
 	s.mu.Unlock()
-	s.appendOperationOutput(process.TaskID, "正在停止开发进程…\n")
+	s.appendOperationOutput(process.TaskID, "正在停止托管进程…\n")
 	if err := process.Command.Process.Signal(os.Interrupt); err != nil {
 		return fmt.Errorf("无法停止开发进程：%w", err)
 	}
@@ -1216,6 +1248,37 @@ func (s *server) robotGitInitHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	result, err := robot.InitializeGit(input.Root, input.GitInitConfig)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *server) robotGitHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		status, err := robot.GitWorkspace(r.URL.Query().Get("root"))
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, status)
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "该操作暂不支持。")
+		return
+	}
+	var input struct {
+		Root    string `json:"root"`
+		Action  string `json:"action"`
+		Message string `json:"message"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		writeError(w, http.StatusBadRequest, "Git 操作内容无法识别。")
+		return
+	}
+	result, err := robot.GitWorkspaceAction(input.Root, input.Action, input.Message)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return

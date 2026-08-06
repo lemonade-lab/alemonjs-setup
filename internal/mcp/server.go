@@ -232,7 +232,7 @@ func tools() []map[string]any {
 		tool("alemonjs_save_package_manifest", "保存发布信息", "校验并保存 package.json 的名称、版本、仓库和发布访问级别。必须在用户明确确认后调用。", objectSchema(map[string]any{"root": stringSchema("机器人项目的绝对路径。"), "manifest": manifestSchema(), "confirm": boolSchema("用户已经确认保存发布信息时为 true。")}, "root", "manifest", "confirm"), false, true),
 		tool("alemonjs_get_npm_publish_status", "检查 NPM 发布", "读取 NPM 发布前检查结果，不会发布。", objectSchema(map[string]any{"root": stringSchema("机器人项目的绝对路径。")}, "root"), true, false),
 		tool("alemonjs_get_npm_pack_preview", "预览 NPM 打包", "读取 npm pack 将包含的文件列表，不会发布。", objectSchema(map[string]any{"root": stringSchema("机器人项目的绝对路径。")}, "root"), true, false),
-		tool("alemonjs_get_git_release_status", "检查 Git 打包", "读取 Git 打包与发布前检查结果，不会创建标签或推送。", objectSchema(map[string]any{"root": stringSchema("机器人项目的绝对路径。")}, "root"), true, false),
+		tool("alemonjs_get_git_release_status", "检查 GIT 发布", "读取 GIT 发布与发布前检查结果，不会创建标签或推送。", objectSchema(map[string]any{"root": stringSchema("机器人项目的绝对路径。")}, "root"), true, false),
 		tool("alemonjs_initialize_git", "初始化 Git", "按指定作者、仓库和首个提交初始化项目 Git 仓库。必须在用户明确确认后调用。", objectSchema(map[string]any{"root": stringSchema("机器人项目的绝对路径。"), "authorName": stringSchema("提交作者姓名。"), "authorEmail": stringSchema("提交作者邮箱。"), "repository": stringSchema("可选 origin 地址。"), "message": stringSchema("可选首个提交说明。"), "confirm": boolSchema("用户已经确认初始化 Git 时为 true。")}, "root", "authorName", "authorEmail", "confirm"), false, true),
 		tool("alemonjs_start_project_action", "启动项目操作", "异步执行受限项目操作，并返回可供轮询的任务 ID。包含可停止的 dev 开发模式、PM2 生命周期、构建和发布操作；必须在用户明确同意后传 confirm=true，不支持任意 shell 命令。", actionSchema(), false, true),
 		tool("alemonjs_stop_development", "停止开发模式", "停止由 alemonjs_start_project_action 的 dev 操作启动的开发机器人。必须在用户明确确认后调用。", objectSchema(map[string]any{"taskId": stringSchema("dev 操作返回的任务 ID。"), "confirm": boolSchema("用户已经确认停止开发机器人时为 true。")}, "taskId", "confirm"), false, true),
@@ -895,7 +895,7 @@ func (s *Server) readResource(id json.RawMessage, params json.RawMessage) rpcRes
 	if err := json.Unmarshal(params, &input); err != nil || input.URI != "alemonjs://mcp/capabilities" {
 		return errorResponse(id, -32602, "资源不存在")
 	}
-	text, err := encodeResult(map[string]any{"version": s.version, "transport": "stdio or protected local Streamable HTTP", "scopes": []string{"project-status", "project-files", "local-packages", "confirmed-project-actions"}, "allowedRoots": s.policy.AllowedRoots, "blocked": []string{"arbitrary shell", "secret files", "git metadata", "dependency directories", "symbolic links"}, "confirmation": "任何写入、项目命令或对外发布都需要 confirm=true；NPM 发布和 Git 打包还应先执行预检。"})
+	text, err := encodeResult(map[string]any{"version": s.version, "transport": "stdio or protected local Streamable HTTP", "scopes": []string{"project-status", "project-files", "local-packages", "confirmed-project-actions"}, "allowedRoots": s.policy.AllowedRoots, "blocked": []string{"arbitrary shell", "secret files", "git metadata", "dependency directories", "symbolic links"}, "confirmation": "任何写入、项目命令或对外发布都需要 confirm=true；NPM 发布和 GIT 发布还应先执行预检。"})
 	if err != nil {
 		return errorResponse(id, -32603, "资源编码失败")
 	}

@@ -98,7 +98,7 @@ MCP_ALLOWED_ROOTS='/Users/me/robots:/Users/me/workspaces' albs mcp
 - `.git`、`node_modules`、符号链接；
 - 超过 1 MiB 的文件读取或写入。
 
-开发模式、NPM 发布、Git 打包和 Setup 插件操作均经过显式工具与 `confirm: true` 控制；其中 NPM 发布和 Git 打包还应在对应的预检工具通过后再执行。确认字段由 MCP 客户端发出，因此客户端必须提供真实的用户确认界面，不能将它视为独立的授权系统。
+开发模式、NPM 发布、GIT 发布和 Setup 插件操作均经过显式工具与 `confirm: true` 控制；其中 NPM 发布和 GIT 发布还应在对应的预检工具通过后再执行。确认字段由 MCP 客户端发出，因此客户端必须提供真实的用户确认界面，不能将它视为独立的授权系统。
 
 这些约束位于 Go 服务层，而不是依赖客户端提示。设置 `MCP_ALLOWED_ROOTS` 时，服务端会先解析真实路径再比较边界，避免符号链接绕过。未来如需接入远程 MCP，应将 HTTP adapter 放在带 OAuth、项目范围策略、审计日志和速率限制的网关之后；不能直接把当前本机控制器暴露到公网。
 

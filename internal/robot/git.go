@@ -248,7 +248,7 @@ func GitPublish(root, version, sourceCommit string, confirmed bool) (Result, err
 		return Result{}, fmt.Errorf("版本标签 %s 已存在，已发布版本不可覆盖", version)
 	}
 	if !confirmed {
-		return Result{Path: path, Output: "检查通过：将从 " + shortGitSHA(sourceCommit) + " 构建 " + status.PackageName + "，把发布文件提交至 release，并创建标签 " + version}, errors.New("请确认后再开始 Git 打包")
+		return Result{Path: path, Output: "检查通过：将从 " + shortGitSHA(sourceCommit) + " 构建 " + status.PackageName + "，把发布文件提交至 release，并创建标签 " + version}, errors.New("请确认后再开始 GIT 发布")
 	}
 	logs := []string{"已选择源码提交 " + shortGitSHA(sourceCommit), "准备独立构建目录"}
 	sourceWorktree, err := os.MkdirTemp("", "albs-source-")

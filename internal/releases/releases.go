@@ -56,17 +56,35 @@ func SetupUpdate(current string) (Update, error) {
 }
 
 func matchingAsset(assets []Asset) Asset {
-	platform := runtime.GOOS
-	architecture := runtime.GOARCH
+	return matchingAssetFor(assets, runtime.GOOS, runtime.GOARCH)
+}
+
+// matchingAssetFor compares filename segments instead of substrings. In
+// particular, "darwin" contains "win", so a strings.Contains(name, "win")
+// check can incorrectly offer a macOS archive to a Windows user.
+func matchingAssetFor(assets []Asset, platform, architecture string) Asset {
 	for _, asset := range assets {
-		name := strings.ToLower(asset.Name)
-		system := (platform == "darwin" && (strings.Contains(name, "darwin") || strings.Contains(name, "macos") || strings.Contains(name, "mac"))) || (platform == "windows" && (strings.Contains(name, "windows") || strings.Contains(name, "win"))) || (platform == "linux" && strings.Contains(name, "linux"))
-		arch := (architecture == "arm64" && (strings.Contains(name, "arm64") || strings.Contains(name, "aarch64"))) || (architecture == "amd64" && (strings.Contains(name, "amd64") || strings.Contains(name, "x64") || strings.Contains(name, "x86_64")))
+		tokens := assetNameTokens(asset.Name)
+		system := (platform == "darwin" && (tokens["darwin"] || tokens["macos"] || tokens["mac"])) ||
+			(platform == "windows" && (tokens["windows"] || tokens["win32"])) ||
+			(platform == "linux" && tokens["linux"])
+		arch := (architecture == "arm64" && (tokens["arm64"] || tokens["aarch64"])) ||
+			(architecture == "amd64" && (tokens["amd64"] || tokens["x64"] || tokens["x86_64"]))
 		if system && arch {
 			return asset
 		}
 	}
 	return Asset{}
+}
+
+func assetNameTokens(name string) map[string]bool {
+	tokens := map[string]bool{}
+	for _, token := range strings.FieldsFunc(strings.ToLower(name), func(r rune) bool {
+		return !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '_')
+	}) {
+		tokens[token] = true
+	}
+	return tokens
 }
 
 func versionCompare(left, right string) int {

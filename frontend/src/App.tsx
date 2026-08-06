@@ -124,10 +124,14 @@ function FlowView({ loading, goal, report, checking, creating, creation, onSelec
   const mirrorURL = (mirror: Mirror | null, url: string) => { if (!mirror) return url; const index = mirror.url.indexOf('https://github.com'); return index === -1 ? url : mirror.url.slice(0, index) + url }
   const releasePicker = () => <label className="release-picker">选择版本<select value={releaseURL ?? ''} onChange={(event) => { setReleaseURL(event.target.value); setSelectedAssetURL(null) }}>{releases.map((item) => <option value={item.url} key={item.tag}>{item.tag} · {item.name}</option>)}</select>{!releases.length && <small>正在获取正式版本列表…</small>}</label>
   const selectedRelease = releases.find((item) => item.url === releaseURL)
-  const platform = navigator.userAgent.toLowerCase().includes('win') ? 'windows' : navigator.userAgent.toLowerCase().includes('mac') ? 'macos' : 'linux'
-  const architecture = /arm64|aarch64/.test(navigator.userAgent.toLowerCase()) ? 'arm64' : 'x64'
-  const matchesSystem = (asset: ReleaseAsset) => { const name = asset.name.toLowerCase(); return (platform === 'windows' && /windows|win/.test(name)) || (platform === 'macos' && /macos|mac|darwin|osx/.test(name)) || (platform === 'linux' && /linux|appimage|\.deb|\.rpm/.test(name)) }
-  const matchesArchitecture = (asset: ReleaseAsset) => { const name = asset.name.toLowerCase(); return (architecture === 'arm64' && /arm64|aarch64/.test(name)) || (architecture === 'x64' && /x64|amd64|x86_64/.test(name)) }
+  const userAgent = navigator.userAgent.toLowerCase()
+  const platform = userAgent.includes('win') ? 'windows' : userAgent.includes('mac') ? 'macos' : 'linux'
+  const architecture = /arm64|aarch64/.test(userAgent) ? 'arm64' : 'x64'
+  // Match complete filename segments. "darwin" contains "win", so a loose
+  // /win/ test would put macOS archives ahead of Windows archives.
+  const assetTokens = (asset: ReleaseAsset) => new Set(asset.name.toLowerCase().split(/[^a-z0-9_]+/).filter(Boolean))
+  const matchesSystem = (asset: ReleaseAsset) => { const tokens = assetTokens(asset); return (platform === 'windows' && (tokens.has('windows') || tokens.has('win32'))) || (platform === 'macos' && (tokens.has('macos') || tokens.has('mac') || tokens.has('darwin') || tokens.has('osx'))) || (platform === 'linux' && (tokens.has('linux') || tokens.has('appimage') || tokens.has('deb') || tokens.has('rpm'))) }
+  const matchesArchitecture = (asset: ReleaseAsset) => { const tokens = assetTokens(asset); return (architecture === 'arm64' && (tokens.has('arm64') || tokens.has('aarch64'))) || (architecture === 'x64' && (tokens.has('x64') || tokens.has('amd64') || tokens.has('x86_64'))) }
   const isMetadataAsset = (asset: ReleaseAsset) => /\.sha\d*|\.sig|checksums?|latest\.yml/.test(asset.name.toLowerCase())
   const releaseAssets = (selectedRelease?.assets ?? []).filter((asset) => !isMetadataAsset(asset))
   const hasArchitectureRecommendation = releaseAssets.some((asset) => matchesSystem(asset) && matchesArchitecture(asset))
