@@ -29,7 +29,7 @@ export function GuideHeader({ onBack, onClose, showBack }: GuideHeaderProps) {
           target="_blank"
           rel="noreferrer"
         >
-          ALEMONJS
+          ALemonX
         </a>
         <SetupUpdateButton />
         <ThemeToggle />

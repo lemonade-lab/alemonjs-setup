@@ -135,11 +135,11 @@ func main() {
 				fmt.Printf("已是最新版本：%s\n", update.Current)
 				return
 			}
-			if !update.PlatformMatched {
-				fmt.Printf("发现新版本 %s，但未找到当前系统的安装包。\n%s\n", update.Latest, update.ReleaseURL)
+			if !update.PlatformMatched || !update.IntegrityReady {
+				fmt.Printf("发现新版本 %s，但没有可安全自动安装的匹配更新包。\n%s\n", update.Latest, update.ReleaseURL)
 				return
 			}
-			result, err := system.ReplaceExecutable(update.DownloadURL, update.AssetName)
+			result, err := system.ReplaceExecutable(update.DownloadURL, update.AssetName, update.SHA256, update.Latest)
 			if err != nil {
 				log.Fatal(err)
 			}

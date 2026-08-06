@@ -4,11 +4,14 @@ package releases
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"runtime"
 	"strconv"
 	"strings"
 	"time"
+
+	"golang.org/x/mod/semver"
 )
 
 type Item struct {
@@ -33,6 +36,8 @@ type Update struct {
 	ReleaseURL      string `json:"releaseUrl,omitempty"`
 	DownloadURL     string `json:"downloadUrl,omitempty"`
 	AssetName       string `json:"assetName,omitempty"`
+	SHA256          string `json:"sha256,omitempty"`
+	IntegrityReady  bool   `json:"integrityReady"`
 	PlatformMatched bool   `json:"platformMatched"`
 	DownloadReady   bool   `json:"downloadReady"`
 }
@@ -52,6 +57,8 @@ func SetupUpdate(current string) (Update, error) {
 	asset := matchingAsset(latest.Assets)
 	if asset.Name != "" {
 		result.DownloadURL, result.AssetName, result.PlatformMatched = asset.URL, asset.Name, true
+		result.SHA256, _ = checksumForAsset(latest.Assets, asset.Name)
+		result.IntegrityReady = result.SHA256 != ""
 	}
 	return result, nil
 }
@@ -89,6 +96,10 @@ func assetNameTokens(name string) map[string]bool {
 }
 
 func versionCompare(left, right string) int {
+	left, right = normalizeVersion(left), normalizeVersion(right)
+	if semver.IsValid(left) && semver.IsValid(right) {
+		return semver.Compare(left, right)
+	}
 	parse := func(value string) [3]int {
 		var result [3]int
 		for index, part := range strings.Split(strings.TrimPrefix(strings.TrimSpace(value), "v"), ".") {
@@ -113,6 +124,39 @@ func versionCompare(left, right string) int {
 		}
 	}
 	return 0
+}
+
+func normalizeVersion(value string) string {
+	value = strings.TrimSpace(value)
+	if !strings.HasPrefix(value, "v") {
+		value = "v" + value
+	}
+	return value
+}
+
+func checksumForAsset(assets []Asset, name string) (string, error) {
+	for _, asset := range assets {
+		upper := strings.ToUpper(asset.Name)
+		if upper != "SHA256SUMS" && upper != "SHA256SUMS.TXT" && upper != "CHECKSUMS.TXT" {
+			continue
+		}
+		response, err := (&http.Client{Timeout: 8 * time.Second}).Get(asset.URL)
+		if err != nil {
+			return "", err
+		}
+		body, readErr := io.ReadAll(io.LimitReader(response.Body, 1<<20))
+		response.Body.Close()
+		if readErr != nil || response.StatusCode != http.StatusOK {
+			return "", fmt.Errorf("无法读取发布校验文件")
+		}
+		for _, line := range strings.Split(string(body), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) >= 2 && strings.EqualFold(strings.TrimPrefix(fields[1], "*"), name) && len(fields[0]) == 64 {
+				return strings.ToLower(fields[0]), nil
+			}
+		}
+	}
+	return "", nil
 }
 
 func List(id string) ([]Item, error) {

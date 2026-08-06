@@ -132,6 +132,14 @@ export function AuthControl() {
     window.addEventListener('alx:auth-changed', refresh)
     return () => window.removeEventListener('alx:auth-changed', refresh)
   }, [])
+  useEffect(() => {
+    const closeWhenAnotherToolOpens = (event: Event) => {
+      if ((event as CustomEvent<string>).detail !== 'auth') setOpen(false)
+    }
+    window.addEventListener('alx:top-tool-open', closeWhenAnotherToolOpens)
+    return () =>
+      window.removeEventListener('alx:top-tool-open', closeWhenAnotherToolOpens)
+  }, [])
   const enable = async () => {
     setBusy(true)
     setError('')
@@ -161,14 +169,29 @@ export function AuthControl() {
       <Button
         variant="icon"
         className={status?.enabled ? 'border-brand-100 bg-brand-50 text-brand-600' : ''}
-        onClick={() => setOpen(value => !value)}
+        onClick={() =>
+          setOpen(value => {
+            const next = !value
+            if (next)
+              window.dispatchEvent(
+                new CustomEvent('alx:top-tool-open', { detail: 'auth' })
+              )
+            return next
+          })
+        }
         aria-label="身份认证"
+        aria-expanded={open}
         title="身份认证"
       >
         <LockKeyhole className="size-4" />
       </Button>
       {open && (
-        <section className="absolute left-0 top-10 z-30 grid min-w-[260px] gap-2.5 rounded-xl border border-slate-200 bg-white p-3 shadow-[0_18px_42px_rgb(15_23_42/0.13)]">
+        <section
+          className="absolute right-0 top-[calc(100%+8px)] z-50 grid w-[min(22.5rem,calc(100vw-2rem))] max-h-[calc(100vh-5rem)] gap-2.5 overflow-y-auto rounded-xl border border-slate-200 bg-white p-3 shadow-[0_18px_42px_rgb(15_23_42/0.13)]"
+          onKeyDown={event => {
+            if (event.key === 'Escape') setOpen(false)
+          }}
+        >
           <header className="flex items-center justify-between">
             <strong className="text-xs text-slate-800">
               {status?.enabled ? '身份认证已开启' : '开启身份认证'}
@@ -205,7 +228,7 @@ export function AuthControl() {
               <label className="grid gap-1 text-[11px] font-semibold text-slate-600">
                 账户
                 <input
-                  className="min-h-8 rounded-md border border-slate-300 px-2 font-normal"
+                  className="min-h-8 w-full rounded-md border border-slate-300 px-2 font-normal"
                   autoComplete="username"
                   value={account}
                   onChange={event => setAccount(event.target.value)}
@@ -214,7 +237,7 @@ export function AuthControl() {
               <label className="grid gap-1 text-[11px] font-semibold text-slate-600">
                 密码
                 <input
-                  className="min-h-8 rounded-md border border-slate-300 px-2 font-normal"
+                  className="min-h-8 w-full rounded-md border border-slate-300 px-2 font-normal"
                   autoComplete="new-password"
                   type="password"
                   value={password}
@@ -224,7 +247,7 @@ export function AuthControl() {
               <label className="grid gap-1 text-[11px] font-semibold text-slate-600">
                 确认密码
                 <input
-                  className="min-h-8 rounded-md border border-slate-300 px-2 font-normal"
+                  className="min-h-8 w-full rounded-md border border-slate-300 px-2 font-normal"
                   autoComplete="new-password"
                   type="password"
                   value={confirmation}

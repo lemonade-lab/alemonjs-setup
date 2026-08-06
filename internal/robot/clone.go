@@ -10,7 +10,7 @@ import (
 	"sort"
 	"strings"
 
-	"alemonjs-setup/internal/system"
+	"alemonx/internal/system"
 )
 
 var gitBranchPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/-]*$`)

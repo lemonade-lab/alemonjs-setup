@@ -182,11 +182,17 @@ docker compose up -d --build
 
 首次启动会自动创建上述目录并处理容器写入权限，打开 `http://127.0.0.1:17390` 即可使用。
 
-本地构建一个可离线导入的 OCI 镜像包（默认 Linux amd64；Apple Silicon 服务器使用 `PLATFORM=linux/arm64`）：
+默认构建会发布多架构镜像到腾讯云 CCR（先执行 `docker login ccr.ccs.tencentyun.com`）：
 
 ```bash
 chmod +x docker-buildx.sh
-VERSION=v0.1.0 PLATFORM=linux/amd64 ./docker-buildx.sh
+VERSION=v0.1.0 ./docker-buildx.sh
+```
+
+没有外网或需离线交付时，才构建 OCI 镜像包：
+
+```bash
+VERSION=v0.1.0 TARGET=archive PLATFORM=linux/amd64 ./docker-buildx.sh
 # 产物：dist/alx-v0.1.0-amd64.oci.tar
 ```
 
@@ -194,11 +200,11 @@ VERSION=v0.1.0 PLATFORM=linux/amd64 ./docker-buildx.sh
 
 ```bash
 docker load -i dist/alx-v0.1.0-amd64.oci.tar
-alx_IMAGE=alemonx:v0.1.0 docker compose up -d
+ALX_IMAGE=ccr.ccs.tencentyun.com/ningmengchongshui/alemonx:v0.1.0 docker compose up -d
 docker compose exec alx alx auth enable --account admin --password '请使用高强度密码' --confirm-password '请使用高强度密码'
 ```
 
-Compose 默认只绑定服务器本机 `127.0.0.1:17390`。线上请由 HTTPS 反向代理转发该端口；确认已开启身份认证后，如确有必要才设置 `alx_LISTEN_ADDRESS=0.0.0.0` 对外暴露。不要在生产容器挂载个人完整的 `~/.ssh`，应只放入部署专用密钥到 `./ssh/`。
+Compose 默认只绑定服务器本机 `127.0.0.1:17390`。线上请由 HTTPS 反向代理转发该端口；确认已开启身份认证后，如确有必要才设置 `ALX_LISTEN_ADDRESS=0.0.0.0` 对外暴露。不要在生产容器挂载个人完整的 `~/.ssh`，应只放入部署专用密钥到 `./ssh/`。
 
 ## 仓库结构
 
@@ -216,6 +222,7 @@ docs/        设计与 MCP 文档
 - 机器人目录必须是包含 `package.json` 的本地 Node.js 项目。
 - 安装插件与连接包经过后端白名单，不开放浏览器任意命令执行。
 - 系统插件与机器人插件必须隔离：系统插件增强 Setup，机器人插件只影响选中的项目。
+- 开发与接入 Setup 系统插件请参阅 [系统插件开发文档](docs/setup-plugin-development.md)。
 - 修改前端后运行 `yarn --cwd frontend lint && yarn --cwd frontend build`；修改 Go 后运行 `go test ./internal/... && go vet ./internal/...`。
 
 推送 `v*` 标签会触发 GitHub Actions，构建 Windows、macOS（Apple Silicon / Intel）和 Linux 压缩包，并创建 GitHub Release：

@@ -178,6 +178,7 @@ func NewServerWithAuth(version string, staticFiles fs.FS, identity *access.Manag
 	mux.HandleFunc("/api/v1/robot/validate", s.robotValidateHandler)
 	mux.HandleFunc("/api/v1/robot/console", s.robotConsoleHandler)
 	mux.HandleFunc("/api/v1/robot/pm2-logs", s.robotPM2LogsHandler)
+	mux.HandleFunc("/api/v1/robot/pm2-status", s.robotPM2StatusHandler)
 	mux.HandleFunc("/api/v1/robot/runtime", s.robotRuntimeHandler)
 	mux.HandleFunc("/api/v1/robot/runtime/preflight", s.robotRuntimePreflightHandler)
 	mux.HandleFunc("/api/v1/robot/tasks", s.robotTasksHandler)
@@ -844,8 +845,8 @@ func (s *server) updateHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
-	if update.Available && update.PlatformMatched {
-		_, update.DownloadReady, err = system.CachedUpdate(update.AssetName)
+	if update.Available && update.PlatformMatched && update.IntegrityReady {
+		_, update.DownloadReady, err = system.CachedUpdate(update.AssetName, update.SHA256)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
@@ -935,11 +936,15 @@ func (s *server) downloadUpdateHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "当前已经是最新版本。")
 		return
 	}
-	if !update.PlatformMatched {
+	if !update.PlatformMatched || !update.IntegrityReady {
+		if update.PlatformMatched {
+			writeError(w, http.StatusBadRequest, "该版本未提供校验文件，无法安全地自动更新，请使用手动安装。")
+			return
+		}
 		writeError(w, http.StatusBadRequest, "未找到当前系统对应的更新包，请使用手动更新。")
 		return
 	}
-	if _, err := system.DownloadUpdate(update.DownloadURL, update.AssetName); err != nil {
+	if _, err := system.DownloadUpdate(update.DownloadURL, update.AssetName, update.SHA256, update.Latest); err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
@@ -958,16 +963,7 @@ func (s *server) applyUpdateHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "请确认立即更新并重启应用。")
 		return
 	}
-	update, err := releases.SetupUpdate(s.version)
-	if err != nil {
-		writeError(w, http.StatusBadGateway, err.Error())
-		return
-	}
-	if !update.Available || !update.PlatformMatched {
-		writeError(w, http.StatusBadRequest, "当前没有可立即安装的更新。")
-		return
-	}
-	path, ready, err := system.CachedUpdate(update.AssetName)
+	update, path, ready, err := system.ReadyPendingUpdate()
 	if err != nil || !ready {
 		writeError(w, http.StatusBadRequest, "更新包尚未下载完成，请先下载。")
 		return
@@ -981,7 +977,10 @@ func (s *server) applyUpdateHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "更新已完成，但无法自动重启："+err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"output": result + " 正在重启应用。"})
+	if err := system.ClearPendingUpdate(); err != nil {
+		log.Printf("更新已完成，但无法清理更新元数据：%v", err)
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"output": result + " 正在重启应用。", "version": update.Version})
 	go func() {
 		time.Sleep(350 * time.Millisecond)
 		os.Exit(0)
@@ -1036,7 +1035,15 @@ func (s *server) loadUpdateHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"output": result})
+	if err := system.ScheduleRestart(); err != nil {
+		writeError(w, http.StatusInternalServerError, "更新已完成，但无法自动重启："+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"output": result + " 正在重启应用。"})
+	go func() {
+		time.Sleep(350 * time.Millisecond)
+		os.Exit(0)
+	}()
 }
 
 func (s *server) robotHandler(w http.ResponseWriter, r *http.Request) {
@@ -1137,6 +1144,19 @@ func (s *server) robotPM2LogsHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, result)
 }
 
+func (s *server) robotPM2StatusHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "该操作暂不支持。")
+		return
+	}
+	result, err := s.robots.PM2Status(r.URL.Query().Get("root"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
 func (s *server) robotRuntimeHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "该操作暂不支持。")
@@ -1228,7 +1248,7 @@ func (s *server) robotTasksHandler(w http.ResponseWriter, r *http.Request) {
 	created := operationTask{ID: "robot-" + time.Now().Format("20060102150405.000000000"), Root: input.Root, Action: input.Action, Status: "running", CreatedAt: time.Now()}
 	if input.Action == "dev-stop" || input.Action == "app-stop" {
 		mode := map[string]string{"dev-stop": "开发模式", "app-stop": "前台运行"}[input.Action]
-		if err := s.stopDevelopment(input.Root); err != nil {
+		if err := s.stopDevelopment(input.Root, mode); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
@@ -1251,7 +1271,7 @@ func (s *server) robotTasksHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if s.developmentRunning(input.Root) {
-			writeError(w, http.StatusConflict, "当前目录的开发模式正在运行；请先停止后再启动。")
+			writeError(w, http.StatusConflict, "当前目录已有前台或开发进程正在运行；请先停止后再启动。")
 			return
 		}
 		command, err := s.robots.DevelopmentCommand(input.Root)
@@ -1262,6 +1282,7 @@ func (s *server) robotTasksHandler(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
+		configureManagedProcess(command)
 		stdout, err := command.StdoutPipe()
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "无法连接运行输出："+err.Error())
@@ -1278,13 +1299,13 @@ func (s *server) robotTasksHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		if !s.registerDevelopment(input.Root, created.ID, command) {
 			_ = command.Process.Kill()
-			writeError(w, http.StatusConflict, "当前目录的开发模式正在运行；请先停止后再启动。")
+			writeError(w, http.StatusConflict, "当前目录已有前台或开发进程正在运行；请先停止后再启动。")
 			return
 		}
 		created.Output = map[bool]string{true: "开发模式已启动，正在等待进程输出…\n", false: "前台运行已启动，正在等待进程输出…\n"}[input.Action == "dev"]
 		s.addOperation(created)
 		log.Printf("[ROBOT %s] 开始 action=%s root=%q", created.ID, input.Action, created.Root)
-		go s.watchDevelopmentTask(created.ID, input.Root, command, stdout, stderr)
+		go s.watchDevelopmentTask(created.ID, input.Root, input.Action, command, stdout, stderr)
 		writeJSON(w, http.StatusAccepted, created)
 		return
 	}
@@ -1353,28 +1374,33 @@ func (s *server) registerDevelopment(root, taskID string, command *exec.Cmd) boo
 	return true
 }
 
-func (s *server) stopDevelopment(root string) error {
+func (s *server) stopDevelopment(root, mode string) error {
 	s.mu.Lock()
 	process, running := s.development[root]
 	if !running {
 		s.mu.Unlock()
-		return fmt.Errorf("当前目录没有正在运行的前台或开发进程")
+		return nil
 	}
 	s.stopping[root] = true
 	s.mu.Unlock()
-	s.appendOperationOutput(process.TaskID, "正在停止托管进程…\n")
-	if err := process.Command.Process.Signal(os.Interrupt); err != nil {
-		return fmt.Errorf("无法停止开发进程：%w", err)
+	s.appendOperationOutput(process.TaskID, "正在请求停止"+mode+"…\n")
+	if err := interruptManagedProcess(process.Command); err != nil {
+		// Do not abandon a stop merely because the graceful signal raced with a
+		// child exit or the package manager rejected it. The force-stop pass
+		// below still targets the complete process group.
+		s.appendOperationOutput(process.TaskID, "优雅停止未确认，继续执行强制停止兜底。\n")
 	}
-	// Some package managers do not pass Interrupt through immediately. Give the
-	// command a short graceful window, then ensure the managed parent exits.
-	time.AfterFunc(5*time.Second, func() {
+	// Yarn and similar package managers can leave a child process alive after
+	// their own interrupt. Give the group a brief graceful window, then stop
+	// every member rather than only its package-manager parent.
+	time.AfterFunc(3*time.Second, func() {
 		s.mu.RLock()
 		current, active := s.development[root]
 		stopping := s.stopping[root]
 		s.mu.RUnlock()
 		if active && stopping && current.TaskID == process.TaskID {
-			_ = current.Command.Process.Kill()
+			s.appendOperationOutput(process.TaskID, "进程仍未退出，正在强制停止全部子进程…\n")
+			_ = forceStopManagedProcess(current.Command)
 		}
 	})
 	return nil
@@ -1399,7 +1425,7 @@ func (s *server) appendOperationOutput(id, output string) {
 	}
 }
 
-func (s *server) watchDevelopmentTask(id, root string, command *exec.Cmd, stdout, stderr io.Reader) {
+func (s *server) watchDevelopmentTask(id, root, action string, command *exec.Cmd, stdout, stderr io.Reader) {
 	var readers sync.WaitGroup
 	read := func(stream io.Reader) {
 		defer readers.Done()
@@ -1431,18 +1457,22 @@ func (s *server) watchDevelopmentTask(id, root string, command *exec.Cmd, stdout
 			continue
 		}
 		s.operations[index].FinishedAt = &finished
+		processName := map[string]string{"app": "前台进程", "dev": "开发进程"}[action]
+		if processName == "" {
+			processName = "托管进程"
+		}
 		if err != nil && !stopped {
 			s.operations[index].Status = "failed"
-			s.operations[index].Error = "开发进程已退出：" + err.Error()
-			log.Printf("[ROBOT %s] 开发进程退出 error=%s", id, err)
+			s.operations[index].Error = processName + "已退出：" + err.Error()
+			log.Printf("[ROBOT %s] %s退出 error=%s", id, processName, err)
 		} else if stopped {
 			s.operations[index].Status = "completed"
-			s.operations[index].Output += "开发进程已停止。\n"
-			log.Printf("[ROBOT %s] 开发进程已停止", id)
+			s.operations[index].Output += processName + "已停止。\n"
+			log.Printf("[ROBOT %s] %s已停止", id, processName)
 		} else {
 			s.operations[index].Status = "completed"
-			s.operations[index].Output += "开发进程已正常退出。\n"
-			log.Printf("[ROBOT %s] 开发进程正常退出", id)
+			s.operations[index].Output += processName + "已正常退出。\n"
+			log.Printf("[ROBOT %s] %s正常退出", id, processName)
 		}
 		return
 	}

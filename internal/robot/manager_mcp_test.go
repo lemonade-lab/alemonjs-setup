@@ -194,6 +194,20 @@ func TestPM2LogPaginationStartsWithNewestPage(t *testing.T) {
 	}
 }
 
+func TestParsePM2StatusMatchesOnlyCurrentProject(t *testing.T) {
+	root := filepath.Join(string(filepath.Separator), "robots", "current")
+	status, err := parsePM2Status(root, `[
+  {"pm2_env":{"pm_cwd":"/robots/other","status":"online"}},
+  {"pm2_env":{"pm_cwd":"/robots/current","status":"online"}}
+]`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !status.Configured || !status.Managed || !status.Running || status.Status != "online" {
+		t.Fatalf("PM2 status = %#v", status)
+	}
+}
+
 func TestRuntimeDependenciesDetectsMissingDirectPackage(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "package.json"), []byte(`{"dependencies":{"present":"1","missing":"1"},"devDependencies":{"@scope/tool":"1"}}`), 0644); err != nil {
@@ -213,6 +227,25 @@ func TestRuntimeDependenciesDetectsMissingDirectPackage(t *testing.T) {
 	}
 	if !reflect.DeepEqual(missing, []string{"missing 未安装"}) {
 		t.Fatalf("missing dependencies = %#v", missing)
+	}
+}
+
+func TestDependencyStatusReportsMissingDirectPackage(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "package.json"), []byte(`{"dependencies":{"missing":"1"}}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(root, "node_modules"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	result, err := (Manager{}).Run(root, "dependency-status", "", "", "", "", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{"依赖不完整", "missing 未安装", "重新安装依赖"} {
+		if !strings.Contains(result.Output, expected) {
+			t.Fatalf("dependency status = %q, missing %q", result.Output, expected)
+		}
 	}
 }
 

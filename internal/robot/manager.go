@@ -33,6 +33,16 @@ type PM2LogPage struct {
 	HasOlder bool   `json:"hasOlder"`
 }
 
+// PM2Status describes the PM2 process associated with one robot directory.
+// It deliberately matches by PM2's working directory so unrelated services
+// managed by the same local PM2 daemon never affect this project's controls.
+type PM2Status struct {
+	Configured bool   `json:"configured"`
+	Managed    bool   `json:"managed"`
+	Running    bool   `json:"running"`
+	Status     string `json:"status,omitempty"`
+}
+
 // Validate confirms that a saved robot directory still exists and is an
 // eligible Node.js project. It is intentionally side-effect free.
 func (Manager) Validate(root string) (Result, error) {
@@ -656,6 +666,50 @@ func (Manager) PM2Logs(root string, page int) (PM2LogPage, error) {
 	return paginatePM2LogLines(lines, page), nil
 }
 
+func (Manager) PM2Status(root string) (PM2Status, error) {
+	path, err := projectPath(root)
+	if err != nil {
+		return PM2Status{}, err
+	}
+	if _, err := os.Stat(filepath.Join(path, "pm2.config.cjs")); err != nil {
+		if os.IsNotExist(err) {
+			return PM2Status{}, nil
+		}
+		return PM2Status{}, fmt.Errorf("无法读取 PM2 配置：%w", err)
+	}
+	output, err := run(path, "npx", "pm2", "jlist")
+	if err != nil {
+		return PM2Status{}, fmt.Errorf("无法读取 PM2 状态：%w", err)
+	}
+	return parsePM2Status(path, output)
+}
+
+func parsePM2Status(root, output string) (PM2Status, error) {
+	var processes []struct {
+		PM2Env struct {
+			CWD    string `json:"pm_cwd"`
+			Status string `json:"status"`
+		} `json:"pm2_env"`
+	}
+	if err := json.Unmarshal([]byte(output), &processes); err != nil {
+		return PM2Status{}, fmt.Errorf("无法解析 PM2 状态：%w", err)
+	}
+	root = filepath.Clean(root)
+	for _, process := range processes {
+		if filepath.Clean(process.PM2Env.CWD) != root {
+			continue
+		}
+		status := strings.ToLower(process.PM2Env.Status)
+		return PM2Status{
+			Configured: true,
+			Managed:    true,
+			Running:    status == "online" || status == "launching",
+			Status:     status,
+		}, nil
+	}
+	return PM2Status{Configured: true, Status: "not-found"}, nil
+}
+
 func paginatePM2LogLines(lines []string, page int) PM2LogPage {
 	if page < 1 {
 		page = 1
@@ -872,13 +926,16 @@ func (m Manager) Run(root, action, message, packageName, version, tag, token str
 	var args []string
 	switch action {
 	case "dependency-status":
-		checks := []string{}
-		if _, err := os.Stat(filepath.Join(root, "node_modules")); err == nil {
-			checks = append(checks, "已发现 node_modules，依赖目录已就绪。")
-		} else {
-			checks = append(checks, "未发现 node_modules，需要安装依赖。")
+		missing, err := (Manager{}).RuntimeDependencies(root)
+		if err != nil {
+			return Result{}, err
 		}
-		checks = append(checks, "依赖将按 package.json 中声明的 "+strings.ToUpper(manager)+" 管理。")
+		checks := []string{"依赖按 package.json 中声明的 " + strings.ToUpper(manager) + " 管理。"}
+		if len(missing) == 0 {
+			checks = append(checks, "已检查全部直接依赖，当前安装完整。")
+		} else {
+			checks = append(checks, "依赖不完整："+strings.Join(missing, "、"), "请执行“重新安装依赖”后再运行。")
+		}
 		return Result{Path: root, Output: strings.Join(checks, "\n")}, nil
 	case "install":
 		name, args = manager, []string{"install"}

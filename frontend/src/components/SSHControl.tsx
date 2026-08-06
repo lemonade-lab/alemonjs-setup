@@ -34,6 +34,14 @@ export function SSHControl() {
   useEffect(() => {
     if (open) void load()
   }, [open])
+  useEffect(() => {
+    const closeWhenAnotherToolOpens = (event: Event) => {
+      if ((event as CustomEvent<string>).detail !== 'ssh') setOpen(false)
+    }
+    window.addEventListener('alx:top-tool-open', closeWhenAnotherToolOpens)
+    return () =>
+      window.removeEventListener('alx:top-tool-open', closeWhenAnotherToolOpens)
+  }, [])
   const generate = async () => {
     setBusy(true)
     try {
@@ -62,14 +70,29 @@ export function SSHControl() {
     <div className="relative">
       <Button
         variant="icon"
-        onClick={() => setOpen(value => !value)}
+        onClick={() =>
+          setOpen(value => {
+            const next = !value
+            if (next)
+              window.dispatchEvent(
+                new CustomEvent('alx:top-tool-open', { detail: 'ssh' })
+              )
+            return next
+          })
+        }
         aria-label="SSH 管理"
+        aria-expanded={open}
         title="SSH 管理"
       >
         <KeyRound className="size-4" />
       </Button>
       {open && (
-        <section className="absolute left-0 top-10 z-30 grid min-w-80 gap-2.5 rounded-xl border border-slate-200 bg-white p-3 shadow-[0_18px_42px_rgb(15_23_42/0.13)]">
+        <section
+          className="absolute right-0 top-[calc(100%+8px)] z-50 grid w-[min(24rem,calc(100vw-2rem))] max-h-[calc(100vh-5rem)] gap-2.5 overflow-y-auto rounded-xl border border-slate-200 bg-white p-3 shadow-[0_18px_42px_rgb(15_23_42/0.13)]"
+          onKeyDown={event => {
+            if (event.key === 'Escape') setOpen(false)
+          }}
+        >
           <header className="flex items-start justify-between gap-3">
             <div className="grid gap-0.5">
               <strong className="text-xs text-slate-800">SSH 管理</strong>

@@ -25,19 +25,34 @@ docker compose ps
 
 首次启动会创建 `workspace/`、`state/` 和 `ssh/`，入口脚本会处理 Linux Docker bind mount 常见的权限问题。访问 `http://127.0.0.1:17390` 即可进入工作台。
 
-## 3. 本地构建离线镜像包
+## 3. 发布到腾讯云 CCR（默认）
+
+构建脚本默认发布多架构镜像到腾讯云 CCR，供国内线上服务器直接拉取：
+
+```bash
+docker login ccr.ccs.tencentyun.com
+VERSION=v0.1.0 ./docker-buildx.sh
+```
+
+默认仓库是 `ccr.ccs.tencentyun.com/ningmengchongshui/alemonx`，会推送 `latest` 和版本标签，并使用仓库内 `buildkitd.toml` 的国内镜像加速配置。线上直接执行：
+
+```bash
+ALX_IMAGE=ccr.ccs.tencentyun.com/ningmengchongshui/alemonx:v0.1.0 docker compose up -d
+```
+
+## 4. 本地构建离线镜像包
 
 先启动 Docker Desktop / Docker daemon。Linux x86 服务器使用：
 
 ```bash
 chmod +x docker-buildx.sh
-VERSION=v0.1.0 PLATFORM=linux/amd64 ./docker-buildx.sh
+VERSION=v0.1.0 TARGET=archive PLATFORM=linux/amd64 ./docker-buildx.sh
 ```
 
 Apple Silicon Linux 服务器改用：
 
 ```bash
-VERSION=v0.1.0 PLATFORM=linux/arm64 ./docker-buildx.sh
+VERSION=v0.1.0 TARGET=archive PLATFORM=linux/arm64 ./docker-buildx.sh
 ```
 
 构建完成会生成 OCI 镜像包，例如：
@@ -52,7 +67,7 @@ dist/alx-v0.1.0-amd64.oci.tar
 docker load -i dist/alx-v0.1.0-amd64.oci.tar
 ```
 
-## 4. 上传并离线启动
+## 5. 上传并离线启动
 
 将以下内容传到服务器的同一个目录：
 
@@ -65,7 +80,7 @@ docker load -i dist/alx-v0.1.0-amd64.oci.tar
 
 ```bash
 docker load -i dist/alx-v0.1.0-amd64.oci.tar
-alx_IMAGE=alemonx:v0.1.0 docker compose up -d
+ALX_IMAGE=ccr.ccs.tencentyun.com/ningmengchongshui/alemonx:v0.1.0 docker compose up -d
 docker compose ps
 docker compose logs -f alx
 ```
@@ -81,7 +96,7 @@ docker compose exec alx alx auth enable \
 
 默认端口仅映射到服务器本机 `127.0.0.1:17390`，因此适合交给 Nginx、Caddy 或 Traefik 做 HTTPS 反向代理。
 
-## 5. 使用 Nginx 对外提供 HTTPS
+## 6. 使用 Nginx 对外提供 HTTPS
 
 在宿主机 Nginx 中创建站点配置，将 `setup.example.com` 改成你的域名。TLS 证书可由 Certbot 或现有证书管理系统提供。
 
@@ -118,13 +133,13 @@ nginx -t && systemctl reload nginx
 
 务必同时保留 ALemonX 自身的身份认证；Nginx 的 HTTPS 只负责传输安全，不替代工作台登录保护。
 
-## 6. 更新、备份与恢复
+## 7. 更新、备份与恢复
 
 更新镜像后：
 
 ```bash
 docker load -i dist/alx-v0.2.0-amd64.oci.tar
-alx_IMAGE=alemonx:v0.2.0 docker compose up -d
+ALX_IMAGE=ccr.ccs.tencentyun.com/ningmengchongshui/alemonx:v0.2.0 docker compose up -d
 ```
 
 备份时停止容器或确保机器人无写入任务，然后归档 `workspace/` 与 `state/`：
@@ -135,7 +150,7 @@ tar -czf alx-backup-$(date +%F).tar.gz workspace state
 
 恢复时解压这两个目录，再启动 Compose。SSH 密钥应单独、加密保管；不要把个人电脑完整的 `~/.ssh` 挂载到生产容器。
 
-## 7. 常用排障
+## 8. 常用排障
 
 ```bash
 docker compose ps

@@ -70,6 +70,12 @@ export type RuntimeOverview = {
     version?: string
   }>
 }
+export type PM2Status = {
+  configured: boolean
+  managed: boolean
+  running: boolean
+  status?: string
+}
 export type GitWorkspace = {
   root: string
   repository: boolean
@@ -172,6 +178,7 @@ export const workspaceApi = createApi({
         downloadUrl?: string
         assetName?: string
         platformMatched: boolean
+        integrityReady: boolean
         downloadReady: boolean
       },
       void
@@ -273,6 +280,10 @@ export const workspaceApi = createApi({
     robotRuntime: build.query<RuntimeOverview, string>({
       query: root => `robot/runtime?${new URLSearchParams({ root })}`,
       keepUnusedDataFor: 20,
+      providesTags: (_result, _error, root) => [{ type: 'Runtime', id: root }]
+    }),
+    robotPM2Status: build.query<PM2Status, string>({
+      query: root => `robot/pm2-status?${new URLSearchParams({ root })}`,
       providesTags: (_result, _error, root) => [{ type: 'Runtime', id: root }]
     }),
     robotRuntimePreflight: build.query<RuntimePreflight, string>({
@@ -443,6 +454,7 @@ export const {
   useRobotTasksQuery,
   useLazyRobotConsoleQuery,
   useRobotRuntimeQuery,
+  useRobotPM2StatusQuery,
   useLazyRobotRuntimePreflightQuery,
   useLazyRobotProjectQuery,
   useLazyRobotFileQuery,

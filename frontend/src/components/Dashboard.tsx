@@ -73,6 +73,7 @@ import {
   useLocalPackageReadmeQuery,
   usePackageConfigQuery,
   useRobotRuntimeQuery,
+  useRobotPM2StatusQuery,
   useRobotTasksQuery,
   useSaveRobotLoginMutation,
   useRobotWebViewsQuery,
@@ -83,6 +84,7 @@ import {
   useWritePackageConfigMutation,
   useWriteRobotFileMutation,
   type RuntimeOverview,
+  type PM2Status,
   type RuntimePreflight,
   type RobotWebView,
   type SetupPlugin
@@ -493,7 +495,11 @@ export function DirectoryPicker({
                     event.preventDefault()
                     event.stopPropagation()
                     setSelected([item.path])
-                    setContextMenu({ x: event.clientX, y: event.clientY, target: item })
+                    setContextMenu({
+                      x: event.clientX,
+                      y: event.clientY,
+                      target: item
+                    })
                   }}
                 >
                   <span className="flex min-w-0 items-center gap-2">
@@ -565,12 +571,32 @@ export function DirectoryPicker({
               const name = newFolderName.trim()
               if (!name || !data?.path) return
               void directoryAction('POST', { path: data.path, name })
-                setNewFolderName(' ')
+              setNewFolderName(' ')
             }}
           >
             <strong className="text-sm text-slate-800">新建文件夹</strong>
-            <input autoFocus className="h-9 rounded-md border border-slate-300 px-2 text-sm outline-none focus:border-brand-600" value={newFolderName} onChange={event => setNewFolderName(event.target.value)} placeholder="文件夹名称" />
-            <div className="flex justify-end gap-2"><button type="button" className="secondary-button" onClick={() => setNewFolderName('')}>取消</button><button className="primary-button" disabled={!newFolderName.trim()}>新建</button></div>
+            <input
+              autoFocus
+              className="h-9 rounded-md border border-slate-300 px-2 text-sm outline-none focus:border-brand-600"
+              value={newFolderName}
+              onChange={event => setNewFolderName(event.target.value)}
+              placeholder="文件夹名称"
+            />
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={() => setNewFolderName('')}
+              >
+                取消
+              </button>
+              <button
+                className="primary-button"
+                disabled={!newFolderName.trim()}
+              >
+                新建
+              </button>
+            </div>
           </form>
         </div>
       )}
@@ -628,6 +654,15 @@ export function Dashboard({
   const [pendingBackpackRemoval, setPendingBackpackRemoval] = useState('')
   const [trackRuntimeTasks, setTrackRuntimeTasks] = useState(false)
   const [aiOpen, setAIOpen] = useState(false)
+  useEffect(() => {
+    const closeWhenAnotherToolOpens = (event: Event) => {
+      if ((event as CustomEvent<string>).detail !== 'environment')
+        setEnvironmentOpen(false)
+    }
+    window.addEventListener('alx:top-tool-open', closeWhenAnotherToolOpens)
+    return () =>
+      window.removeEventListener('alx:top-tool-open', closeWhenAnotherToolOpens)
+  }, [])
   const environmentChecked = useRef(false)
   const dispatch = useDispatch()
   const projects = useSelector(
@@ -686,6 +721,14 @@ export function Dashboard({
     isFetching: runtimeLoading,
     refetch: refetchRuntime
   } = useRobotRuntimeQuery(root, { skip: !root })
+  const {
+    data: pm2Status,
+    error: pm2StatusError,
+    refetch: refetchPM2Status
+  } = useRobotPM2StatusQuery(root, {
+    skip: !root || !runtime?.pm2Configured,
+    refetchOnMountOrArgChange: true
+  })
   const {
     data: currentPackageConfig,
     isFetching: currentPackageConfigLoading
@@ -806,7 +849,7 @@ export function Dashboard({
         return true
       }
       const task = await startRobotTask(data).unwrap()
-      if (data.action === 'dev') {
+      if (data.action === 'dev' || data.action === 'app') {
         setOutput('')
         setConsoleOpen(true)
         return true
@@ -823,6 +866,9 @@ export function Dashboard({
           error?: string
         }
         if (current.status === 'running') continue
+        dispatch(
+          workspaceApi.util.invalidateTags([{ type: 'Runtime', id: root }])
+        )
         if (current.status === 'failed')
           throw new Error(current.error ?? '操作未完成。')
         if (
@@ -1013,7 +1059,8 @@ export function Dashboard({
         }
         setCloneProgress(task.progress ?? 10)
         if (task.status === 'running') continue
-        if (task.status === 'failed') throw new Error(task.error || '克隆仓库失败。')
+        if (task.status === 'failed')
+          throw new Error(task.error || '克隆仓库失败。')
         const targetPath = task.path
         if (!targetPath) throw new Error('克隆完成，但无法识别机器人目录。')
         showOutput(task.output || '仓库已克隆。')
@@ -1188,6 +1235,8 @@ export function Dashboard({
       {section === 'runtime' && (
         <RuntimePanel
           overview={runtime}
+          pm2Status={pm2Status}
+          pm2StatusError={Boolean(pm2StatusError)}
           root={root}
           loading={runtimeLoading}
           busy={busy}
@@ -1203,7 +1252,10 @@ export function Dashboard({
               item.action === 'app' &&
               item.status === 'running'
           )}
-          onRefresh={() => void refetchRuntime()}
+          onRefresh={() => {
+            void refetchRuntime()
+            if (runtime?.pm2Configured) void refetchPM2Status()
+          }}
           onOpenConsole={() => setConsoleOpen(true)}
           onRun={(action, packageName) =>
             api('POST', {
@@ -1382,23 +1434,20 @@ export function Dashboard({
                 target="_blank"
                 rel="noreferrer"
               >
-                ALEMONJS
+                ALemonX
               </a>
               <SetupUpdateButton />
               <ThemeToggle />
             </div>
             <div className="ml-auto flex min-w-0 items-center gap-2">
-              <SSHControl />
-              <AuthControl />
               {developerMode && <McpControl />}
-              <OperationTasksButton root={root} />
               <Button
                 variant="secondary"
                 className={cn(
                   'gap-1.5 px-2',
                   developerMode
-                    ? 'border-slate-400 bg-slate-100 text-slate-900'
-                    : 'border-slate-200 bg-white text-slate-500 hover:bg-slate-50'
+                    ? 'border-blue-400 bg-slate-100 '
+                    : 'border-slate-200 bg-white  hover:bg-slate-50'
                 )}
                 onClick={() => dispatch(setDeveloperMode(!developerMode))}
                 aria-pressed={developerMode}
@@ -1409,8 +1458,17 @@ export function Dashboard({
                 }
               >
                 <Code2 />
-                <span>Dev</span>
+                <span
+                  className={cn(
+                    developerMode ? ' text-blue-700' : ' text-slate-500 '
+                  )}
+                >
+                  Dev
+                </span>
               </Button>
+              <SSHControl />
+              <AuthControl />
+              <OperationTasksButton root={root} />
               <Button
                 variant="secondary"
                 className={cn(
@@ -1420,6 +1478,11 @@ export function Dashboard({
                     : 'border-slate-200 bg-slate-50 text-slate-700'
                 )}
                 onClick={() => {
+                  window.dispatchEvent(
+                    new CustomEvent('alx:top-tool-open', {
+                      detail: 'environment'
+                    })
+                  )
                   setEnvironmentOpen(true)
                   onCheck()
                 }}
@@ -1969,7 +2032,8 @@ function GitCloneDialog({
                   const value = event.target.value
                   setRepository(value)
                   setBranch('')
-                  if (/^(git@|ssh:\/\/)/.test(value.trim())) setConnection('ssh')
+                  if (/^(git@|ssh:\/\/)/.test(value.trim()))
+                    setConnection('ssh')
                   const derived =
                     value
                       .trim()
@@ -1987,7 +2051,8 @@ function GitCloneDialog({
               />
               {usesSSH && !sshLoading && !sshKeys.length && (
                 <small className="font-normal text-red-700">
-                  此 SSH 地址无法使用：请先在顶部 SSH 管理中生成密钥并添加公钥，或改用 HTTPS 地址。
+                  此 SSH 地址无法使用：请先在顶部 SSH
+                  管理中生成密钥并添加公钥，或改用 HTTPS 地址。
                 </small>
               )}
             </label>
@@ -2008,7 +2073,10 @@ function GitCloneDialog({
                   ))}
                 </select>
                 {branch && (
-                  <small className="truncate text-[11px] font-normal text-slate-500" title={branch}>
+                  <small
+                    className="truncate text-[11px] font-normal text-slate-500"
+                    title={branch}
+                  >
                     已选：{branch}
                   </small>
                 )}
@@ -2059,8 +2127,16 @@ function GitCloneDialog({
         <footer className="flex justify-end gap-2 border-t border-slate-200 px-4 py-3">
           {busy && (
             <div className="mr-auto grid min-w-44 gap-1 self-center">
-              <div className="flex justify-between text-[11px] text-slate-500"><span>正在下载仓库</span><span>{progress}%</span></div>
-              <div className="h-1.5 overflow-hidden rounded-full bg-slate-200"><div className="h-full rounded-full bg-brand-600 transition-[width] duration-500" style={{ width: `${Math.max(8, progress)}%` }} /></div>
+              <div className="flex justify-between text-[11px] text-slate-500">
+                <span>正在下载仓库</span>
+                <span>{progress}%</span>
+              </div>
+              <div className="h-1.5 overflow-hidden rounded-full bg-slate-200">
+                <div
+                  className="h-full rounded-full bg-brand-600 transition-[width] duration-500"
+                  style={{ width: `${Math.max(8, progress)}%` }}
+                />
+              </div>
             </div>
           )}
           <button className="secondary-button" onClick={onClose}>
@@ -2070,7 +2146,9 @@ function GitCloneDialog({
             className="primary-button"
             disabled={
               busy ||
-              ((connection === 'ssh' || usesSSH) && !sshLoading && !sshKeys.length) ||
+              ((connection === 'ssh' || usesSSH) &&
+                !sshLoading &&
+                !sshKeys.length) ||
               !repository.trim() ||
               !destination ||
               !name.trim() ||
@@ -2293,11 +2371,28 @@ function McpControl() {
     }
   }
   const http = transport === 'http'
+  useEffect(() => {
+    const closeWhenAnotherToolOpens = (event: Event) => {
+      if ((event as CustomEvent<string>).detail !== 'mcp') setOpen(false)
+    }
+    window.addEventListener('alx:top-tool-open', closeWhenAnotherToolOpens)
+    return () =>
+      window.removeEventListener('alx:top-tool-open', closeWhenAnotherToolOpens)
+  }, [])
   return (
     <div className="mcp-control relative">
       <button
         className="mcp-control-button inline-flex min-h-8 items-center gap-1.5 rounded-lg border border-blue-200 bg-blue-50 px-2.5 text-xs font-semibold text-blue-700 transition hover:bg-blue-100 dark:border-blue-900 dark:bg-blue-950/40 dark:text-blue-300 dark:hover:bg-blue-950/70"
-        onClick={() => setOpen(value => !value)}
+        onClick={() =>
+          setOpen(value => {
+            const next = !value
+            if (next)
+              window.dispatchEvent(
+                new CustomEvent('alx:top-tool-open', { detail: 'mcp' })
+              )
+            return next
+          })
+        }
         aria-expanded={open}
         title="连接 Codex 或其他本机 AI 客户端"
       >
@@ -2466,6 +2561,14 @@ function OperationTasksButton({ root }: { root: string }) {
   useEffect(() => {
     setTrackTasks(running > 0)
   }, [running])
+  useEffect(() => {
+    const closeWhenAnotherToolOpens = (event: Event) => {
+      if ((event as CustomEvent<string>).detail !== 'tasks') setOpen(false)
+    }
+    window.addEventListener('alx:top-tool-open', closeWhenAnotherToolOpens)
+    return () =>
+      window.removeEventListener('alx:top-tool-open', closeWhenAnotherToolOpens)
+  }, [])
   const label = (action: string) =>
     action.startsWith('setup:')
       ? `系统插件 · ${action.split(':').slice(-1)[0]}`
@@ -2495,7 +2598,16 @@ function OperationTasksButton({ root }: { root: string }) {
     <div className="operation-tasks relative">
       <button
         className="operation-tasks-button relative inline-flex size-8 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 transition hover:border-teal-300 hover:text-teal-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300"
-        onClick={() => setOpen(value => !value)}
+        onClick={() =>
+          setOpen(value => {
+            const next = !value
+            if (next)
+              window.dispatchEvent(
+                new CustomEvent('alx:top-tool-open', { detail: 'tasks' })
+              )
+            return next
+          })
+        }
         aria-label="操作记录"
         title="当前目录操作记录"
       >
@@ -2696,8 +2808,7 @@ function EmptyWorkspace({
       </div>
       <footer>
         <button className="secondary-button" onClick={onClone}>
-          <GitBranch className="size-3.5" />
-          从 Git 克隆
+          <GitBranch className="size-3.5" />从 Git 克隆
         </button>
         <button className="primary-button" onClick={onAdd}>
           添加本地目录
@@ -3944,6 +4055,8 @@ function MarkdownPage({ markdown }: { markdown: string }) {
 }
 function RuntimePanel({
   overview,
+  pm2Status,
+  pm2StatusError,
   root,
   loading,
   busy,
@@ -3957,6 +4070,8 @@ function RuntimePanel({
   developerMode
 }: {
   overview?: RuntimeOverview
+  pm2Status?: PM2Status
+  pm2StatusError: boolean
   root: string
   loading: boolean
   busy: boolean
@@ -4004,6 +4119,8 @@ function RuntimePanel({
   const [loginDialogBusy, setLoginDialogBusy] = useState(false)
   const [pm2LogsOpen, setPM2LogsOpen] = useState(false)
   const persistentReady = overview?.pm2Configured && overview.hasStartScript
+  const pm2Managed = Boolean(pm2Status?.managed)
+  const pm2Running = Boolean(pm2Status?.running)
   const knownPlatform = (overview?.platforms ?? []).find(
     item => item.id === selectedPlatform
   )
@@ -4117,14 +4234,20 @@ function RuntimePanel({
   const continueStartFromDialog = async (withoutLogin = false) => {
     if (!loginChoice) return
     const preflight = loginChoice.preflight
-    if (!withoutLogin && !preflight.login) {
-      setLoginDialogError('请先保存登录连接，或明确选择“无 login 启动”。')
+    if (preflight.missing.length) {
+      setLoginDialogError(
+        `启动前仍缺少：${preflight.missing.join('、')}。请完成配置后再启动。`
+      )
       return
     }
-    if (!withoutLogin && preflight.missing.length) {
+    if (withoutLogin && preflight.login) {
       setLoginDialogError(
-        `启动前仍缺少：${preflight.missing.join('、')}。请在此弹窗完成连接配置后再启动。`
+        '当前已配置 login。请先在配置中移除 login，或使用“确认启动”。'
       )
+      return
+    }
+    if (!withoutLogin && !preflight.login) {
+      setLoginDialogError('请先保存登录连接，或明确选择“无 login 启动”。')
       return
     }
     // This dialog is the final confirmation point.  Keeping the action here
@@ -4355,7 +4478,19 @@ function RuntimePanel({
               <footer className="flex flex-wrap items-center justify-end gap-2 border-t border-slate-200 px-5 py-3">
                 <button
                   className="text-button"
-                  disabled={loginDialogBusy || busy}
+                  disabled={
+                    loginDialogBusy ||
+                    busy ||
+                    Boolean(loginChoice.preflight.login) ||
+                    loginChoice.preflight.missing.length > 0
+                  }
+                  title={
+                    loginChoice.preflight.login
+                      ? '当前已配置 login；如需无 login 启动，请先从配置中移除它。'
+                      : loginChoice.preflight.missing.length
+                        ? '请先补齐启动前检查中的缺项。'
+                        : ''
+                  }
                   onClick={() => void continueStartFromDialog(true)}
                 >
                   无 login 启动
@@ -4369,7 +4504,12 @@ function RuntimePanel({
                 </button>
                 <button
                   className="primary-button"
-                  disabled={loginDialogBusy || busy}
+                  disabled={
+                    loginDialogBusy ||
+                    busy ||
+                    !loginChoice.preflight.login ||
+                    loginChoice.preflight.missing.length > 0
+                  }
                   onClick={() => void continueStartFromDialog(false)}
                 >
                   确认启动
@@ -4573,7 +4713,15 @@ function RuntimePanel({
               </strong>
               <span className="text-xs text-slate-500">
                 {persistentReady
-                  ? '适合长期在线；关闭本窗口后仍会继续运行。'
+                  ? pm2Status
+                    ? pm2Running
+                      ? '服务运行中；关闭本窗口后仍会继续运行。'
+                      : pm2Managed
+                        ? `服务状态：${pm2Status.status || '未知'}。可重启或删除。`
+                        : '服务尚未启动。'
+                    : pm2StatusError
+                      ? '无法读取服务状态；仍可尝试启动服务。'
+                      : '正在读取服务状态。'
                   : '还未准备好，修复后可长期在线。'}
               </span>
             </div>
@@ -4581,26 +4729,26 @@ function RuntimePanel({
               className="primary-button"
               disabled={busy || !persistentReady}
               title={
-                persistentReady ? '' : '补齐 start 脚本和 PM2 配置后可使用。'
+                !persistentReady ? '补齐 start 脚本和 PM2 配置后可使用。' : ''
               }
               onClick={() =>
                 void askStart(
-                  'pm2',
-                  '启动服务',
-                  '会在后台启动机器人；如已运行，将应用最新设置。'
+                  pm2Running ? 'pm2-reload' : 'pm2',
+                  pm2Running ? '应用服务设置' : '启动服务',
+                  pm2Running
+                    ? '会尽量不中断服务地应用最新设置。'
+                    : '会在后台启动机器人。'
                 )
               }
             >
-              启动服务
+              {pm2Running ? '应用设置' : '启动服务'}
             </button>
           </header>
           <div className="flex flex-wrap items-center justify-end gap-2 px-4 py-3">
             <button
               className="secondary-button"
-              disabled={busy || !overview?.pm2Configured}
-              title={
-                overview?.pm2Configured ? '' : '当前目录没有 pm2.config.cjs。'
-              }
+              disabled={busy || !pm2Managed}
+              title={pm2Managed ? '' : '当前机器人没有可停止的 PM2 服务。'}
               onClick={() =>
                 ask('停止服务', '会停止当前项目在后台运行的机器人。', () =>
                   onRun('pm2-stop')
@@ -4611,10 +4759,8 @@ function RuntimePanel({
             </button>
             <button
               className="secondary-button"
-              disabled={busy || !overview?.pm2Configured}
-              title={
-                overview?.pm2Configured ? '' : '当前目录没有 pm2.config.cjs。'
-              }
+              disabled={busy || !pm2Managed}
+              title={pm2Managed ? '' : '当前机器人没有可重启的 PM2 服务。'}
               onClick={() =>
                 ask('重启服务', '会停止并重新启动后台运行的机器人。', () =>
                   onRun('pm2-restart')
@@ -4625,10 +4771,8 @@ function RuntimePanel({
             </button>
             <button
               className="secondary-button"
-              disabled={busy || !overview?.pm2Configured}
-              title={
-                overview?.pm2Configured ? '' : '当前目录没有 pm2.config.cjs。'
-              }
+              disabled={busy || !pm2Running}
+              title={pm2Running ? '' : '当前机器人没有正在运行的 PM2 服务。'}
               onClick={() =>
                 ask('更新服务', '会尽量不中断服务地应用最新设置。', () =>
                   onRun('pm2-reload')
@@ -4653,14 +4797,17 @@ function RuntimePanel({
             <div className="runtime-persistent-utilities">
               <button
                 className="text-button"
-                disabled={busy}
+                disabled={busy || !pm2Managed}
+                title={
+                  overview?.pm2Configured ? '' : '当前目录没有 pm2.config.cjs。'
+                }
                 onClick={() => onRun('pm2-status')}
               >
                 状态
               </button>
               <button
                 className="text-button"
-                disabled={busy || !overview?.pm2Configured}
+                disabled={busy || !pm2Managed}
                 onClick={() => setPM2LogsOpen(true)}
               >
                 日志
@@ -5136,18 +5283,31 @@ function ReadonlyConsole({
   onClose: () => void
 }) {
   const [load, { data, error, isFetching }] = useLazyRobotConsoleQuery()
+  const outputRef = useRef<HTMLPreElement>(null)
+  const followLatest = useRef(true)
+  const message = error
+    ? operationErrorMessage(error, '无法读取当前目录的运行终端信息。')
+    : (data?.output ?? '')
   useEffect(() => {
     if (!open || !root) return
     void load(root)
     const timer = window.setInterval(() => {
-      void load(root, true)
+      void load(root)
     }, 900)
     return () => window.clearInterval(timer)
   }, [load, open, root])
+  useEffect(() => {
+    if (open) followLatest.current = true
+  }, [open])
+  useEffect(() => {
+    if (!open || !followLatest.current) return
+    const frame = window.requestAnimationFrame(() => {
+      const output = outputRef.current
+      if (output) output.scrollTop = output.scrollHeight
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [message, open])
   if (!open) return null
-  const message = error
-    ? operationErrorMessage(error, '无法读取当前目录的运行终端信息。')
-    : (data?.output ?? '')
   return (
     <div
       className="readonly-console-backdrop fixed inset-0 z-40 grid place-items-center bg-slate-950/35 p-4 backdrop-blur-sm"
@@ -5166,7 +5326,7 @@ function ReadonlyConsole({
               运行终端
             </strong>
             <small className="hidden text-xs text-slate-400 sm:inline">
-              实时显示开发模式过程 · 不支持输入命令
+              实时显示前台或开发运行过程 · 不支持输入命令
             </small>
           </div>
           <div className="flex items-center gap-1">
@@ -5189,7 +5349,15 @@ function ReadonlyConsole({
             </button>
           </div>
         </header>
-        <pre className="m-0 min-h-0 overflow-auto bg-slate-950 p-4 font-mono text-xs leading-5 text-emerald-200">
+        <pre
+          ref={outputRef}
+          className="m-0 min-h-0 overflow-auto bg-slate-950 p-4 font-mono text-xs leading-5 text-emerald-200"
+          onScroll={event => {
+            const output = event.currentTarget
+            followLatest.current =
+              output.scrollHeight - output.scrollTop - output.clientHeight < 24
+          }}
+        >
           {isFetching && !message ? '正在读取当前目录…' : message}
         </pre>
       </section>

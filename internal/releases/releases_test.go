@@ -17,6 +17,23 @@ func TestMatchingAssetForDoesNotTreatDarwinAsWindows(t *testing.T) {
 	}
 }
 
+func TestVersionCompareSupportsSemverPrereleases(t *testing.T) {
+	tests := []struct {
+		left, right string
+		want        int
+	}{
+		{"v1.2.3", "v1.2.3-beta.1", 1},
+		{"1.2.3-beta.1", "v1.2.3-beta.2", -1},
+		{"v1.2.3+build.8", "v1.2.3", 0},
+		{"v2.0.0", "v1.99.99", 1},
+	}
+	for _, test := range tests {
+		if got := versionCompare(test.left, test.right); got != test.want {
+			t.Errorf("versionCompare(%q, %q) = %d, want %d", test.left, test.right, got, test.want)
+		}
+	}
+}
+
 func TestMatchingAssetForRequiresExactPlatformAndArchitecture(t *testing.T) {
 	assets := []Asset{{Name: "alx-darwin-arm64.zip", URL: "mac-arm"}}
 	if got := matchingAssetFor(assets, "windows", "amd64"); got.Name != "" {

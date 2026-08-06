@@ -7,7 +7,7 @@ import {
   Upload,
   X
 } from 'lucide-react'
-import { useId, useState } from 'react'
+import { useEffect, useId, useState } from 'react'
 import { ConfirmDialog } from './ConfirmDialog'
 import {
   useLazySetupUpdateQuery,
@@ -30,12 +30,28 @@ export function SetupUpdateButton() {
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState('')
   const [confirmRestart, setConfirmRestart] = useState(false)
+  useEffect(() => {
+    const closeWhenAnotherToolOpens = (event: Event) => {
+      if ((event as CustomEvent<string>).detail !== 'update') setOpen(false)
+    }
+    window.addEventListener('alx:top-tool-open', closeWhenAnotherToolOpens)
+    return () =>
+      window.removeEventListener('alx:top-tool-open', closeWhenAnotherToolOpens)
+  }, [])
   const uploadInputID = useId()
   const { data: releaseData = [] } = useReleasesQuery('alemonx', {
     skip: !open || mode !== 'manual'
   })
   const releases = releaseData as Release[]
   const selected = releases.find(item => item.url === releaseURL) ?? releases[0]
+
+  // Only version discovery is automatic. Downloading and replacing the
+  // executable still require an explicit user confirmation.
+  useEffect(() => {
+    void check()
+    const interval = window.setInterval(() => void check(), 6 * 60 * 60 * 1000)
+    return () => window.clearInterval(interval)
+  }, [check])
 
   const api = async (path: string, options: RequestInit) => {
     const response = await fetch(path, options)
@@ -45,6 +61,27 @@ export function SetupUpdateButton() {
     }
     if (!response.ok) throw new Error(result.error || '操作未完成。')
     return result
+  }
+
+  const reconnectAfterRestart = () => {
+    const deadline = Date.now() + 40_000
+    const retry = () => {
+      void fetch('/api/v1/auth/status', { cache: 'no-store' })
+        .then(response => {
+          if (response.ok) {
+            window.location.reload()
+            return
+          }
+          throw new Error('应用仍在重启')
+        })
+        .catch(() => {
+          if (Date.now() < deadline) window.setTimeout(retry, 500)
+          else window.location.reload()
+        })
+    }
+    // Give the old server enough time to send the update response and exit;
+    // Windows may then need several retries before its executable is unlocked.
+    window.setTimeout(retry, 900)
   }
 
   const download = async () => {
@@ -72,7 +109,7 @@ export function SetupUpdateButton() {
         body: JSON.stringify({ confirm: true })
       })
       setMessage('正在重启应用…')
-      window.setTimeout(() => window.location.reload(), 1600)
+      reconnectAfterRestart()
     } catch (reason) {
       setMessage(reason instanceof Error ? reason.message : '更新重启失败。')
       setBusy(false)
@@ -91,7 +128,8 @@ export function SetupUpdateButton() {
         method: 'POST',
         body: form
       })
-      setMessage(result.output || '更新包已载入。请重新打开应用。')
+      setMessage(result.output || '正在重启应用…')
+      reconnectAfterRestart()
     } catch (reason) {
       setMessage(reason instanceof Error ? reason.message : '载入更新失败。')
     } finally {
@@ -100,6 +138,9 @@ export function SetupUpdateButton() {
   }
 
   const openPanel = () => {
+    window.dispatchEvent(
+      new CustomEvent('alx:top-tool-open', { detail: 'update' })
+    )
     setOpen(true)
     setMode('now')
     setMessage('')
@@ -116,7 +157,13 @@ export function SetupUpdateButton() {
         onClick={openPanel}
         disabled={isFetching}
         aria-label="检查应用更新"
-        title={isFetching ? '正在检查更新' : '检查更新'}
+        title={
+          isFetching
+            ? '正在检查更新'
+            : data?.available
+              ? '发现可用更新'
+              : '检查更新'
+        }
       >
         <RefreshCw className="size-4" />
       </button>
@@ -181,7 +228,7 @@ export function SetupUpdateButton() {
                       </strong>
                     </span>
                   </div>
-                  {data.platformMatched ? (
+                  {data.platformMatched && data.integrityReady ? (
                     <button
                       className="inline-flex min-h-9 justify-self-end rounded-md bg-brand-600 px-3 text-xs font-semibold text-white transition hover:bg-teal-800 disabled:opacity-60"
                       disabled={busy}
@@ -198,7 +245,9 @@ export function SetupUpdateButton() {
                     </button>
                   ) : (
                     <p className="rounded-lg border border-slate-200 bg-slate-50 p-2.5 text-xs leading-5 text-slate-500">
-                      当前系统没有匹配的更新包，请使用手动安装。
+                      {data.platformMatched
+                        ? '该版本未提供校验文件，请使用手动安装。'
+                        : '当前系统没有匹配的更新包，请使用手动安装。'}
                     </p>
                   )}
                 </>
@@ -268,7 +317,7 @@ export function SetupUpdateButton() {
                   className="sr-only"
                   id={uploadInputID}
                   type="file"
-                  accept=".zip,.tgz,.gz"
+                  accept=".zip,.tgz,.tar.gz"
                   onChange={event => setFile(event.target.files?.[0] ?? null)}
                 />
                 <label
