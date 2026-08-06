@@ -37,7 +37,7 @@ export function ConfirmDialog({
       onMouseDown={onCancel}
     >
       <section
-        className="grid w-full max-w-md gap-4 rounded-xl border border-slate-200 bg-white p-[18px] shadow-[0_20px_58px_rgb(15_23_42/0.22)]"
+        className="grid w-full max-w-md gap-4 rounded-xl border border-slate-200 bg-white p-[18px] shadow-[0_20px_58px_rgb(28_26_23/0.22)]"
         role="dialog"
         aria-modal="true"
         aria-label={title}
@@ -51,11 +51,7 @@ export function ConfirmDialog({
             <strong className="text-sm text-ink-950">{title}</strong>
             <small className="text-[11px] text-slate-400">{subtitle}</small>
           </div>
-          <Button
-            variant="icon"
-            onClick={onCancel}
-            aria-label="关闭确认"
-          >
+          <Button variant="icon" onClick={onCancel} aria-label="关闭确认">
             <X className="size-4" />
           </Button>
         </header>
@@ -63,10 +59,7 @@ export function ConfirmDialog({
           {message}
         </p>
         <footer className="flex justify-end gap-2">
-          <Button
-            variant="secondary"
-            onClick={onCancel}
-          >
+          <Button variant="secondary" onClick={onCancel}>
             {cancelLabel}
           </Button>
           <Button

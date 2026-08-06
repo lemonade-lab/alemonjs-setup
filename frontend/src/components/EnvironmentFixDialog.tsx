@@ -45,7 +45,7 @@ export function EnvironmentFixDialog({ check, onClose }: Props) {
       onMouseDown={onClose}
     >
       <section
-        className="relative w-full max-w-[440px] rounded-xl border border-slate-200 bg-white p-6 shadow-[0_24px_60px_rgb(15_23_42_/_0.24)]"
+        className="relative w-full max-w-[440px] rounded-xl border border-slate-200 bg-white p-6 shadow-[0_24px_60px_rgb(28_26_23_/_0.24)]"
         role="dialog"
         aria-modal="true"
         aria-labelledby="environment-fix-title"

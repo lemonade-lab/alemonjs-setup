@@ -17,7 +17,7 @@ export function EnvironmentCheckPanel({
 
   return (
     <section className="mx-auto grid w-full max-w-[640px] gap-5 pt-8">
-      <header className="flex items-start justify-between gap-5 rounded-2xl border border-slate-200 bg-white p-5 shadow-[0_12px_30px_rgb(15_23_42/0.06)]">
+      <header className="flex items-start justify-between gap-5 rounded-2xl border border-slate-200 bg-white p-5 shadow-[0_12px_30px_rgb(28_26_23/0.06)]">
         <div className="flex items-start gap-3">
           <i
             className={`mt-0.5 inline-flex h-9 w-9 items-center justify-center rounded-xl text-base font-extrabold not-italic ${ready ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}
@@ -38,7 +38,7 @@ export function EnvironmentCheckPanel({
           </div>
         </div>
         <button
-          className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-600 transition hover:border-teal-300 hover:text-teal-700 disabled:cursor-wait disabled:opacity-50"
+          className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-600 transition hover:border-brand-200 hover:text-brand-600 disabled:cursor-wait disabled:opacity-50"
           onClick={onCheck}
           disabled={checking}
         >

@@ -210,7 +210,7 @@ export function NpmPublishPanel({ root, busy, onRun }: Props) {
           <label className="grid gap-1 text-[11px] font-semibold text-slate-500">
             标签
             <select
-              className="h-9 rounded-lg border border-slate-200 bg-white px-2 text-xs font-semibold text-slate-700 outline-none focus:border-teal-500 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-200"
+              className="h-9 rounded-lg border border-slate-200 bg-white px-2 text-xs font-semibold text-slate-700 outline-none focus:border-brand-600 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-200"
               value={tag}
               onChange={event => {
                 setTag(event.target.value)
@@ -242,7 +242,7 @@ export function NpmPublishPanel({ root, busy, onRun }: Props) {
             <RefreshCw className="size-4" />
           </button>
           <button
-            className="inline-flex min-h-9 items-center justify-center rounded-lg bg-teal-700 px-3 text-xs font-semibold text-white hover:bg-teal-800 disabled:opacity-50"
+            className="inline-flex min-h-9 items-center justify-center rounded-lg bg-brand-600 px-3 text-xs font-semibold text-white hover:bg-brand-700 disabled:opacity-50"
             disabled={busy || !canPublish}
             onClick={() => void publish()}
           >
@@ -272,7 +272,7 @@ export function NpmPublishPanel({ root, busy, onRun }: Props) {
             className={cn(
               'ml-1',
               status.loggedIn
-                ? 'text-teal-700 dark:text-teal-300'
+                ? 'text-brand-600 dark:text-brand-200'
                 : 'text-amber-700 dark:text-amber-300'
             )}
           >

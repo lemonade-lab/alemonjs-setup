@@ -364,7 +364,7 @@ function FlowView({
   const assetPicker = () => (
     <>
       <h1>选择安装包</h1>
-      <div className="choice-list asset-list">
+      <div className="grid gap-2.5 my-5 asset-list">
         {releaseAssets.assets.map(asset => (
           <button
             className={
@@ -398,7 +398,7 @@ function FlowView({
     ) => (
       <>
         <h1>{title}</h1>
-        <div className="choice-list">
+        <div className="grid gap-2.5 my-5">
           {items.map(([value, label, note]) => (
             <button
               className={
@@ -540,7 +540,7 @@ function FlowView({
             <p>
               只安装你现在需要的能力；以后也能在机器人目录的“连接、插件”中单独安装。
             </p>
-            <div className="choice-list">
+            <div className="grid gap-2.5 my-5">
               {[
                 ['bubble', '气泡服务', '@alemonjs/bubble'],
                 ['database', '数据存储', '@alemonjs/db'],
@@ -569,7 +569,7 @@ function FlowView({
         return (
           <>
             <h1>需要做图片功能吗？</h1>
-            <div className="choice-list">
+            <div className="grid gap-2.5 my-5">
               {[
                 ['none', '不需要', '生成文字、按钮和普通消息模板。'],
                 [
@@ -623,7 +623,7 @@ function FlowView({
               开发技能像一本 AlemonJS 的使用说明。安装后，Codex
               等工具更容易按推荐方式帮你写代码。
             </p>
-            <div className="choice-list">
+            <div className="grid gap-2.5 my-5">
               <button
                 className={
                   config.skills === 'yes' ? 'choice selected' : 'choice'
@@ -856,7 +856,7 @@ function FlowView({
       return (
         <>
           <h1>选择部署方式</h1>
-          <div className="choice-list">
+          <div className="grid gap-2.5 my-5">
             <button
               className={webEdition === 'clean' ? 'choice selected' : 'choice'}
               onClick={() => {
@@ -894,7 +894,7 @@ function FlowView({
         <>
           <h1>选择下载镜像</h1>
           <p>选择下载来源后继续；随后选择版本与安装包。</p>
-          <div className="choice-list">
+          <div className="grid gap-2.5 my-5">
             {goal?.mirrors?.map(mirror => (
               <button
                 className={
@@ -940,7 +940,7 @@ function FlowView({
       return (
         <>
           <h1>选择构建方式</h1>
-          <div className="choice-list">
+          <div className="grid gap-2.5 my-5">
             <button
               className={buildMode === 'npm' ? 'choice selected' : 'choice'}
               onClick={() => {
@@ -1007,7 +1007,7 @@ function FlowView({
         <>
           <h1>选择下载镜像</h1>
           <p>选择一个下载来源后继续；下一页再选要下载的版本。</p>
-          <div className="choice-list">
+          <div className="grid gap-2.5 my-5">
             {goal?.mirrors?.map(mirror => (
               <button
                 className={
@@ -1135,10 +1135,12 @@ function FlowView({
         )}
         <div className="wizard-content">
           {!goal || step === 0 ? (
-            <div className="guide-question">
-              <p className="question-kicker">ALemonX</p>
+            <div className="guide-question mx-auto max-w-[560px] text-center">
+              <p className="text-[var(--theme-accent-text)] text-xs font-extrabold uppercase tracking-[0.13em] mb-3.5">
+                ALemonX
+              </p>
               <h1>你现在想做什么？</h1>
-              <p className="question-lead">
+              <p className="text-[var(--theme-text-muted)] text-[0.95rem] leading-[1.65] mt-3.5">
                 从一个目标开始，剩下的步骤交给引导。
               </p>
               <div className="question-options">
@@ -1350,7 +1352,9 @@ function LegacyDashboard({
       </header>
       <section className="dashboard-heading">
         <div>
-          <p className="eyebrow">后台中心</p>
+          <p className="text-[var(--theme-accent-text)] text-xs font-extrabold uppercase tracking-[0.1em] mb-3">
+            后台中心
+          </p>
           <h1>管理已创建的流程</h1>
           <p>
             在这里手动检查环境、查看准备状态；需要新建或继续引导时，随时重新打开引导。
@@ -1383,7 +1387,9 @@ function LegacyDashboard({
         <section className="dashboard-detail">
           <div className="detail-heading">
             <div>
-              <p className="eyebrow">当前功能</p>
+              <p className="text-[var(--theme-accent-text)] text-xs font-extrabold uppercase tracking-[0.1em] mb-3">
+                当前功能
+              </p>
               <h2>{goal.title}</h2>
               <p>{goal.description}</p>
             </div>
@@ -1573,7 +1579,9 @@ function DashboardDeprecated({
           <section className="console-page">
             {page === 'environment' ? (
               <>
-                <p className="eyebrow">环境管理</p>
+                <p className="text-[var(--theme-accent-text)] text-xs font-extrabold uppercase tracking-[0.1em] mb-3">
+                  环境管理
+                </p>
                 <h1>检查当前电脑的开发环境</h1>
                 <p>这里会检查 Node.js、Git 等机器人需要的工具。</p>
                 <button
@@ -1596,7 +1604,7 @@ function DashboardDeprecated({
               </>
             ) : (
               <>
-                <p className="eyebrow">
+                <p className="text-[var(--theme-accent-text)] text-xs font-extrabold uppercase tracking-[0.1em] mb-3">
                   {page === 'plugins'
                     ? '插件管理'
                     : page === 'connections'

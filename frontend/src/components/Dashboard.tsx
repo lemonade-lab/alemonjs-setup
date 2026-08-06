@@ -353,7 +353,7 @@ export function DirectoryPicker({
       onClick={() => setContextMenu(null)}
     >
       <section
-        className="directory-picker finder-picker grid h-[min(700px,calc(100vh-32px))] w-full max-w-5xl grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden rounded-xl border border-slate-200 bg-white shadow-[0_24px_70px_rgb(15_23_42/0.26)]"
+        className="directory-picker finder-picker grid h-[min(700px,calc(100vh-32px))] w-full max-w-5xl grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden rounded-xl border border-slate-200 bg-white shadow-[0_24px_70px_rgb(28_26_23/0.26)]"
         role="dialog"
         aria-label="选择目录"
       >
@@ -1956,7 +1956,7 @@ function GitCloneDialog({
   return (
     <div className="fixed inset-0 z-[95] flex items-center justify-center bg-slate-950/30 p-4">
       <section
-        className="git-dialog git-clone-dialog grid max-h-[min(720px,calc(100vh-32px))] w-full max-w-xl grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden rounded-xl border border-slate-200 bg-white shadow-[0_22px_58px_rgb(15_23_42/0.25)]"
+        className="git-dialog git-clone-dialog grid max-h-[min(720px,calc(100vh-32px))] w-full max-w-xl grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden rounded-xl border border-slate-200 bg-white shadow-[0_22px_58px_rgb(28_26_23/0.25)]"
         role="dialog"
         aria-label="从 Git 克隆机器人"
       >
@@ -2219,7 +2219,7 @@ function GitInitializeDialog({
   return (
     <div className="fixed inset-0 z-[95] flex items-center justify-center bg-slate-950/30 p-4">
       <section
-        className="git-dialog grid w-full max-w-lg grid-rows-[auto_1fr_auto] overflow-hidden rounded-xl border border-slate-200 bg-white shadow-[0_22px_58px_rgb(15_23_42/0.25)]"
+        className="git-dialog grid w-full max-w-lg grid-rows-[auto_1fr_auto] overflow-hidden rounded-xl border border-slate-200 bg-white shadow-[0_22px_58px_rgb(28_26_23/0.25)]"
         role="dialog"
         aria-label="填写 Git 初始化信息"
       >
@@ -2597,7 +2597,7 @@ function OperationTasksButton({ root }: { root: string }) {
   return (
     <div className="operation-tasks relative">
       <button
-        className="operation-tasks-button relative inline-flex size-8 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 transition hover:border-teal-300 hover:text-teal-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300"
+        className="operation-tasks-button relative inline-flex size-8 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 transition hover:border-brand-200 hover:text-brand-600 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300"
         onClick={() =>
           setOpen(value => {
             const next = !value
@@ -2613,7 +2613,7 @@ function OperationTasksButton({ root }: { root: string }) {
       >
         <ClipboardList />
         {running > 0 && (
-          <b className="absolute -right-1 -top-1 inline-flex min-w-4 items-center justify-center rounded-full bg-teal-700 px-1 text-[10px] text-white">
+          <b className="absolute -right-1 -top-1 inline-flex min-w-4 items-center justify-center rounded-full bg-brand-600 px-1 text-[10px] text-white">
             {running}
           </b>
         )}
@@ -2652,7 +2652,7 @@ function OperationTasksButton({ root }: { root: string }) {
                     className={cn(
                       'flex items-center gap-2 rounded-lg px-2 py-2 text-left text-xs transition hover:bg-slate-50 dark:hover:bg-slate-800',
                       current?.id === item.id &&
-                        'bg-teal-50 dark:bg-teal-950/40'
+                        'bg-brand-50 dark:bg-brand-100/40'
                     )}
                     onClick={() => setSelected(item.id)}
                   >
@@ -2765,7 +2765,7 @@ function EnvironmentPanel({
               </div>
               {check.status !== 'ready' && (
                 <button
-                  className="shrink-0 self-center rounded-md px-2 py-1 text-xs font-semibold text-teal-700 hover:bg-white dark:text-teal-300 dark:hover:bg-slate-900"
+                  className="shrink-0 self-center rounded-md px-2 py-1 text-xs font-semibold text-brand-600 hover:bg-white dark:text-brand-200 dark:hover:bg-slate-900"
                   onClick={() => onFix(check)}
                 >
                   修复
@@ -2940,7 +2940,7 @@ function SystemPluginCenter({
                 onClick={() => plugin.enabled && onOpen(plugin.id)}
                 disabled={!plugin.enabled}
               >
-                <i className="inline-flex size-8 shrink-0 items-center justify-center rounded-lg bg-teal-50 text-teal-700 not-italic dark:bg-teal-950/60 dark:text-teal-300">
+                <i className="inline-flex size-8 shrink-0 items-center justify-center rounded-lg bg-brand-50 text-brand-600 not-italic dark:bg-brand-100/60 dark:text-brand-200">
                   {setupPluginIcon(plugin.navigation.icon)}
                 </i>
                 <div className="grid min-w-0 gap-0.5">
@@ -2948,7 +2948,12 @@ function SystemPluginCenter({
                     {plugin.name}
                   </strong>
                   <small className="text-xs text-slate-400">
-                    v{plugin.version} · {plugin.online ? '在线目录' : plugin.enabled ? '已启用' : '已卸载'}
+                    v{plugin.version} ·{' '}
+                    {plugin.online
+                      ? '在线目录'
+                      : plugin.enabled
+                        ? '已启用'
+                        : '已卸载'}
                   </small>
                 </div>
                 {plugin.enabled && (
@@ -2977,7 +2982,7 @@ function SystemPluginCenter({
         </section>
       )}
       {message && (
-        <p className="setup-plugin-message rounded-lg border border-teal-200 bg-teal-50 px-3 py-2 text-xs text-teal-700 dark:border-teal-900 dark:bg-teal-950/40 dark:text-teal-300">
+        <p className="setup-plugin-message rounded-lg border border-brand-200 bg-brand-50 px-3 py-2 text-xs text-brand-600 dark:border-brand-200 dark:bg-brand-100/40 dark:text-brand-200">
           {message}
         </p>
       )}
@@ -3056,28 +3061,17 @@ function SetupPluginCenter({ plugin }: { plugin: SetupPlugin }) {
         </small>
       </header>
       <div className="setup-plugin-layout grid gap-3">
-        <nav
-          className="inline-flex w-fit gap-1 rounded-lg bg-slate-100 p-1 dark:bg-slate-800"
-          aria-label={`${plugin.name} 功能页`}
-        >
-          {plugin.pages.map(item => (
-            <button
-              className={cn(
-                'min-h-8 rounded-md px-3 text-xs font-semibold text-slate-500 transition hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-100',
-                page === item.id &&
-                  'bg-white text-teal-700 shadow-sm dark:bg-slate-700 dark:text-teal-300'
-              )}
-              key={item.id}
-              onClick={() => {
-                setPage(item.id)
-                setActiveAction('')
-              }}
-            >
-              {item.label}
-              <b className="hidden">›</b>
-            </button>
-          ))}
-        </nav>
+        <Tabs
+          ariaLabel={`${plugin.name} 功能页`}
+          value={page}
+          onChange={id => {
+            setPage(id)
+            setActiveAction('')
+          }}
+          variant="segmented"
+          className="w-fit"
+          items={plugin.pages.map(item => ({ id: item.id, label: item.label }))}
+        />
         <section className="setup-plugin-workspace grid max-w-[760px] gap-3 border-t border-slate-200 pt-4 dark:border-slate-700">
           <header className="setup-plugin-context flex items-baseline gap-2">
             <h2 className="m-0 text-sm font-semibold text-slate-800 dark:text-slate-100">
@@ -3120,7 +3114,7 @@ function SetupPluginCenter({ plugin }: { plugin: SetupPlugin }) {
                           )}
                         </span>
                         <button
-                          className="inline-flex min-h-8 shrink-0 items-center justify-center rounded-lg bg-teal-700 px-3 text-xs font-semibold text-white transition hover:bg-teal-800 disabled:cursor-not-allowed disabled:opacity-50"
+                          className="inline-flex min-h-8 shrink-0 items-center justify-center rounded-lg bg-brand-600 px-3 text-xs font-semibold text-white transition hover:bg-brand-700 disabled:cursor-not-allowed disabled:opacity-50"
                           disabled={!plugin.runnable || isLoading}
                           onClick={() => void run(action)}
                         >
@@ -3134,7 +3128,7 @@ function SetupPluginCenter({ plugin }: { plugin: SetupPlugin }) {
                     className={cn(
                       'setup-plugin-action border-b border-slate-100 last:border-b-0 dark:border-slate-800',
                       activeAction === action.id &&
-                        'bg-teal-50/40 dark:bg-teal-950/20'
+                        'bg-brand-50/40 dark:bg-brand-100/20'
                     )}
                     key={action.id}
                   >
@@ -3157,7 +3151,7 @@ function SetupPluginCenter({ plugin }: { plugin: SetupPlugin }) {
                           </small>
                         )}
                       </span>
-                      <b className="text-lg font-normal text-teal-700 dark:text-teal-300">
+                      <b className="text-lg font-normal text-brand-600 dark:text-brand-200">
                         {activeAction === action.id ? '−' : '+'}
                       </b>
                     </button>
@@ -3173,7 +3167,7 @@ function SetupPluginCenter({ plugin }: { plugin: SetupPlugin }) {
                                 {field.label}
                                 {field.type === 'select' ? (
                                   <select
-                                    className="min-h-9 rounded-lg border border-slate-200 bg-white px-2 text-sm font-normal text-slate-700 outline-none focus:border-teal-500 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-200"
+                                    className="min-h-9 rounded-lg border border-slate-200 bg-white px-2 text-sm font-normal text-slate-700 outline-none focus:border-brand-600 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-200"
                                     value={
                                       values[`${action.id}:${field.key}`] ??
                                       field.default ??
@@ -3198,7 +3192,7 @@ function SetupPluginCenter({ plugin }: { plugin: SetupPlugin }) {
                                   </select>
                                 ) : (
                                   <input
-                                    className="min-h-9 rounded-lg border border-slate-200 bg-white px-2 text-sm font-normal text-slate-700 outline-none focus:border-teal-500 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-200"
+                                    className="min-h-9 rounded-lg border border-slate-200 bg-white px-2 text-sm font-normal text-slate-700 outline-none focus:border-brand-600 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-200"
                                     type={field.type}
                                     value={
                                       values[`${action.id}:${field.key}`] ?? ''
@@ -3230,7 +3224,7 @@ function SetupPluginCenter({ plugin }: { plugin: SetupPlugin }) {
                             取消
                           </button>
                           <button
-                            className="inline-flex min-h-8 items-center justify-center rounded-lg bg-teal-700 px-3 text-xs font-semibold text-white transition hover:bg-teal-800 disabled:opacity-50"
+                            className="inline-flex min-h-8 items-center justify-center rounded-lg bg-brand-600 px-3 text-xs font-semibold text-white transition hover:bg-brand-700 disabled:opacity-50"
                             disabled={isLoading}
                             onClick={() => void run(action)}
                           >
@@ -3245,7 +3239,7 @@ function SetupPluginCenter({ plugin }: { plugin: SetupPlugin }) {
             </div>
           )}
           {message && (
-            <p className="setup-plugin-message rounded-lg border border-teal-200 bg-teal-50 px-3 py-2 text-xs text-teal-700 dark:border-teal-900 dark:bg-teal-950/40 dark:text-teal-300">
+            <p className="setup-plugin-message rounded-lg border border-brand-200 bg-brand-50 px-3 py-2 text-xs text-brand-600 dark:border-brand-200 dark:bg-brand-100/40 dark:text-brand-200">
               {message}
             </p>
           )}
@@ -3256,7 +3250,7 @@ function SetupPluginCenter({ plugin }: { plugin: SetupPlugin }) {
                 pluginTask.status === 'failed'
                   ? 'border-rose-200 bg-rose-50 text-rose-800 dark:border-rose-900 dark:bg-rose-950/30 dark:text-rose-200'
                   : pluginTask.status === 'completed'
-                    ? 'border-teal-200 bg-teal-50 text-teal-800 dark:border-teal-900 dark:bg-teal-950/30 dark:text-teal-200'
+                    ? 'border-brand-200 bg-brand-50 text-brand-700 dark:border-brand-200 dark:bg-brand-100/30 dark:text-brand-200'
                     : 'border-sky-200 bg-sky-50 text-sky-800 dark:border-sky-900 dark:bg-sky-950/30 dark:text-sky-200'
               )}
             >
@@ -4352,7 +4346,7 @@ function RuntimePanel({
             role="presentation"
           >
             <section
-              className="grid max-h-[min(720px,calc(100vh-48px))] w-full max-w-2xl grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden rounded-xl border border-slate-200 bg-white shadow-[0_20px_58px_rgb(15_23_42/0.22)]"
+              className="grid max-h-[min(720px,calc(100vh-48px))] w-full max-w-2xl grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden rounded-xl border border-slate-200 bg-white shadow-[0_20px_58px_rgb(28_26_23/0.22)]"
               role="dialog"
               aria-modal="true"
               aria-label="启动前登录连接"
@@ -5362,7 +5356,7 @@ function ReadonlyConsole({
       >
         <header className="flex items-center justify-between gap-3 border-b border-slate-200 px-4 py-3 dark:border-slate-700">
           <div className="flex min-w-0 items-center gap-2">
-            <Terminal className="size-4 shrink-0 text-teal-700 dark:text-teal-300" />
+            <Terminal className="size-4 shrink-0 text-brand-600 dark:text-brand-200" />
             <strong className="text-sm font-semibold text-slate-900 dark:text-slate-100">
               运行终端
             </strong>
@@ -5471,7 +5465,7 @@ function PM2LogsPanel({
       >
         <header className="flex items-center justify-between gap-3 border-b border-slate-200 px-4 py-3 dark:border-slate-700">
           <div className="flex min-w-0 items-center gap-2">
-            <Terminal className="size-4 shrink-0 text-teal-700 dark:text-teal-300" />
+            <Terminal className="size-4 shrink-0 text-brand-600 dark:text-brand-200" />
             <strong className="text-sm font-semibold text-slate-900 dark:text-slate-100">
               PM2 运行日志
             </strong>
@@ -5537,33 +5531,16 @@ function EditorMode({
   onText: () => void
 }) {
   return (
-    <div
-      className="inline-flex rounded-md bg-slate-100 p-1"
-      aria-label="配置编辑模式"
-    >
-      <button
-        className={cn(
-          'rounded px-3 py-1.5 text-xs font-semibold transition',
-          active === 'visual'
-            ? 'bg-white text-slate-900 shadow-sm'
-            : 'text-slate-500 hover:text-slate-800'
-        )}
-        onClick={onVisual}
-      >
-        表单
-      </button>
-      <button
-        className={cn(
-          'rounded px-3 py-1.5 text-xs font-semibold transition',
-          active === 'text'
-            ? 'bg-white text-slate-900 shadow-sm'
-            : 'text-slate-500 hover:text-slate-800'
-        )}
-        onClick={onText}
-      >
-        文本
-      </button>
-    </div>
+    <Tabs
+      ariaLabel="配置编辑模式"
+      value={active}
+      onChange={value => (value === 'text' ? onText() : onVisual())}
+      variant="segmented"
+      items={[
+        { id: 'visual', label: '表单' },
+        { id: 'text', label: '文本' }
+      ]}
+    />
   )
 }
 function FileEditor({
@@ -5727,7 +5704,7 @@ function GitReleasePanel({
           <label className="release-version-field grid gap-1 text-xs font-semibold text-slate-500">
             <span>版本</span>
             <input
-              className="min-h-9 w-32 rounded-lg border border-slate-200 bg-white px-2 text-sm font-normal text-slate-700 outline-none focus:border-teal-500 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-200"
+              className="min-h-9 w-32 rounded-lg border border-slate-200 bg-white px-2 text-sm font-normal text-slate-700 outline-none focus:border-brand-600 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-200"
               value={version || status?.suggestedVersion || ''}
               onChange={event => onVersionChange(event.target.value)}
               placeholder="v0.0.1"
@@ -5749,7 +5726,7 @@ function GitReleasePanel({
             <RefreshCw className="size-4" />
           </button>
           <button
-            className="inline-flex min-h-9 items-center justify-center rounded-lg bg-teal-700 px-3 text-xs font-semibold text-white transition hover:bg-teal-800 disabled:cursor-not-allowed disabled:opacity-50"
+            className="inline-flex min-h-9 items-center justify-center rounded-lg bg-brand-600 px-3 text-xs font-semibold text-white transition hover:bg-brand-700 disabled:cursor-not-allowed disabled:opacity-50"
             disabled={busy || !ready}
             onClick={confirmed ? onRun : onConfirm}
           >
@@ -5848,7 +5825,7 @@ function GitReleasePanel({
                     </label>
                   </div>
                   <button
-                    className="inline-flex min-h-9 w-fit items-center justify-center rounded-lg bg-teal-700 px-3 text-xs font-semibold text-white transition hover:bg-teal-800 disabled:cursor-not-allowed disabled:opacity-50"
+                    className="inline-flex min-h-9 w-fit items-center justify-center rounded-lg bg-brand-600 px-3 text-xs font-semibold text-white transition hover:bg-brand-700 disabled:cursor-not-allowed disabled:opacity-50"
                     disabled={
                       busy ||
                       initializing ||
@@ -6202,7 +6179,7 @@ function GitReleasePanelNext({
             <RefreshCw className="size-4" />
           </button>
           <button
-            className="inline-flex min-h-9 items-center justify-center rounded-lg bg-teal-700 px-3 text-xs font-semibold text-white transition hover:bg-teal-800 disabled:cursor-not-allowed disabled:opacity-50"
+            className="inline-flex min-h-9 items-center justify-center rounded-lg bg-brand-600 px-3 text-xs font-semibold text-white transition hover:bg-brand-700 disabled:cursor-not-allowed disabled:opacity-50"
             disabled={
               busy ||
               loading ||
@@ -6340,12 +6317,12 @@ function GitReleasePanelNext({
                       className={cn(
                         'inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-2 text-xs transition',
                         artifactSelected(item)
-                          ? 'border-teal-300 bg-teal-50 text-teal-700 dark:border-teal-800 dark:bg-teal-950/30 dark:text-teal-300'
+                          ? 'border-brand-200 bg-brand-50 text-brand-600 dark:border-brand-700 dark:bg-brand-100/30 dark:text-brand-200'
                           : 'border-slate-200 bg-slate-50 text-slate-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300'
                       )}
                     >
                       <input
-                        className="accent-teal-700"
+                        className="accent-brand-600"
                         type="checkbox"
                         checked={artifactSelected(item)}
                         onChange={() => toggleArtifact(item)}
@@ -6379,7 +6356,7 @@ function GitReleasePanelNext({
                           key={child}
                         >
                           <input
-                            className="accent-teal-700"
+                            className="accent-brand-600"
                             type="checkbox"
                             checked={artifactSelected(child)}
                             onChange={() => toggleArtifact(child)}
@@ -6431,7 +6408,7 @@ function GitReleasePanelNext({
               </ul>
               {needsInitialize && (
                 <button
-                  className="inline-flex min-h-9 w-fit items-center justify-center rounded-lg bg-teal-700 px-3 text-xs font-semibold text-white transition hover:bg-teal-800 disabled:opacity-50"
+                  className="inline-flex min-h-9 w-fit items-center justify-center rounded-lg bg-brand-600 px-3 text-xs font-semibold text-white transition hover:bg-brand-700 disabled:opacity-50"
                   disabled={busy || initializing}
                   onClick={() => setGitInitOpen(true)}
                 >
@@ -6448,7 +6425,7 @@ function GitReleasePanelNext({
             </section>
           )}
           {phase === 'confirm' && session && (
-            <p className="m-0 rounded-lg border border-teal-200 bg-teal-50 px-3 py-2 text-xs leading-5 text-teal-800 dark:border-teal-900 dark:bg-teal-950/30 dark:text-teal-300">
+            <p className="m-0 rounded-lg border border-brand-200 bg-brand-50 px-3 py-2 text-xs leading-5 text-brand-700 dark:border-brand-200 dark:bg-brand-100/30 dark:text-brand-200">
               即将把 {artifacts.length} 项构建产物发布到{' '}
               <code>{session.target}</code>，并创建标签{' '}
               <code>{version || status?.suggestedVersion}</code>。
@@ -6461,7 +6438,7 @@ function GitReleasePanelNext({
           )}
           {session && requestError.includes('release 分支已推送') && (
             <button
-              className="inline-flex min-h-9 w-fit items-center justify-center rounded-lg bg-teal-700 px-3 text-xs font-semibold text-white hover:bg-teal-800 disabled:opacity-50"
+              className="inline-flex min-h-9 w-fit items-center justify-center rounded-lg bg-brand-600 px-3 text-xs font-semibold text-white hover:bg-brand-700 disabled:opacity-50"
               disabled={retryingTag}
               onClick={() => void retryTag()}
             >

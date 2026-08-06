@@ -667,7 +667,7 @@ export function RobotGitControl({
       role="presentation"
     >
       <section
-        className="git-workspace-dialog grid max-h-[min(760px,calc(100vh-32px))] w-full max-w-[920px] grid-rows-[auto_minmax(0,1fr)] overflow-hidden rounded-xl border border-slate-200 bg-white shadow-[0_24px_70px_rgb(15_23_42/0.26)]"
+        className="git-workspace-dialog grid max-h-[min(760px,calc(100vh-32px))] w-full max-w-[920px] grid-rows-[auto_minmax(0,1fr)] overflow-hidden rounded-xl border border-slate-200 bg-white shadow-[0_24px_70px_rgb(28_26_23/0.26)]"
         role="dialog"
         aria-modal="true"
         aria-label={`${project.name} 的 Git 管理`}

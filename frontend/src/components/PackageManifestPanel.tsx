@@ -87,7 +87,7 @@ export function PackageManifestPanel({
       </section>
     )
   return (
-    <section className="grid max-w-[720px] gap-4 rounded-xl border border-slate-200 bg-white p-4 shadow-[0_7px_18px_rgb(15_23_42/0.035)]">
+    <section className="grid max-w-[720px] gap-4 rounded-xl border border-slate-200 bg-white p-4 shadow-[0_7px_18px_rgb(28_26_23/0.035)]">
       <header className="flex items-start justify-between gap-4 border-b border-slate-100 pb-3">
         <div className="grid gap-0.5">
           <strong className="text-sm text-ink-950">包信息</strong>

@@ -168,7 +168,7 @@ export function SetupUpdateButton() {
         <RefreshCw className="size-4" />
       </button>
       {open && (
-        <section className="absolute left-0 top-10 z-20 grid w-80 gap-3 rounded-xl border border-slate-200 bg-white p-3.5 shadow-[0_18px_42px_rgb(15_23_42/0.13)]">
+        <section className="absolute left-0 top-10 z-20 grid w-80 gap-3 rounded-xl border border-slate-200 bg-white p-3.5 shadow-[0_18px_42px_rgb(28_26_23/0.13)]">
           <header className="flex items-start justify-between gap-3">
             <div className="flex items-center gap-2.5">
               <i className="inline-flex size-8 items-center justify-center rounded-lg bg-brand-50 text-brand-600">
@@ -220,17 +220,17 @@ export function SetupUpdateButton() {
                       <Download className="size-4" />
                     </i>
                     <span className="grid gap-0.5">
-                      <small className="text-[11px] text-teal-800/70">
+                      <small className="text-[11px] text-brand-700/70">
                         发现新版本
                       </small>
-                      <strong className="text-sm text-teal-800">
+                      <strong className="text-sm text-brand-700">
                         {data.latest}
                       </strong>
                     </span>
                   </div>
                   {data.platformMatched && data.integrityReady ? (
                     <button
-                      className="inline-flex min-h-9 justify-self-end rounded-md bg-brand-600 px-3 text-xs font-semibold text-white transition hover:bg-teal-800 disabled:opacity-60"
+                      className="inline-flex min-h-9 justify-self-end rounded-md bg-brand-600 px-3 text-xs font-semibold text-white transition hover:bg-brand-700 disabled:opacity-60"
                       disabled={busy}
                       onClick={() => {
                         if (data.downloadReady) setConfirmRestart(true)
@@ -322,7 +322,7 @@ export function SetupUpdateButton() {
                 />
                 <label
                   htmlFor={uploadInputID}
-                  className="flex cursor-pointer items-center gap-2.5 rounded-lg border border-dashed border-teal-300 bg-teal-50/40 p-3 text-left transition hover:border-brand-600 hover:bg-brand-50"
+                  className="flex cursor-pointer items-center gap-2.5 rounded-lg border border-dashed border-brand-200 bg-brand-50/40 p-3 text-left transition hover:border-brand-600 hover:bg-brand-50"
                 >
                   <i className="inline-flex size-8 shrink-0 items-center justify-center rounded-md bg-brand-50 text-brand-600">
                     {file ? (
@@ -343,7 +343,7 @@ export function SetupUpdateButton() {
                   </span>
                 </label>
                 <button
-                  className="inline-flex min-h-9 justify-self-end rounded-md bg-brand-600 px-3 text-xs font-semibold text-white transition hover:bg-teal-800 disabled:cursor-not-allowed disabled:opacity-50"
+                  className="inline-flex min-h-9 justify-self-end rounded-md bg-brand-600 px-3 text-xs font-semibold text-white transition hover:bg-brand-700 disabled:cursor-not-allowed disabled:opacity-50"
                   disabled={!file || busy}
                   onClick={() => void upload()}
                 >

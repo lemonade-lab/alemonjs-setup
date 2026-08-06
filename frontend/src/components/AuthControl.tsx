@@ -62,14 +62,14 @@ export function AuthGate({ children }: { children: ReactNode }) {
   }
   if (!status)
     return (
-      <main className="flex min-h-screen items-center justify-center bg-[radial-gradient(800px_360px_at_50%_0,#e8faf7,#f7f8fa_68%)] p-5 text-sm text-slate-500">
+      <main className="auth-gate flex min-h-screen items-center justify-center p-5 text-sm text-slate-500">
         <span>正在读取身份认证状态…</span>
       </main>
     )
   if (!status.enabled || status.authenticated) return <>{children}</>
   return (
-    <main className="flex min-h-screen items-center justify-center bg-[radial-gradient(800px_360px_at_50%_0,#e8faf7,#f7f8fa_68%)] p-5">
-      <section className="grid w-full max-w-[360px] gap-3 rounded-xl border border-slate-200 bg-white p-6 shadow-[0_18px_52px_rgb(15_23_42/0.12)]">
+    <main className="auth-gate flex min-h-screen items-center justify-center p-5">
+      <section className="grid w-full max-w-[360px] gap-3 rounded-xl border border-slate-200 bg-white p-6 shadow-[0_18px_52px_rgb(28_26_23/0.12)]">
         <LockKeyhole className="size-6 text-brand-600" />
         <div>
           <strong className="text-sm text-slate-800">身份认证</strong>
@@ -168,7 +168,9 @@ export function AuthControl() {
     <div className="relative">
       <Button
         variant="icon"
-        className={status?.enabled ? 'border-brand-100 bg-brand-50 text-brand-600' : ''}
+        className={
+          status?.enabled ? 'border-brand-100 bg-brand-50 text-brand-600' : ''
+        }
         onClick={() =>
           setOpen(value => {
             const next = !value
@@ -187,7 +189,7 @@ export function AuthControl() {
       </Button>
       {open && (
         <section
-          className="absolute right-0 top-[calc(100%+8px)] z-50 grid w-[min(22.5rem,calc(100vw-2rem))] max-h-[calc(100vh-5rem)] gap-2.5 overflow-y-auto rounded-xl border border-slate-200 bg-white p-3 shadow-[0_18px_42px_rgb(15_23_42/0.13)]"
+          className="absolute right-0 top-[calc(100%+8px)] z-50 grid w-[min(22.5rem,calc(100vw-2rem))] max-h-[calc(100vh-5rem)] gap-2.5 overflow-y-auto rounded-xl border border-slate-200 bg-white p-3 shadow-[0_18px_42px_rgb(28_26_23/0.13)]"
           onKeyDown={event => {
             if (event.key === 'Escape') setOpen(false)
           }}
