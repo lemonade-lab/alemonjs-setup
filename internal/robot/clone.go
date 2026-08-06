@@ -1,0 +1,98 @@
+package robot
+
+import (
+	"errors"
+	"fmt"
+	"net/url"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
+)
+
+var gitBranchPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/-]*$`)
+var cloneDirectoryPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+
+type CloneTarget struct {
+	Path   string `json:"path"`
+	Exists bool   `json:"exists"`
+}
+
+func cloneRepositoryURL(repository string) (*url.URL, string, error) {
+	parsed, err := url.Parse(strings.TrimSpace(repository))
+	if err != nil || parsed.Scheme != "https" || (parsed.Host != "github.com" && parsed.Host != "gitee.com") {
+		return nil, "", errors.New("请填写 GitHub 或 Gitee 的 HTTPS 仓库地址")
+	}
+	parts := strings.Split(strings.Trim(strings.TrimSuffix(parsed.Path, ".git"), "/"), "/")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return nil, "", errors.New("仓库地址应为 https://github.com/组织/仓库")
+	}
+	return parsed, parts[1], nil
+}
+
+func CloneDestination(destination, repository, name string) (CloneTarget, error) {
+	_, defaultName, err := cloneRepositoryURL(repository)
+	if err != nil {
+		return CloneTarget{}, err
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		name = defaultName
+	}
+	if !cloneDirectoryPattern.MatchString(name) {
+		return CloneTarget{}, errors.New("最终目录名只能包含字母、数字、点、下划线或短横线")
+	}
+	target := filepath.Join(destination, name)
+	if _, err := os.Stat(target); err == nil {
+		return CloneTarget{Path: target, Exists: true}, nil
+	} else if !os.IsNotExist(err) {
+		return CloneTarget{}, fmt.Errorf("无法检查目标目录：%w", err)
+	}
+	return CloneTarget{Path: target}, nil
+}
+
+// CloneRepository clones a remote robot repository into an existing parent
+// directory. The destination name and mirror are validated from fixed choices.
+func CloneRepository(destination, repository, branch, name, mirror string) (Result, error) {
+	parsed, _, err := cloneRepositoryURL(repository)
+	if err != nil {
+		return Result{}, err
+	}
+	branch = strings.TrimSpace(branch)
+	if branch != "" && (!gitBranchPattern.MatchString(branch) || strings.Contains(branch, "..") || strings.HasPrefix(branch, "-")) {
+		return Result{}, errors.New("Git 分支或 tag 无效")
+	}
+	target, err := CloneDestination(destination, repository, name)
+	if err != nil {
+		return Result{}, err
+	}
+	if target.Exists {
+		return Result{}, fmt.Errorf("目标目录 %s 已存在", filepath.Base(target.Path))
+	}
+	remote := parsed.String()
+	switch mirror {
+	case "", "official":
+	case "gh-proxy":
+		if parsed.Host != "github.com" {
+			return Result{}, errors.New("该镜像仅支持 GitHub 仓库")
+		}
+		remote = "https://gh-proxy.com/" + remote
+	case "ghproxy-net":
+		if parsed.Host != "github.com" {
+			return Result{}, errors.New("该镜像仅支持 GitHub 仓库")
+		}
+		remote = "https://ghproxy.net/" + remote
+	default:
+		return Result{}, errors.New("不支持的 Git 镜像")
+	}
+	args := []string{"clone", "--depth", "1"}
+	if branch != "" {
+		args = append(args, "--branch", branch)
+	}
+	args = append(args, remote, target.Path)
+	output, err := run(destination, "git", args...)
+	if err != nil {
+		return Result{Path: target.Path, Output: output}, fmt.Errorf("克隆仓库失败：%w", err)
+	}
+	return Result{Path: target.Path, Output: "已克隆到 " + target.Path + "。\n" + output}, nil
+}

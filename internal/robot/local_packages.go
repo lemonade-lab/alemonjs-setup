@@ -175,6 +175,85 @@ func removeLocalPackageByName(root, packageName string) (Result, error) {
 	return Result{}, fmt.Errorf("背包中没有 %s", packageName)
 }
 
+// replaceLocalPackage downloads the selected published npm version before the
+// previous directory is discarded. The old directory is kept as a temporary
+// sibling and restored if the download or unpacking fails.
+func replaceLocalPackage(root, packageName, version string) (Result, error) {
+	if !packageNamePattern.MatchString(packageName) {
+		return Result{}, errors.New("本地插件包名无效")
+	}
+	if !regexp.MustCompile(`^v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$`).MatchString(version) {
+		return Result{}, errors.New("请选择有效的插件版本")
+	}
+	items, err := (Manager{}).LocalPackages(root)
+	if err != nil {
+		return Result{}, err
+	}
+	var previous LocalPackage
+	for _, item := range items {
+		if item.Name == packageName && item.Valid {
+			previous = item
+			break
+		}
+	}
+	if previous.Path == "" {
+		return Result{}, errors.New("背包中没有可更新的本地插件包")
+	}
+	backup := previous.Path + ".albs-backup"
+	if _, err := os.Stat(backup); err == nil {
+		return Result{}, errors.New("检测到未完成的插件更新，请先刷新背包后重试")
+	}
+	if err := os.Rename(previous.Path, backup); err != nil {
+		return Result{}, fmt.Errorf("无法备份当前插件版本：%w", err)
+	}
+	result, installErr := installLocalPackage(root, packageName+"@"+strings.TrimPrefix(version, "v"))
+	if installErr == nil {
+		_ = os.RemoveAll(backup)
+		return Result{Path: result.Path, Output: "已切换 " + packageName + " 到 v" + strings.TrimPrefix(version, "v") + "。\n" + result.Output}, nil
+	}
+	_ = os.RemoveAll(result.Path)
+	if restoreErr := os.Rename(backup, previous.Path); restoreErr != nil {
+		return Result{}, fmt.Errorf("更新失败且无法恢复原插件：%w", restoreErr)
+	}
+	return result, fmt.Errorf("切换版本失败，已恢复原插件：%w", installErr)
+}
+
+func switchLocalPackageVersion(root, packageName, version string) (Result, error) {
+	items, err := (Manager{}).LocalPackages(root)
+	if err != nil {
+		return Result{}, err
+	}
+	for _, item := range items {
+		if item.Name != packageName || !item.Valid {
+			continue
+		}
+		if output, gitErr := gitRun(item.Path, "rev-parse", "--is-inside-work-tree"); gitErr == nil && strings.TrimSpace(output) == "true" {
+			if !gitVersionPattern.MatchString(version) {
+				return Result{}, errors.New("请选择有效的 Git 版本标签")
+			}
+			status, statusErr := gitRun(item.Path, "status", "--porcelain")
+			if statusErr != nil {
+				return Result{}, errors.New("无法确认 Git 工作区状态")
+			}
+			if strings.TrimSpace(status) != "" {
+				return Result{}, errors.New("插件 Git 工作区有未提交修改，请先提交或还原后再切换版本")
+			}
+			if _, tagErr := gitRun(item.Path, "rev-parse", "-q", "--verify", "refs/tags/"+version); tagErr != nil {
+				if _, fetchErr := gitRun(item.Path, "fetch", "origin", "tag", version); fetchErr != nil {
+					return Result{}, errors.New("无法从 Git 仓库获取该版本标签")
+				}
+				if _, tagErr = gitRun(item.Path, "rev-parse", "-q", "--verify", "refs/tags/"+version); tagErr != nil {
+					return Result{}, errors.New("Git 仓库中没有该版本标签")
+				}
+			}
+			output, checkoutErr := gitRun(item.Path, "checkout", "--detach", "tags/"+version)
+			return Result{Path: item.Path, Output: output}, checkoutErr
+		}
+		return replaceLocalPackage(root, packageName, version)
+	}
+	return Result{}, errors.New("背包中没有可切换版本的本地插件包")
+}
+
 func localPackageName(source string) string {
 	value := strings.TrimPrefix(source, "git+")
 	value = strings.SplitN(value, "#", 2)[0]

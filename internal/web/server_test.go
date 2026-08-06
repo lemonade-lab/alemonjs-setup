@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"testing"
 	"testing/fstest"
+
+	"alemonjs-setup/internal/access"
 )
 
 func newTestServer() http.Handler {
@@ -85,5 +88,55 @@ func TestCleanWebChecksNodeAndGit(t *testing.T) {
 	}
 	if !bytes.Contains(response.Body.Bytes(), []byte(`"id":"node"`)) || !bytes.Contains(response.Body.Bytes(), []byte(`"id":"git"`)) {
 		t.Fatalf("clean web checks should include node and git: %s", response.Body.String())
+	}
+}
+
+func TestIdentityProtectionRequiresLoginAfterEnable(t *testing.T) {
+	identity, err := access.NewAt(filepath.Join(t.TempDir(), "auth.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServerWithAuth("test", fstest.MapFS{"dist/index.html": &fstest.MapFile{Data: []byte("<!doctype html>")}}, identity)
+	if _, err := identity.Enable("lemonade", "secret", "secret"); err != nil {
+		t.Fatal(err)
+	}
+	blocked := httptest.NewRecorder()
+	handler.ServeHTTP(blocked, httptest.NewRequest(http.MethodGet, "/api/v1/goals", nil))
+	if blocked.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated status = %d, want 401", blocked.Code)
+	}
+	login := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", bytes.NewBufferString(`{"account":"lemonade","password":"secret"}`))
+	request.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(login, request)
+	if login.Code != http.StatusOK || len(login.Result().Cookies()) != 1 {
+		t.Fatalf("login = %d %s", login.Code, login.Body.String())
+	}
+	allowed := httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodGet, "/api/v1/goals", nil)
+	request.AddCookie(login.Result().Cookies()[0])
+	handler.ServeHTTP(allowed, request)
+	if allowed.Code != http.StatusOK {
+		t.Fatalf("authenticated status = %d, want 200", allowed.Code)
+	}
+}
+
+func TestRobotWebViewUsesItsOwnFramePolicyAndBypassesManagementLogin(t *testing.T) {
+	identity, err := access.NewAt(filepath.Join(t.TempDir(), "auth.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := identity.Enable("lemonade", "secret", "secret"); err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServerWithAuth("test", fstest.MapFS{"dist/index.html": &fstest.MapFile{Data: []byte("<!doctype html>")}}, identity)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/robot/webview/not-a-root/plugin/", nil))
+
+	if response.Code == http.StatusUnauthorized {
+		t.Fatalf("WebView route must not require the management cookie")
+	}
+	if got := response.Header().Get("X-Frame-Options"); got != "" {
+		t.Fatalf("WebView X-Frame-Options = %q, want empty for cross-loopback frame", got)
 	}
 }

@@ -41,6 +41,20 @@ albs --cwd /xxx/robot npm publish
 albs --cwd /xxx/alemonb git publish --yes
 ```
 
+## 本机身份认证
+
+后台中心左上角可开启身份认证：填写账户、密码和确认密码后，所有管理 API 都必须先登录。密码只以 bcrypt 哈希保存到当前登录用户的配置目录，登录态是仅限本机浏览器的 HttpOnly Cookie。
+
+也可在终端配置，适合安装脚本注入账户信息：
+
+```bash
+albs auth enable --account lemonade --password 'your-password' --confirm-password 'your-password'
+albs auth status
+albs auth disable --yes
+```
+
+自动化脚本可改用 `ALBS_AUTH_ACCOUNT`、`ALBS_AUTH_PASSWORD` 和 `ALBS_AUTH_CONFIRM_PASSWORD` 环境变量，避免将密码写入命令历史。
+
 ## 让 AI 助手管理本机机器人（MCP）
 
 AlemonJS Setup 支持 MCP 的两种标准接入方式，因此可由 Codex、豆包或其它支持标准 MCP 工具调用的客户端控制。它提供项目检查、源码读写、运行配置、本地包、机器人启动/停止、构建、打包与发布等受控操作。

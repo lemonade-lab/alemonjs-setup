@@ -7,6 +7,7 @@ type CatalogDocument = { source: string; markdown: string }
 type CatalogVersions = { latest: string; versions: string[] }
 type PackageConfig = { package: string; namespace: string; fields: Array<{ name: string; type: string; required: boolean; description: string }>; values: Record<string, string> }
 type LocalPackages = { items: Array<{ name: string; version?: string; description?: string; path: string; valid: boolean }> }
+type LocalPackageVersions = { source: 'git' | 'npm'; current: string; latest?: string; versions: string[] }
 export type RobotWebView = { id: string; package: string; name: string; description?: string }
 export type RuntimeOverview = { name: string; version: string; packageManager: string; hasAppScript: boolean; hasDevScript: boolean; hasBuildScript: boolean; hasStartScript: boolean; pm2Configured: boolean; platforms: Array<{ id: string; label: string; package: string; declared: boolean; installed: boolean; version?: string }> }
 export type RuntimePreflight = { login: string; package?: string; missing: string[]; summary: string[] }
@@ -32,6 +33,8 @@ export const workspaceApi = createApi({
     catalogPackageConfig: build.query<PackageConfig, string>({ query: (url) => `catalog/package-config?${new URLSearchParams({ url })}` }),
     packageConfig: build.query<PackageConfig, { root: string; package: string }>({ query: ({ root, package: packageName }) => `robot/package-config?${new URLSearchParams({ root, package: packageName })}`, providesTags: (_result, _error, arg) => [{ type: 'PackageConfig', id: `${arg.root}:${arg.package}` }] }),
     localPackages: build.query<LocalPackages, string>({ query: (root) => `robot/packages?${new URLSearchParams({ root })}`, providesTags: (_result, _error, root) => [{ type: 'LocalPackages', id: root }] }),
+    localPackageVersions: build.query<LocalPackageVersions, { root: string; package: string }>({ query: ({ root, package: packageName }) => `robot/package-versions?${new URLSearchParams({ root, package: packageName })}` }),
+    localPackageReadme: build.query<RobotResult, { root: string; package: string }>({ query: ({ root, package: packageName }) => `robot/package-readme?${new URLSearchParams({ root, package: packageName })}` }),
     robotWebViews: build.query<RobotWebView[], string>({ query: (root) => `robot/webviews?${new URLSearchParams({ root })}`, providesTags: (_result, _error, root) => [{ type: 'RobotWebViews', id: root }] }),
     packageManifest: build.query<PackageManifest, string>({ query: (root) => `robot/manifest?${new URLSearchParams({ root })}`, providesTags: (_result, _error, root) => [{ type: 'PackageManifest', id: root }] }),
     robotTasks: build.query<RobotTask[], void>({ query: () => 'robot/tasks', providesTags: ['OperationTasks'] }),
@@ -71,4 +74,4 @@ export const workspaceApi = createApi({
   }),
 })
 
-export const { useGoalsQuery, useLazyEnvironmentReportQuery, useReleasesQuery, useLazySetupUpdateQuery, useSetupPluginsQuery, useSetSetupPluginEnabledMutation, useStartSetupPluginTaskMutation, useCatalogQuery, useCatalogVersionsQuery, useCatalogDocumentQuery, useCatalogPackageConfigQuery, usePackageConfigQuery, useLazyPackageConfigQuery, useLocalPackagesQuery, useRobotWebViewsQuery, usePackageManifestQuery, useRobotTasksQuery, useLazyRobotConsoleQuery, useRobotRuntimeQuery, useLazyRobotRuntimePreflightQuery, useLazyRobotProjectQuery, useLazyRobotFileQuery, useGitStatusQuery, useNpmStatusQuery, useLazyNpmPackQuery, useRobotOperationMutation, useStartRobotTaskMutation, useWriteRobotFileMutation, useWritePackageManifestMutation, useWritePackageConfigMutation, useSaveRobotLoginMutation, useInitializeGitMutation } = workspaceApi
+export const { useGoalsQuery, useLazyEnvironmentReportQuery, useReleasesQuery, useLazySetupUpdateQuery, useSetupPluginsQuery, useSetSetupPluginEnabledMutation, useStartSetupPluginTaskMutation, useCatalogQuery, useCatalogVersionsQuery, useCatalogDocumentQuery, useCatalogPackageConfigQuery, usePackageConfigQuery, useLazyPackageConfigQuery, useLocalPackagesQuery, useLocalPackageVersionsQuery, useLocalPackageReadmeQuery, useRobotWebViewsQuery, usePackageManifestQuery, useRobotTasksQuery, useLazyRobotConsoleQuery, useRobotRuntimeQuery, useLazyRobotRuntimePreflightQuery, useLazyRobotProjectQuery, useLazyRobotFileQuery, useGitStatusQuery, useNpmStatusQuery, useLazyNpmPackQuery, useRobotOperationMutation, useStartRobotTaskMutation, useWriteRobotFileMutation, useWritePackageManifestMutation, useWritePackageConfigMutation, useSaveRobotLoginMutation, useInitializeGitMutation } = workspaceApi

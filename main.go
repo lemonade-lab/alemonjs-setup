@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"alemonjs-setup/internal/access"
 	"alemonjs-setup/internal/mcp"
 	"alemonjs-setup/internal/project"
 	"alemonjs-setup/internal/releases"
@@ -52,6 +53,18 @@ func main() {
 		log.Fatal(err)
 	}
 	cwd, arguments, err := option(arguments, "--cwd", ".")
+	if err != nil {
+		log.Fatal(err)
+	}
+	account, arguments, err := option(arguments, "--account", env("ALBS_AUTH_ACCOUNT", ""))
+	if err != nil {
+		log.Fatal(err)
+	}
+	password, arguments, err := option(arguments, "--password", env("ALBS_AUTH_PASSWORD", ""))
+	if err != nil {
+		log.Fatal(err)
+	}
+	confirmation, arguments, err := option(arguments, "--confirm-password", env("ALBS_AUTH_CONFIRM_PASSWORD", ""))
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -173,6 +186,9 @@ func main() {
 		case "plugin":
 			pluginCommand(arguments[1:], yes)
 			return
+		case "auth":
+			authCommand(arguments[1:], yes, account, password, confirmation)
+			return
 		case "npm":
 			if len(arguments) != 2 || arguments[1] != "publish" {
 				usage()
@@ -193,6 +209,44 @@ func main() {
 		}
 	}
 	serve(port)
+}
+
+func authCommand(arguments []string, confirmed bool, account, password, confirmation string) {
+	manager, err := access.New()
+	if err != nil {
+		log.Fatal(err)
+	}
+	if len(arguments) == 1 && arguments[0] == "status" {
+		status, err := manager.Status("")
+		if err != nil {
+			log.Fatal(err)
+		}
+		if status.Enabled {
+			fmt.Printf("身份认证已开启，账户：%s\n", status.Account)
+		} else {
+			fmt.Println("身份认证未开启。")
+		}
+		return
+	}
+	if len(arguments) == 1 && arguments[0] == "enable" {
+		if _, err := manager.Enable(account, password, confirmation); err != nil {
+			log.Fatal(err)
+		}
+		fmt.Printf("身份认证已开启，账户：%s\n", strings.TrimSpace(account))
+		return
+	}
+	if len(arguments) == 1 && arguments[0] == "disable" {
+		if !confirmed {
+			fmt.Println("请使用 albs auth disable --yes 确认关闭身份认证。 ")
+			return
+		}
+		if err := manager.Disable(); err != nil {
+			log.Fatal(err)
+		}
+		fmt.Println("身份认证已关闭。")
+		return
+	}
+	usage()
 }
 
 func privilegedCreate(configPath, resultPath string) {
@@ -371,6 +425,11 @@ func usage() {
   albs plugin list                     查看已发现的 Setup 插件
   albs plugin disable <id> --yes       卸载（停用）一个 Setup 插件
   albs plugin enable <id>              重新启用一个 Setup 插件
+
+  albs auth status                      查看身份认证状态
+  albs auth enable --account <账户> --password <密码> --confirm-password <确认密码>
+                                     开启本机身份认证（也支持 ALBS_AUTH_* 环境变量注入）
+  albs auth disable --yes               关闭身份认证
   albs [--cwd /项目目录] npm publish  发布到 npm 官方仓库
   albs [--cwd /项目目录] git publish --yes  创建 GitHub Release 标签`)
 }

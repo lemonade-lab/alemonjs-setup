@@ -21,6 +21,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"alemonjs-setup/internal/access"
 	"alemonjs-setup/internal/catalog"
 	"alemonjs-setup/internal/project"
 	"alemonjs-setup/internal/releases"
@@ -75,6 +76,7 @@ type server struct {
 	creator        *project.Creator
 	robots         robot.Manager
 	plugins        setupplugin.Registry
+	auth           *access.Manager
 	mu             sync.RWMutex
 	tasks          []task
 	operations     []operationTask
@@ -104,11 +106,21 @@ func githubMirrors(repository string) []mirror {
 }
 
 func NewServer(version string, staticFiles fs.FS, templateFiles ...fs.FS) http.Handler {
+	identity, err := access.New()
+	if err != nil {
+		panic(err)
+	}
+	return NewServerWithAuth(version, staticFiles, identity, templateFiles...)
+}
+
+// NewServerWithAuth permits tests and embedders to provide an isolated auth
+// store instead of reading the current user's albs configuration.
+func NewServerWithAuth(version string, staticFiles fs.FS, identity *access.Manager, templateFiles ...fs.FS) http.Handler {
 	assets, err := fs.Sub(staticFiles, "dist")
 	if err != nil {
 		panic(err)
 	}
-	s := &server{version: version, assets: assets, static: http.FileServer(http.FS(assets)), checker: system.NewChecker(), plugins: setupplugin.NewRegistry(), development: map[string]developmentProcess{}, stopping: map[string]bool{}, directoryRoots: managedDirectoryRoots()}
+	s := &server{version: version, assets: assets, static: http.FileServer(http.FS(assets)), checker: system.NewChecker(), plugins: setupplugin.NewRegistry(), auth: identity, development: map[string]developmentProcess{}, stopping: map[string]bool{}, directoryRoots: managedDirectoryRoots()}
 	if len(templateFiles) > 0 {
 		templates, err := fs.Sub(templateFiles[0], "templates")
 		if err != nil {
@@ -118,6 +130,10 @@ func NewServer(version string, staticFiles fs.FS, templateFiles ...fs.FS) http.H
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.health)
+	mux.HandleFunc("/api/v1/auth/status", s.authStatusHandler)
+	mux.HandleFunc("/api/v1/auth/setup", s.authSetupHandler)
+	mux.HandleFunc("/api/v1/auth/login", s.authLoginHandler)
+	mux.HandleFunc("/api/v1/auth/logout", s.authLogoutHandler)
 	mux.HandleFunc("/api/v1/app", s.app)
 	mux.HandleFunc("/api/v1/goals", s.listGoals)
 	mux.HandleFunc("/api/v1/tasks", s.tasksHandler)
@@ -125,6 +141,7 @@ func NewServer(version string, staticFiles fs.FS, templateFiles ...fs.FS) http.H
 	mux.HandleFunc("/api/v1/projects", s.projectsHandler)
 	mux.HandleFunc("/api/v1/releases", s.releasesHandler)
 	mux.HandleFunc("/api/v1/update", s.updateHandler)
+	mux.HandleFunc("/api/v1/system/ssh", s.sshHandler)
 	mux.HandleFunc("/api/v1/directories", s.directoryHandler)
 	mux.HandleFunc("/api/v1/catalog", s.catalogHandler)
 	mux.HandleFunc("/api/v1/catalog/versions", s.catalogVersionsHandler)
@@ -139,23 +156,108 @@ func NewServer(version string, staticFiles fs.FS, templateFiles ...fs.FS) http.H
 	mux.HandleFunc("/api/v1/robot/runtime/preflight", s.robotRuntimePreflightHandler)
 	mux.HandleFunc("/api/v1/robot/tasks", s.robotTasksHandler)
 	mux.HandleFunc("/api/v1/robot/packages", s.robotPackagesHandler)
+	mux.HandleFunc("/api/v1/robot/package-versions", s.robotPackageVersionsHandler)
+	mux.HandleFunc("/api/v1/robot/package-readme", s.robotPackageReadmeHandler)
 	mux.HandleFunc("/api/v1/robot/webviews", s.robotWebViewsHandler)
 	mux.HandleFunc("/api/v1/robot/webview/", s.robotWebViewHandler)
 	mux.HandleFunc("/api/v1/robot/package-config", s.robotPackageConfigHandler)
 	mux.HandleFunc("/api/v1/robot/login", s.robotLoginHandler)
 	mux.HandleFunc("/api/v1/robot/manifest", s.robotManifestHandler)
 	mux.HandleFunc("/api/v1/robot/git-init", s.robotGitInitHandler)
+	mux.HandleFunc("/api/v1/robot/git-clone", s.robotGitCloneHandler)
+	mux.HandleFunc("/api/v1/robot/git-clone/check", s.robotGitCloneCheckHandler)
 	mux.HandleFunc("/api/v1/publish/npm/status", s.npmPublishStatusHandler)
 	mux.HandleFunc("/api/v1/publish/npm/pack", s.npmPackPreviewHandler)
 	mux.HandleFunc("/api/v1/publish/git/status", s.gitPublishStatusHandler)
 	mux.Handle("/", s.spa())
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.New()
-	router.Use(gin.Recovery(), s.ginHeaders(), s.ginRequestLog())
+	router.Use(gin.Recovery(), s.ginHeaders(), s.ginAccess(), s.ginRequestLog())
 	// The Gin engine owns every request. Existing handlers remain standard
 	// net/http functions, preserving their API contracts during migration.
 	router.Any("/*path", gin.WrapH(mux))
 	return router
+}
+
+const authCookieName = "albs_session"
+
+func (s *server) authToken(r *http.Request) string {
+	cookie, err := r.Cookie(authCookieName)
+	if err != nil {
+		return ""
+	}
+	return cookie.Value
+}
+
+func (s *server) authStatusHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "该操作暂不支持。")
+		return
+	}
+	status, err := s.auth.Status(s.authToken(r))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, status)
+}
+
+func (s *server) authSetupHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "该操作暂不支持。")
+		return
+	}
+	var input struct {
+		Account      string `json:"account"`
+		Password     string `json:"password"`
+		Confirmation string `json:"confirmation"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		writeError(w, http.StatusBadRequest, "请填写账户、密码和确认密码。")
+		return
+	}
+	token, err := s.auth.Enable(input.Account, input.Password, input.Confirmation)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	s.setAuthCookie(w, token)
+	writeJSON(w, http.StatusCreated, map[string]any{"enabled": true, "account": strings.TrimSpace(input.Account)})
+}
+
+func (s *server) authLoginHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "该操作暂不支持。")
+		return
+	}
+	var input struct {
+		Account  string `json:"account"`
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		writeError(w, http.StatusBadRequest, "请填写账户和密码。")
+		return
+	}
+	token, err := s.auth.Login(input.Account, input.Password)
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+	s.setAuthCookie(w, token)
+	writeJSON(w, http.StatusOK, map[string]any{"authenticated": true, "account": strings.TrimSpace(input.Account)})
+}
+
+func (s *server) authLogoutHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "该操作暂不支持。")
+		return
+	}
+	http.SetCookie(w, &http.Cookie{Name: authCookieName, Value: "", Path: "/", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteStrictMode})
+	writeJSON(w, http.StatusOK, map[string]bool{"authenticated": false})
+}
+
+func (s *server) setAuthCookie(w http.ResponseWriter, token string) {
+	http.SetCookie(w, &http.Cookie{Name: authCookieName, Value: token, Path: "/", MaxAge: int((12 * time.Hour).Seconds()), HttpOnly: true, SameSite: http.SameSiteStrictMode})
 }
 
 func (s *server) npmPublishStatusHandler(w http.ResponseWriter, r *http.Request) {
@@ -332,6 +434,27 @@ func (s *server) setupPluginActionHandler(w http.ResponseWriter, r *http.Request
 		}
 	}()
 	writeJSON(w, http.StatusAccepted, created)
+}
+
+func (s *server) sshHandler(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		keys, err := system.SSHKeys()
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"keys": keys})
+	case http.MethodPost:
+		key, err := system.GenerateSSHKey()
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusCreated, key)
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "该操作暂不支持。")
+	}
 }
 
 func (s *server) directoryHandler(w http.ResponseWriter, r *http.Request) {
@@ -829,6 +952,32 @@ func (s *server) robotPackagesHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
+func (s *server) robotPackageVersionsHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "该操作暂不支持。")
+		return
+	}
+	versions, err := s.robots.LocalPackageVersions(r.URL.Query().Get("root"), r.URL.Query().Get("package"))
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, versions)
+}
+
+func (s *server) robotPackageReadmeHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "该操作暂不支持。")
+		return
+	}
+	result, err := s.robots.LocalPackageReadme(r.URL.Query().Get("root"), r.URL.Query().Get("package"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
 func (s *server) robotWebViewsHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "该操作暂不支持。")
@@ -879,14 +1028,14 @@ func (s *server) robotWebViewHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
 	}
-	// The page is loaded in a sandboxed iframe. It receives no setup cookies,
-	// Redux state or privileged APIs; plugin actions must go through a later,
-	// explicit message bridge.
+	// WebViews are intentionally opened through the other loopback hostname
+	// (localhost <-> 127.0.0.1). That keeps their localStorage and cookies in a
+	// separate browser origin from the management UI. Plugin actions can only
+	// use the narrowly scoped WebView API proxy below.
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	// A robot plugin UI may talk to its own local bot API and WebSocket. It is
-	// still sandboxed by the parent iframe and receives no setup bridge or
-	// system-command capability.
-	w.Header().Set("Content-Security-Policy", "default-src 'self' data: blob:; connect-src 'self' https: http://127.0.0.1:* http://localhost:* ws://127.0.0.1:* ws://localhost:*; img-src 'self' data: blob: https: http:; style-src 'self' 'unsafe-inline'; frame-ancestors 'self'; base-uri 'none'")
+	// A robot plugin UI may talk only to its registered local bot API proxy.
+	// Do not permit the parent management origin in connect-src.
+	w.Header().Set("Content-Security-Policy", "default-src 'self' data: blob:; connect-src 'self' ws: wss:; img-src 'self' data: blob: https: http:; style-src 'self' 'unsafe-inline'; frame-ancestors http://localhost:* http://127.0.0.1:*; base-uri 'none'")
 	// WebView assets are static and path-guarded. Keep this header for modules
 	// and assets that a plugin may load from a sandboxed or alternate browser
 	// origin; it does not grant a setup command bridge.
@@ -1074,6 +1223,53 @@ func (s *server) robotGitInitHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, result)
 }
 
+func (s *server) robotGitCloneHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "该操作暂不支持。")
+		return
+	}
+	var input struct {
+		Destination string `json:"destination"`
+		Repository  string `json:"repository"`
+		Branch      string `json:"branch"`
+		Name        string `json:"name"`
+		Mirror      string `json:"mirror"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		writeError(w, http.StatusBadRequest, "Git 信息无法识别。")
+		return
+	}
+	destination, err := s.managedDirectory(input.Destination)
+	if err != nil {
+		writeError(w, http.StatusForbidden, err.Error())
+		return
+	}
+	result, err := robot.CloneRepository(destination, input.Repository, input.Branch, input.Name, input.Mirror)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, result)
+}
+
+func (s *server) robotGitCloneCheckHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "该操作暂不支持。")
+		return
+	}
+	destination, err := s.managedDirectory(r.URL.Query().Get("destination"))
+	if err != nil {
+		writeError(w, http.StatusForbidden, err.Error())
+		return
+	}
+	target, err := robot.CloneDestination(destination, r.URL.Query().Get("repository"), r.URL.Query().Get("name"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, target)
+}
+
 func (s *server) projectsHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "该操作暂不支持。")
@@ -1205,8 +1401,37 @@ func findGoal(id string) (goal, bool) {
 func (s *server) ginHeaders() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.Header("X-Content-Type-Options", "nosniff")
-		c.Header("X-Frame-Options", "DENY")
+		// Registered robot WebViews are embedded through the other loopback
+		// hostname, so X-Frame-Options cannot be SAMEORIGIN. Their own CSP
+		// allows only localhost/127.0.0.1 parents. Everything else is denied.
+		if !strings.HasPrefix(c.Request.URL.Path, "/api/v1/robot/webview/") {
+			c.Header("X-Frame-Options", "DENY")
+		}
 		c.Next()
+	}
+}
+
+// ginAccess protects every management API after local identity verification is
+// enabled. Static files stay available so a browser can render the login view.
+func (s *server) ginAccess() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		path := c.Request.URL.Path
+		if !strings.HasPrefix(path, "/api/v1/") || path == "/api/v1/auth/status" || path == "/api/v1/auth/setup" || path == "/api/v1/auth/login" || path == "/api/v1/auth/logout" || strings.HasPrefix(path, "/api/v1/robot/webview/") {
+			c.Next()
+			return
+		}
+		status, err := s.auth.Status("")
+		if err != nil {
+			writeError(c.Writer, http.StatusInternalServerError, err.Error())
+			c.Abort()
+			return
+		}
+		if !status.Enabled || s.auth.Authenticate(s.authToken(c.Request)) {
+			c.Next()
+			return
+		}
+		writeError(c.Writer, http.StatusUnauthorized, "请先登录身份认证账户。")
+		c.Abort()
 	}
 }
 

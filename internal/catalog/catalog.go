@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -267,7 +268,7 @@ func LoadPackageVersions(name string) (PackageVersions, error) {
 	if strings.HasPrefix(name, "git+") {
 		return loadRepositoryReleases(strings.TrimPrefix(name, "git+"))
 	}
-	if name == "" || (!strings.HasPrefix(name, "@alemonjs/") && name != "alemonjs") {
+	if !regexp.MustCompile(`^(?:@[a-z0-9][a-z0-9._-]*/)?[a-z0-9][a-z0-9._-]*$`).MatchString(name) {
 		return PackageVersions{}, fmt.Errorf("该目录条目不是可查询版本的 npm 包")
 	}
 	endpoint := "https://registry.npmjs.org/" + url.PathEscape(name)

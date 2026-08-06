@@ -10,8 +10,10 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 
+	"alemonjs-setup/internal/catalog"
 	"alemonjs-setup/internal/system"
 )
 
@@ -38,6 +40,115 @@ type LocalPackage struct {
 	Description string `json:"description,omitempty"`
 	Path        string `json:"path"`
 	Valid       bool   `json:"valid"`
+}
+
+// LocalPackageVersions identifies one authoritative version source for a
+// backpack entry. A checked-out Git package always wins over npm metadata,
+// matching the framework's source-first plugin convention.
+type LocalPackageVersions struct {
+	Source   string   `json:"source"`
+	Current  string   `json:"current"`
+	Latest   string   `json:"latest,omitempty"`
+	Versions []string `json:"versions"`
+}
+
+func (m Manager) LocalPackageVersions(root, packageName string) (LocalPackageVersions, error) {
+	items, err := m.LocalPackages(root)
+	if err != nil {
+		return LocalPackageVersions{}, err
+	}
+	for _, item := range items {
+		if item.Name != packageName || !item.Valid {
+			continue
+		}
+		if output, gitErr := gitRun(item.Path, "rev-parse", "--is-inside-work-tree"); gitErr == nil && strings.TrimSpace(output) == "true" {
+			current, _ := gitRun(item.Path, "describe", "--tags", "--always", "--dirty")
+			versions := packageGitVersions(item.Path)
+			latest := ""
+			if len(versions) > 0 {
+				latest = versions[0]
+			}
+			return LocalPackageVersions{Source: "git", Current: strings.TrimSpace(current), Latest: latest, Versions: versions}, nil
+		}
+		versions, loadErr := catalog.LoadPackageVersions(item.Name)
+		if loadErr != nil {
+			return LocalPackageVersions{}, loadErr
+		}
+		return LocalPackageVersions{Source: "npm", Current: item.Version, Latest: versions.Latest, Versions: versions.Versions}, nil
+	}
+	return LocalPackageVersions{}, errors.New("背包中没有这个本地插件包")
+}
+
+// packageGitVersions enumerates published tags from origin without changing
+// the checkout. A shallow clone often has no local tags, so only reading
+// `git tag` would incorrectly make the version selector look empty.
+func packageGitVersions(root string) []string {
+	all := map[string]bool{}
+	for _, tag := range gitLines(root, "tag", "--list", "v*", "--sort=-v:refname") {
+		if gitVersionPattern.MatchString(tag) {
+			all[tag] = true
+		}
+	}
+	if remote, err := gitRun(root, "ls-remote", "--tags", "--refs", "origin"); err == nil {
+		for _, line := range strings.Split(remote, "\n") {
+			parts := strings.Fields(line)
+			if len(parts) != 2 {
+				continue
+			}
+			tag := strings.TrimPrefix(parts[1], "refs/tags/")
+			if gitVersionPattern.MatchString(tag) {
+				all[tag] = true
+			}
+		}
+	}
+	versions := make([]string, 0, len(all))
+	for tag := range all {
+		versions = append(versions, tag)
+	}
+	sort.Slice(versions, func(i, j int) bool { return newerGitTag(versions[i], versions[j]) })
+	return versions
+}
+
+func newerGitTag(left, right string) bool {
+	leftParts := strings.Split(strings.TrimPrefix(left, "v"), ".")
+	rightParts := strings.Split(strings.TrimPrefix(right, "v"), ".")
+	for index := 0; index < 3; index++ {
+		leftValue, _ := strconv.Atoi(strings.Split(leftParts[index], "-")[0])
+		rightValue, _ := strconv.Atoi(strings.Split(rightParts[index], "-")[0])
+		if leftValue != rightValue {
+			return leftValue > rightValue
+		}
+	}
+	return left > right
+}
+
+// LocalPackageReadme reads only the README belonging to a discovered backpack
+// entry. It never accepts a caller-provided path, so the endpoint cannot be
+// used to browse arbitrary project files.
+func (m Manager) LocalPackageReadme(root, packageName string) (Result, error) {
+	items, err := m.LocalPackages(root)
+	if err != nil {
+		return Result{}, err
+	}
+	for _, item := range items {
+		if item.Name != packageName {
+			continue
+		}
+		path := filepath.Join(item.Path, "README.md")
+		info, statErr := os.Lstat(path)
+		if statErr != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+			return Result{}, errors.New("这个本地包没有 README.md")
+		}
+		if info.Size() > maxMCPFileSize {
+			return Result{}, errors.New("README.md 过大，无法显示")
+		}
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return Result{}, errors.New("无法读取 README.md")
+		}
+		return Result{Path: path, Output: string(data)}, nil
+	}
+	return Result{}, errors.New("背包中没有这个本地包")
 }
 
 // RuntimeOverview is the small, stable set of project facts needed by the
@@ -586,6 +697,10 @@ func (m Manager) Run(root, action, message, packageName, version, tag, token str
 		return removeLocalPackage(root, packageName)
 	case "remove-local-package":
 		return removeLocalPackageByName(root, packageName)
+	case "replace-local-package":
+		return replaceLocalPackage(root, packageName, version)
+	case "switch-local-package-version":
+		return switchLocalPackageVersion(root, packageName, version)
 	case "install-connection":
 		if !allowedInstallPackage(packageName) {
 			return Result{}, errors.New("连接包名无效")

@@ -8,9 +8,11 @@ import {
   Check,
   ChevronRight,
   ClipboardList,
+  Code2,
   Eye,
   EyeOff,
   Folder,
+  GitBranch,
   Link,
   Network,
   Package,
@@ -32,6 +34,8 @@ import { PackageManifestPanel } from './PackageManifestPanel'
 import { SetupUpdateButton } from './SetupUpdateButton'
 import { ErrorNotice } from './ErrorNotice'
 import { ConfirmDialog } from './ConfirmDialog'
+import { AuthControl } from './AuthControl'
+import { SSHControl } from './SSHControl'
 import {
   workspaceApi,
   useCatalogDocumentQuery,
@@ -46,6 +50,8 @@ import {
   useLazyRobotRuntimePreflightQuery,
   useLazyRobotProjectQuery,
   useLocalPackagesQuery,
+  useLocalPackageVersionsQuery,
+  useLocalPackageReadmeQuery,
   usePackageConfigQuery,
   useRobotRuntimeQuery,
   useRobotTasksQuery,
@@ -65,6 +71,7 @@ import {
   addProjects,
   removeProject as removeWorkspaceProject,
   selectProject,
+  setDeveloperMode,
   setDraft
 } from '../store/workspaceStore'
 import {
@@ -165,11 +172,13 @@ function operationErrorMessage(reason: unknown, fallback: string) {
 export function DirectoryPicker({
   open,
   multiple = true,
+  priority = false,
   onClose,
   onSelect
 }: {
   open: boolean
   multiple?: boolean
+  priority?: boolean
   onClose: () => void
   onSelect: (paths: string[]) => void
 }) {
@@ -256,7 +265,7 @@ export function DirectoryPicker({
     }
   }
   return (
-    <div className="directory-picker-backdrop">
+    <div className={`directory-picker-backdrop ${priority ? 'directory-picker-backdrop-priority' : ''}`}>
       <section
         className="directory-picker finder-picker"
         role="dialog"
@@ -272,6 +281,7 @@ export function DirectoryPicker({
                   historyIndex > 0 ? goHistory(-1) : visit(data?.parent ?? '')
                 }
                 title="后退"
+                aria-label="后退"
               >
                 <ArrowLeft />
               </button>
@@ -280,6 +290,7 @@ export function DirectoryPicker({
                 disabled={historyIndex >= history.length - 1}
                 onClick={() => goHistory(1)}
                 title="前进"
+                aria-label="前进"
               >
                 <ArrowRight />
               </button>
@@ -287,6 +298,7 @@ export function DirectoryPicker({
                 className="icon-button"
                 onClick={() => setHidden(value => !value)}
                 title={hidden ? '隐藏隐藏目录' : '显示隐藏目录'}
+                aria-label={hidden ? '隐藏隐藏目录' : '显示隐藏目录'}
               >
                 {hidden ? <EyeOff /> : <Eye />}
               </button>
@@ -401,7 +413,11 @@ export function Dashboard({
   const [gitConfirm, setGitConfirm] = useState(false)
   const [environmentOpen, setEnvironmentOpen] = useState(false)
   const [directoryPickerOpen, setDirectoryPickerOpen] = useState(false)
+  const [gitCloneOpen, setGitCloneOpen] = useState(false)
+  const [gitDestinationPickerOpen, setGitDestinationPickerOpen] = useState(false)
+  const [gitDestination, setGitDestination] = useState('')
   const [invalidDirectory, setInvalidDirectory] = useState('')
+  const [pendingBackpackRemoval, setPendingBackpackRemoval] = useState('')
   const [trackRuntimeTasks, setTrackRuntimeTasks] = useState(false)
   const [activeWebViewID, setActiveWebViewID] = useState('')
   const environmentChecked = useRef(false)
@@ -411,6 +427,9 @@ export function Dashboard({
   ) as Project[]
   const activeProjectID = useSelector(
     (state: RootState) => state.workspace.activeProjectID
+  )
+  const developerMode = useSelector(
+    (state: RootState) => state.workspace.developerMode
   )
   const activeProject = projects.find(item => item.id === activeProjectID)
   const root = activeProject?.path ?? ''
@@ -439,7 +458,9 @@ export function Dashboard({
     error: packagesError,
     refetch: refetchPackages
   } = useLocalPackagesQuery(root, { skip: !root || section !== 'backpack' })
-  const { data: robotWebViews = [] } = useRobotWebViewsQuery(root, { skip: !root })
+  const { data: robotWebViews = [] } = useRobotWebViewsQuery(root, {
+    skip: !root
+  })
   const {
     data: runtime,
     isFetching: runtimeLoading,
@@ -506,6 +527,13 @@ export function Dashboard({
         dispatch(setDraft({ key: `${root}:alemon.config.yaml`, content: '' }))
       )
   }, [dispatch, readRobotFile, root, section])
+  useEffect(() => {
+    if (developerMode) return
+    if (page === 'build') setPage('robot')
+    if (section === 'npmrc' || section === 'env') setSection('config')
+    if (configEditor === 'text') setConfigEditor('visual')
+    setConsoleOpen(false)
+  }, [configEditor, developerMode, page, section])
 
   async function api(
     method: string,
@@ -559,7 +587,15 @@ export function Dashboard({
         if (current.status === 'running') continue
         if (current.status === 'failed')
           throw new Error(current.error ?? '操作未完成。')
-        if (['install-package', 'uninstall-package', 'remove-local-package'].includes(data.action)) {
+        if (
+          [
+            'install-package',
+            'uninstall-package',
+            'remove-local-package',
+            'replace-local-package',
+            'switch-local-package-version'
+          ].includes(data.action)
+        ) {
           // The task mutation invalidates when it starts, which is still too
           // early for a download. Invalidate once it has actually finished so
           // the backpack and WebView shortcuts update without a page reload.
@@ -612,11 +648,18 @@ export function Dashboard({
     }
   }
 
-  async function saveRuntimeLogin(login: string, packageName = ''): Promise<boolean> {
+  async function saveRuntimeLogin(
+    login: string,
+    packageName = ''
+  ): Promise<boolean> {
     if (!root || !login.trim()) return false
     setBusy(true)
     try {
-      const result = await saveRobotLogin({ root, login: login.trim(), package: packageName }).unwrap()
+      const result = await saveRobotLogin({
+        root,
+        login: login.trim(),
+        package: packageName
+      }).unwrap()
       showOutput(result.output ?? '登录连接已保存。')
       return true
     } catch (reason) {
@@ -688,6 +731,26 @@ export function Dashboard({
     setSection('config')
     setOutput('')
   }
+  async function cloneRobotRepository(repository: string, branch: string, name: string, mirror: string) {
+    if (!gitDestination) return
+    setBusy(true)
+    try {
+      const response = await fetch('/api/v1/robot/git-clone', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ destination: gitDestination, repository, branch, name, mirror })
+      })
+      const data = (await response.json()) as { path?: string; output?: string; error?: string }
+      if (!response.ok || !data.path) throw new Error(data.error || '克隆仓库失败。')
+      showOutput(data.output || '仓库已克隆。')
+      setGitCloneOpen(false)
+      await addSelectedDirectories([data.path])
+    } catch (reason) {
+      showOutput(operationErrorMessage(reason, '克隆仓库失败，请检查 Git 地址和网络。'), true)
+    } finally {
+      setBusy(false)
+    }
+  }
 
   function removeProject(id: string) {
     dispatch(removeWorkspaceProject(id))
@@ -740,15 +803,18 @@ export function Dashboard({
           onOpenPlugins={() => selectPage('plugins')}
           busy={busy}
           onSaveConfig={savePackageConfig}
-          onRemove={async packageName => {
-            if (!window.confirm(`确定从背包卸载 ${packageName} 吗？该本地插件目录会被移除。`)) return
-            if (await api('POST', { root, action: 'remove-local-package', package: packageName })) {
-              void refetchPackages()
-            }
-          }}
+          onRemove={async packageName => setPendingBackpackRemoval(packageName)}
+          onReplace={async (packageName, version) =>
+            api('POST', {
+              root,
+              action: 'switch-local-package-version',
+              package: packageName,
+              version
+            })
+          }
         />
       )}
-      {section === 'npmrc' && (
+      {developerMode && section === 'npmrc' && (
         <NpmrcConfigForm
           content={content}
           busy={busy}
@@ -758,7 +824,7 @@ export function Dashboard({
           }
         />
       )}
-      {section === 'env' && (
+      {developerMode && section === 'env' && (
         <EnvConfigForm
           content={content}
           busy={busy}
@@ -776,11 +842,13 @@ export function Dashboard({
                 content={configContent}
                 busy={busy}
                 toolbar={
-                  <EditorMode
-                    active={configEditor}
-                    onVisual={() => setConfigEditor('visual')}
-                    onText={openTextConfig}
-                  />
+                  developerMode ? (
+                    <EditorMode
+                      active={configEditor}
+                      onVisual={() => setConfigEditor('visual')}
+                      onText={openTextConfig}
+                    />
+                  ) : undefined
                 }
                 onSave={config =>
                   api('PUT', {
@@ -833,10 +901,12 @@ export function Dashboard({
               root,
               action,
               ...(packageName ? { package: packageName } : {})
-            }).then(() => { void refetchRuntime() })
-          }
-          }
+            }).then(() => {
+              void refetchRuntime()
+            })
+          }}
           onSaveLogin={saveRuntimeLogin}
+          developerMode={developerMode}
         />
       )}
     </section>
@@ -904,48 +974,68 @@ export function Dashboard({
       />
     ) : activeProject ? (
       <>
-        {activeWebView ? <RobotPluginWebView root={root} entry={activeWebView} onClose={() => setActiveWebViewID('')} /> : <>
-        {page === 'robot' && robotContent}
-        {page === 'build' && (
-          <section className="workspace-content build-page">
-            {buildMode === 'manifest' ? (
-              <PackageManifestPanel
-                root={root}
-                busy={busy}
-                onSaved={message => showOutput(message)}
-              />
-            ) : buildMode === 'npm' ? (
-              <NpmPublishPanel
-                root={root}
-                busy={busy}
-                onRun={(action, values) =>
-                  api('POST', { root, action, ...values })
-                }
-              />
-            ) : (
-              <GitReleasePanelNext
-                root={root}
-                busy={busy}
-                version={releaseVersion}
-                confirmed={gitConfirm}
-                onVersionChange={value => {
-                  setReleaseVersion(value)
-                  setGitConfirm(false)
-                }}
-                onConfirm={() => setGitConfirm(value => !value)}
-                onInitialize={initializeProjectGit}
-                onRun={sourceCommit =>
-                  api('POST', {
-                    root,
-                    action: 'git-release',
-                    version: releaseVersion,
-                    message: sourceCommit,
-                    confirm: 'true'
-                  })
-                }
-              />
+        {activeWebView ? (
+          <RobotPluginWebView
+            root={root}
+            entry={activeWebView}
+            onClose={() => setActiveWebViewID('')}
+          />
+        ) : (
+          <>
+            {page === 'robot' && robotContent}
+            {developerMode && page === 'build' && (
+              <section className="workspace-content build-page">
+                {buildMode === 'manifest' ? (
+                  <PackageManifestPanel
+                    root={root}
+                    busy={busy}
+                    onSaved={message => showOutput(message)}
+                  />
+                ) : buildMode === 'npm' ? (
+                  <NpmPublishPanel
+                    root={root}
+                    busy={busy}
+                    onRun={(action, values) =>
+                      api('POST', { root, action, ...values })
+                    }
+                  />
+                ) : (
+                  <GitReleasePanelNext
+                    root={root}
+                    busy={busy}
+                    version={releaseVersion}
+                    confirmed={gitConfirm}
+                    onVersionChange={value => {
+                      setReleaseVersion(value)
+                      setGitConfirm(false)
+                    }}
+                    onConfirm={() => setGitConfirm(value => !value)}
+                    onInitialize={initializeProjectGit}
+                    onRun={sourceCommit =>
+                      api('POST', {
+                        root,
+                        action: 'git-release',
+                        version: releaseVersion,
+                        message: sourceCommit,
+                        confirm: 'true'
+                      })
+                    }
+                  />
+                )}
+                {output && (
+                  <OperationLog
+                    output={output}
+                    failed={outputFailed}
+                    onClose={() => {
+                      setOutput('')
+                      setOutputFailed(false)
+                    }}
+                  />
+                )}
+              </section>
             )}
-            {output && (
+            {(page === 'plugins' || page === 'connections') && catalogContent}
+            {page !== 'build' && output && (
               <OperationLog
                 output={output}
                 failed={outputFailed}
@@ -955,20 +1045,8 @@ export function Dashboard({
                 }}
               />
             )}
-          </section>
+          </>
         )}
-        {(page === 'plugins' || page === 'connections') && catalogContent}
-        {page !== 'build' && output && (
-          <OperationLog
-            output={output}
-            failed={outputFailed}
-            onClose={() => {
-              setOutput('')
-              setOutputFailed(false)
-            }}
-          />
-        )}
-        </>}
       </>
     ) : (
       <EmptyWorkspace onAdd={chooseDirectories} />
@@ -998,8 +1076,23 @@ export function Dashboard({
               <SetupUpdateButton />
             </div>
             <div className="header-global-actions">
-              <McpControl />
+              <SSHControl />
+              <AuthControl />
+              {developerMode && <McpControl />}
               <OperationTasksButton root={root} />
+              <button
+                className={`developer-mode-toggle ${developerMode ? 'active' : ''}`}
+                onClick={() => dispatch(setDeveloperMode(!developerMode))}
+                aria-pressed={developerMode}
+                title={
+                  developerMode
+                    ? '关闭开发模式，收起源码与发布工具'
+                    : '开启开发模式，显示源码、终端与发布工具'
+                }
+              >
+                <Code2 />
+                <span>开发</span>
+              </button>
               <button
                 className={`environment-control ${environmentWarning ? 'warning' : ''}`}
                 onClick={() => {
@@ -1031,10 +1124,47 @@ export function Dashboard({
             onRefresh={onCheck}
             onFix={onFix}
           />
+          <ConfirmDialog
+            open={Boolean(pendingBackpackRemoval)}
+            title="从背包移除插件"
+            subtitle="这会删除当前机器人 packages 目录中的本地插件文件。"
+            message={`确定移除 ${pendingBackpackRemoval} 吗？此操作不会删除机器人主项目，但该插件需要重新安装后才能使用。`}
+            confirmLabel="移除插件"
+            destructive
+            busy={busy}
+            onCancel={() => setPendingBackpackRemoval('')}
+            onConfirm={() => {
+              const packageName = pendingBackpackRemoval
+              if (!packageName) return
+              void (async () => {
+                if (await api('POST', { root, action: 'remove-local-package', package: packageName }))
+                  void refetchPackages()
+                setPendingBackpackRemoval('')
+              })()
+            }}
+          />
           <DirectoryPicker
             open={directoryPickerOpen}
             onClose={() => setDirectoryPickerOpen(false)}
             onSelect={paths => void addSelectedDirectories(paths)}
+          />
+          <DirectoryPicker
+            open={gitDestinationPickerOpen}
+            multiple={false}
+            priority
+            onClose={() => setGitDestinationPickerOpen(false)}
+            onSelect={paths => {
+              setGitDestination(paths[0] ?? '')
+              setGitDestinationPickerOpen(false)
+            }}
+          />
+          <GitCloneDialog
+            open={gitCloneOpen}
+            destination={gitDestination}
+            busy={busy}
+            onClose={() => setGitCloneOpen(false)}
+            onChooseDestination={() => setGitDestinationPickerOpen(true)}
+            onConfirm={cloneRobotRepository}
           />
           <section className="console-layout">
             <ProjectRail
@@ -1044,6 +1174,7 @@ export function Dashboard({
               activeID={activeProjectID}
               onFeature={selectSystemFeature}
               onAdd={chooseDirectories}
+              onClone={() => setGitCloneOpen(true)}
               onSelect={id => {
                 dispatch(selectProject(id))
                 setSystemFeature(null)
@@ -1067,6 +1198,7 @@ export function Dashboard({
                   catalogTitle={catalogTitle}
                   webViews={robotWebViews}
                   activeWebViewID={activeWebViewID}
+                  developerMode={developerMode}
                   onOpenConsole={() => setConsoleOpen(true)}
                   onOpenWebView={id => setActiveWebViewID(id)}
                   onPage={selectPage}
@@ -1118,6 +1250,7 @@ function ProjectRail({
   activeID,
   onFeature,
   onAdd,
+  onClone,
   onSelect,
   onRemove
 }: {
@@ -1127,6 +1260,7 @@ function ProjectRail({
   activeID: string
   onFeature: (feature: SystemFeature) => void
   onAdd: () => void
+  onClone: () => void
   onSelect: (id: string) => void
   onRemove: (id: string) => void
 }) {
@@ -1175,13 +1309,10 @@ function ProjectRail({
             <strong>机器人目录</strong>
             <span>{projects.length}</span>
           </div>
-          <button
-            onClick={onAdd}
-            aria-label="添加机器人目录"
-            title="添加机器人目录"
-          >
-            <Plus />
-          </button>
+          <div className="project-directory-actions">
+            <button onClick={onClone} aria-label="从 Git 克隆机器人" title="从 Git 克隆机器人"><GitBranch /></button>
+            <button onClick={onAdd} aria-label="添加本地机器人目录" title="添加本地机器人目录"><Plus /></button>
+          </div>
         </header>
         <div className="project-list">
           {projects.map(project => (
@@ -1198,6 +1329,76 @@ function ProjectRail({
       </section>
     </aside>
   )
+}
+
+function GitCloneDialog({
+  open,
+  destination,
+  busy,
+  onClose,
+  onChooseDestination,
+  onConfirm
+}: {
+  open: boolean
+  destination: string
+  busy: boolean
+  onClose: () => void
+  onChooseDestination: () => void
+  onConfirm: (repository: string, branch: string, name: string, mirror: string) => Promise<void>
+}) {
+  const [repository, setRepository] = useState('')
+  const [branch, setBranch] = useState('')
+  const [name, setName] = useState('')
+  const [mirror, setMirror] = useState('official')
+  const [target, setTarget] = useState<{ path: string; exists: boolean } | null>(null)
+  const [targetError, setTargetError] = useState('')
+  useEffect(() => {
+    if (open) {
+      setRepository('')
+      setBranch('')
+      setName('')
+      setMirror('official')
+      setTarget(null)
+      setTargetError('')
+    }
+  }, [open])
+  useEffect(() => {
+    if (!open || !destination || !repository.trim() || !name.trim()) { setTarget(null); setTargetError(''); return }
+    const controller = new AbortController()
+    const timer = window.setTimeout(() => {
+      void fetch(`/api/v1/robot/git-clone/check?${new URLSearchParams({ destination, repository, name })}`, { signal: controller.signal })
+        .then(async response => { const data = await response.json() as { path?: string; exists?: boolean; error?: string }; if (!response.ok) throw new Error(data.error || '无法检查目标目录。'); return data })
+        .then(data => { setTarget({ path: data.path ?? '', exists: Boolean(data.exists) }); setTargetError('') })
+        .catch(reason => { if (!(reason instanceof DOMException && reason.name === 'AbortError')) { setTarget(null); setTargetError(operationErrorMessage(reason, '无法检查目标目录。')) } })
+    }, 260)
+    return () => { controller.abort(); window.clearTimeout(timer) }
+  }, [destination, name, open, repository])
+  if (!open) return null
+  return <div className="directory-picker-backdrop"><section className="git-dialog" role="dialog" aria-label="从 Git 克隆机器人">
+    <header><div><strong>从 Git 添加机器人</strong><span>下载完成后会自动识别并加入机器人目录。</span></div><button className="icon-button" onClick={onClose} aria-label="关闭"><X /></button></header>
+    <div className="git-dialog-form">
+      <label>仓库地址<input autoFocus value={repository} onChange={event => { const value = event.target.value; setRepository(value); const derived = value.trim().replace(/\/$/, '').split('/').pop()?.replace(/\.git$/, '') ?? ''; setName(derived) }} placeholder="https://github.com/组织/机器人仓库.git" /></label>
+      <label>分支或版本（可选）<input value={branch} onChange={event => setBranch(event.target.value)} placeholder="留空使用仓库默认分支" /></label>
+      <label>下载镜像<select value={mirror} onChange={event => setMirror(event.target.value)}><option value="official">Git 官方（推荐）</option><option value="gh-proxy">GitHub 加速 · gh-proxy</option><option value="ghproxy-net">GitHub 加速 · ghproxy.net</option></select></label>
+      <label>存放位置<button type="button" className="directory-choice" onClick={onChooseDestination}>{gitDestinationLabel(destination)}</button><small>{destination ? '会自动以仓库名创建新目录。' : '请选择一个已有文件夹作为下载位置。'}</small></label>
+      <label>最终目录名<input value={name} onChange={event => setName(event.target.value)} placeholder="默认使用仓库名" />{target?.exists ? <small className="git-target-error">目标已存在：{target.path}</small> : target?.path ? <small className="git-target-ready">将下载到：{target.path}</small> : targetError ? <small className="git-target-error">{targetError}</small> : null}</label>
+    </div>
+    <footer><button className="secondary-button" onClick={onClose}>取消</button><button className="primary-button" disabled={busy || !repository.trim() || !destination || !name.trim() || !target || target.exists || Boolean(targetError)} onClick={() => void onConfirm(repository.trim(), branch.trim(), name.trim(), mirror)}>{busy ? '正在下载…' : '克隆并添加'}</button></footer>
+  </section></div>
+}
+
+function gitDestinationLabel(path: string) {
+  return path || '选择存放位置'
+}
+
+function GitInitializeDialog({ open, values, busy, onClose, onChange, onConfirm }: { open: boolean; values: { authorName: string; authorEmail: string; repository: string; message: string }; busy: boolean; onClose: () => void; onChange: (values: { authorName: string; authorEmail: string; repository: string; message: string }) => void; onConfirm: () => Promise<void> }) {
+  if (!open) return null
+  const update = (key: keyof typeof values, value: string) => onChange({ ...values, [key]: value })
+  return <div className="directory-picker-backdrop"><section className="git-dialog" role="dialog" aria-label="填写 Git 初始化信息">
+    <header><div><strong>初始化 Git 仓库</strong><span>仅修改当前项目，不会改动你的全局 Git 身份。</span></div><button className="icon-button" onClick={onClose} aria-label="关闭"><X /></button></header>
+    <div className="git-dialog-form"><label>提交姓名<input autoFocus value={values.authorName} onChange={event => update('authorName', event.target.value)} placeholder="你的姓名" /></label><label>提交邮箱<input type="email" value={values.authorEmail} onChange={event => update('authorEmail', event.target.value)} placeholder="name@example.com" /></label><label>远程仓库（可选）<input value={values.repository} onChange={event => update('repository', event.target.value)} placeholder="https://github.com/owner/repo.git" /></label><label>首个提交说明<input value={values.message} onChange={event => update('message', event.target.value)} /></label></div>
+    <footer><button className="secondary-button" onClick={onClose}>取消</button><button className="primary-button" disabled={busy || !values.authorName.trim() || !values.authorEmail.trim()} onClick={() => void onConfirm()}>{busy ? '正在初始化…' : '确认初始化'}</button></footer>
+  </section></div>
 }
 function ProjectItem({
   project,
@@ -1418,7 +1619,9 @@ function OperationTasksButton({ root }: { root: string }) {
   const [selected, setSelected] = useState<string>('')
   const current = tasks.find(item => item.id === selected) ?? tasks[0]
   const running = tasks.filter(item => item.status === 'running').length
-  useEffect(() => { setTrackTasks(running > 0) }, [running])
+  useEffect(() => {
+    setTrackTasks(running > 0)
+  }, [running])
   const label = (action: string) =>
     action.startsWith('setup:')
       ? `系统插件 · ${action.split(':').slice(-1)[0]}`
@@ -1976,7 +2179,8 @@ function BackpackPanel({
   onOpenPlugins,
   busy,
   onSaveConfig,
-  onRemove
+  onRemove,
+  onReplace
 }: {
   root: string
   items: Array<{
@@ -1991,24 +2195,53 @@ function BackpackPanel({
   onRefresh: () => void
   onOpenPlugins: () => void
   busy: boolean
-  onSaveConfig: (packageName: string, values: Record<string, string>) => Promise<boolean>
+  onSaveConfig: (
+    packageName: string,
+    values: Record<string, string>
+  ) => Promise<boolean>
   onRemove: (packageName: string) => Promise<void>
+  onReplace: (packageName: string, version: string) => Promise<boolean>
 }) {
   const [selectedName, setSelectedName] = useState('')
   useEffect(() => {
-    if (selectedName && !items.some(item => item.name === selectedName)) setSelectedName('')
+    if (selectedName && !items.some(item => item.name === selectedName))
+      setSelectedName('')
   }, [items, selectedName])
   const selected = items.find(item => item.name === selectedName)
-  if (selected) return <BackpackPackageManager root={root} item={selected} busy={busy} onSave={onSaveConfig} onRemove={onRemove} onBack={() => setSelectedName('')} onRefresh={onRefresh} />
+  if (selected)
+    return (
+      <BackpackPackageManager
+        root={root}
+        item={selected}
+        busy={busy}
+        onSave={onSaveConfig}
+        onRemove={onRemove}
+        onReplace={onReplace}
+        onBack={() => setSelectedName('')}
+        onRefresh={onRefresh}
+      />
+    )
   return (
     <section className="backpack-panel">
       <header>
         <div>
-          <p>本地插件包</p>
-          <h1>背包</h1>
+          <p>背包</p>
           <small title={`${root}/packages`}>packages</small>
         </div>
-        <div className="backpack-quick-actions"><button className="text-button" onClick={onOpenPlugins}>插件中心</button><button className="secondary-button" disabled={loading} onClick={onRefresh} aria-label="刷新背包" title="刷新背包">{loading ? '读取中…' : <RefreshCw />}</button></div>
+        <div className="backpack-quick-actions">
+          <button className="text-button" onClick={onOpenPlugins}>
+            插件中心
+          </button>
+          <button
+            className="secondary-button"
+            disabled={loading}
+            onClick={onRefresh}
+            aria-label="刷新背包"
+            title="刷新背包"
+          >
+            {loading ? '读取中…' : <RefreshCw />}
+          </button>
+        </div>
       </header>
       {loading ? (
         <p className="catalog-state">正在读取本地插件包…</p>
@@ -2016,22 +2249,26 @@ function BackpackPanel({
         <div className="backpack-items">
           {items.map(item => (
             <article className={item.valid ? '' : 'invalid'} key={item.path}>
-            <button type="button" className="backpack-open" onClick={() => setSelectedName(item.name)}>
-              <i>{item.valid ? '▣' : '!'}</i>
-              <div>
-                <strong>
-                  {item.name}
-                  {item.version && <em>v{item.version}</em>}
-                </strong>
-                <span>
-                  {item.valid
-                    ? item.description || '本地 AlemonJS 插件包'
-                    : '缺少有效 package.json，暂不能作为插件运行。'}
-                </span>
-                <small title={item.path}>{item.path}</small>
-              </div>
-              <ChevronRight aria-hidden="true" />
-            </button><button className="text-button backpack-quick-remove" disabled={busy} onClick={() => void onRemove(item.name)}>卸载</button></article>
+              <button
+                type="button"
+                className="backpack-open"
+                onClick={() => setSelectedName(item.name)}
+              >
+                <div>
+                  <strong>
+                    {item.name}
+                    {item.version && <em>v{item.version}</em>}
+                  </strong>
+                  <span>
+                    {item.valid
+                      ? item.description || '本地 AlemonJS 插件包'
+                      : '缺少有效 package.json，暂不能作为插件运行。'}
+                  </span>
+                  <small title={item.path}>{item.path}</small>
+                </div>
+                <ChevronRight aria-hidden="true" />
+              </button>
+            </article>
           ))}
         </div>
       ) : (
@@ -2057,66 +2294,218 @@ function BackpackPackageManager({
   busy,
   onSave,
   onRemove,
+  onReplace,
   onBack,
   onRefresh
 }: {
   root: string
-  item: { name: string; version?: string; description?: string; path: string; valid: boolean }
+  item: {
+    name: string
+    version?: string
+    description?: string
+    path: string
+    valid: boolean
+  }
   busy: boolean
-  onSave: (packageName: string, values: Record<string, string>) => Promise<boolean>
+  onSave: (
+    packageName: string,
+    values: Record<string, string>
+  ) => Promise<boolean>
   onRemove: (packageName: string) => Promise<void>
+  onReplace: (packageName: string, version: string) => Promise<boolean>
   onBack: () => void
   onRefresh: () => void
 }) {
+  const [tab, setTab] = useState<'readme' | 'config' | 'version'>('readme')
+  const [version, setVersion] = useState('')
   const { data, isFetching, error } = usePackageConfigQuery(
     { root, package: item.name },
     { skip: !item.valid }
   )
+  const {
+    data: readme,
+    isFetching: isReadmeFetching,
+    error: readmeError
+  } = useLocalPackageReadmeQuery(
+    { root, package: item.name },
+    { skip: !item.valid || tab !== 'readme' }
+  )
+  const {
+    data: versions,
+    isFetching: versionsFetching,
+    error: versionsError
+  } = useLocalPackageVersionsQuery({ root, package: item.name }, {
+    skip: !item.valid || tab !== 'version'
+  })
   const [values, setValues] = useState<Record<string, string>>({})
   useEffect(() => {
-    if (data) setValues(Object.fromEntries(data.fields.map(field => [field.name, data.values[field.name] ?? ''])))
+    if (data)
+      setValues(
+        Object.fromEntries(
+          data.fields.map(field => [field.name, data.values[field.name] ?? ''])
+        )
+      )
   }, [data])
+  useEffect(() => {
+    if (versions?.latest) setVersion(versions.latest)
+  }, [versions])
   return (
     <section className="backpack-manager">
       <header>
         <div>
-          <button className="text-button backpack-back" onClick={onBack}>‹ 返回背包</button>
-          <h2>{item.name}{item.version && <em>v{item.version}</em>}</h2>
+          <button className="text-button backpack-back" onClick={onBack}>
+            ‹ 返回背包
+          </button>
+          <h2>
+            {item.name}
+            {item.version && <em>v{item.version}</em>}
+          </h2>
           <small title={item.path}>{item.path}</small>
         </div>
-        <div className="backpack-detail-actions"><button className="secondary-button" onClick={onRefresh} title="刷新背包"><RefreshCw /></button><button className="danger-button" disabled={busy} onClick={() => void onRemove(item.name)}>卸载</button></div>
+        <div className="backpack-detail-actions">
+          <button
+            className="secondary-button"
+            onClick={onRefresh}
+            title="刷新背包"
+          >
+            <RefreshCw />
+          </button>
+          <button
+            className="danger-button"
+            disabled={busy}
+            onClick={() => void onRemove(item.name)}
+          >
+            卸载
+          </button>
+        </div>
       </header>
-      {!item.valid ? (
-        <p className="backpack-manager-note">这个目录没有有效的 package.json，因此只能从文件系统修复或移除。</p>
-      ) : isFetching ? (
-        <p className="backpack-manager-note">正在读取插件的配置声明…</p>
-      ) : error || !data ? (
-        <p className="backpack-manager-note">这个插件没有声明可视化配置；它仍可作为背包中的本地插件包使用。</p>
-      ) : (
-        <div className="package-config-panel backpack-config-panel">
+      <nav className="backpack-detail-tabs" aria-label="插件详情">
+        <button
+          className={tab === 'readme' ? 'selected' : ''}
+          onClick={() => setTab('readme')}
+        >
+          文档
+        </button>
+        <button
+          className={tab === 'config' ? 'selected' : ''}
+          onClick={() => setTab('config')}
+        >
+          配置
+        </button>
+        <button
+          className={tab === 'version' ? 'selected' : ''}
+          onClick={() => setTab('version')}
+        >
+          版本
+        </button>
+      </nav>
+      <div className="backpack-detail-content">
+        {!item.valid ? (
+          <p className="backpack-manager-note">
+            这个目录没有有效的 package.json，因此只能从文件系统修复或移除。
+          </p>
+        ) : tab === 'readme' ? (
+          isReadmeFetching ? (
+            <p className="backpack-manager-note">正在读取 README.md…</p>
+          ) : readmeError || !readme ? (
+            <p className="backpack-manager-note">
+              这个插件没有 README.md；请在“配置”页查看可用设置。
+            </p>
+          ) : (
+            <MarkdownPage markdown={readme.output} />
+          )
+        ) : tab === 'config' ? (
+          isFetching ? (
+            <p className="backpack-manager-note">正在读取插件的配置声明…</p>
+          ) : error || !data ? (
+            <p className="backpack-manager-note">
+              该插件没有声明可视化配置。使用方式请查看“文档”页。
+            </p>
+          ) : (
+            <div className="package-config-panel backpack-config-panel">
           <header>
             <div>
               <strong>插件配置</strong>
-              <span>保存到当前机器人的 alemon.config.yaml · {data.namespace}.*</span>
+              <span>
+                保存到当前机器人的 alemon.config.yaml · {data.namespace}.*
+              </span>
             </div>
-            <button className="primary-button" disabled={busy} onClick={() => void onSave(item.name, values)}>保存配置</button>
+            <button
+              className="primary-button"
+              disabled={busy}
+              onClick={() => void onSave(item.name, values)}
+            >
+              保存配置
+            </button>
           </header>
           <div className="package-config-fields">
             {data.fields.map(field => (
               <label key={field.name}>
-                {field.description || field.name}{field.required && <em>必填</em>}
+                {field.description || field.name}
+                {field.required && <em>必填</em>}
                 {field.type === 'boolean' || field.type === 'bool' ? (
-                  <select value={values[field.name] ?? ''} onChange={event => setValues({ ...values, [field.name]: event.target.value })}>
-                    <option value="">不设置</option><option value="true">开启</option><option value="false">关闭</option>
+                  <select
+                    value={values[field.name] ?? ''}
+                    onChange={event =>
+                      setValues({ ...values, [field.name]: event.target.value })
+                    }
+                  >
+                    <option value="">不设置</option>
+                    <option value="true">开启</option>
+                    <option value="false">关闭</option>
                   </select>
                 ) : (
-                  <input value={values[field.name] ?? ''} type={field.type === 'number' || field.type === 'integer' ? 'number' : 'text'} onChange={event => setValues({ ...values, [field.name]: event.target.value })} />
+                  <input
+                    value={values[field.name] ?? ''}
+                    type={
+                      field.type === 'number' || field.type === 'integer'
+                        ? 'number'
+                        : 'text'
+                    }
+                    onChange={event =>
+                      setValues({ ...values, [field.name]: event.target.value })
+                    }
+                  />
                 )}
               </label>
             ))}
           </div>
-        </div>
-      )}
+            </div>
+          )
+        ) : versionsFetching ? (
+          <p className="backpack-manager-note">正在读取可安装版本…</p>
+        ) : versionsError || !versions?.versions.length ? (
+          <p className="backpack-manager-note">
+            暂时无法读取此插件的版本。当前本地版本为 {item.version || '未知'}。
+          </p>
+        ) : (
+          <section className="backpack-version-panel">
+            <div>
+              <strong>{versions.source === 'git' ? 'Git 版本' : 'npm 版本'}</strong>
+              <span>
+                当前使用 {versions.current || item.version || '未知'}；
+                {versions.source === 'git'
+                  ? '此插件是 Git 工作区，版本以标签为准。'
+                  : '未检测到 Git，使用 npm 已发布版本。'}
+              </span>
+            </div>
+            <div className="backpack-version-controls">
+              <select value={version} onChange={event => setVersion(event.target.value)}>
+                {versions.versions.map(candidate => (
+                  <option key={candidate} value={candidate}>{versions.source === 'npm' ? `v${candidate}` : candidate}</option>
+                ))}
+              </select>
+              <button
+                className="primary-button"
+                disabled={busy || !version || version === versions.current || version.replace(/^v/, '') === item.version}
+                onClick={() => void onReplace(item.name, version)}
+              >
+                切换版本
+              </button>
+            </div>
+          </section>
+        )}
+      </div>
     </section>
   )
 }
@@ -2154,8 +2543,11 @@ function CatalogDetail({
       : '')
   const repositoryInstall = packageName.startsWith('git+')
   const npmPackage = Boolean(packageName && !repositoryInstall)
-  const { data: packageVersions, isFetching: versionsLoading, error: versionsError } =
-    useCatalogVersionsQuery(packageName, { skip: !packageName })
+  const {
+    data: packageVersions,
+    isFetching: versionsLoading,
+    error: versionsError
+  } = useCatalogVersionsQuery(packageName, { skip: !packageName })
   useEffect(() => {
     setVersion('')
   }, [packageName])
@@ -2163,15 +2555,19 @@ function CatalogDetail({
     if (!version && packageVersions?.latest) setVersion(packageVersions.latest)
   }, [packageVersions?.latest, version])
   const noRepositoryTag =
-    repositoryInstall && !versionsLoading && !versionsError && packageVersions?.versions.length === 0
-  const installTarget =
-    version.trim()
-      ? npmPackage
-        ? `${packageName}@${version.trim()}`
-        : `${packageName.split('#')[0]}#${version.trim()}`
-      : packageName
-  const installAction = kind === 'connection' ? 'install-connection' : 'install-package'
-  const uninstallAction = kind === 'connection' ? 'uninstall-connection' : 'uninstall-package'
+    repositoryInstall &&
+    !versionsLoading &&
+    !versionsError &&
+    packageVersions?.versions.length === 0
+  const installTarget = version.trim()
+    ? npmPackage
+      ? `${packageName}@${version.trim()}`
+      : `${packageName.split('#')[0]}#${version.trim()}`
+    : packageName
+  const installAction =
+    kind === 'connection' ? 'install-connection' : 'install-package'
+  const uninstallAction =
+    kind === 'connection' ? 'uninstall-connection' : 'uninstall-package'
   return (
     <section className="catalog-detail">
       <header>
@@ -2192,14 +2588,19 @@ function CatalogDetail({
               <select
                 value={version}
                 onChange={event => setVersion(event.target.value)}
-                disabled={versionsLoading || Boolean(versionsError) || noRepositoryTag}
+                disabled={
+                  versionsLoading || Boolean(versionsError) || noRepositoryTag
+                }
               >
                 {versionsLoading && <option value="">读取版本…</option>}
                 {versionsError && <option value="">版本读取失败</option>}
-                {noRepositoryTag && <option value="">该插件没有可用的正式 Release</option>}
+                {noRepositoryTag && (
+                  <option value="">该插件没有可用的正式 Release</option>
+                )}
                 {packageVersions?.versions.map(itemVersion => (
                   <option key={itemVersion} value={itemVersion}>
-                    {itemVersion}{itemVersion === packageVersions.latest ? ' · 最新版' : ''}
+                    {itemVersion}
+                    {itemVersion === packageVersions.latest ? ' · 最新版' : ''}
                   </option>
                 ))}
               </select>
@@ -2211,15 +2612,28 @@ function CatalogDetail({
           )}
           <button
             className="primary-button"
-            disabled={busy || !packageName || versionsLoading || Boolean(versionsError) || noRepositoryTag || (repositoryInstall && !version.trim())}
+            disabled={
+              busy ||
+              !packageName ||
+              versionsLoading ||
+              Boolean(versionsError) ||
+              noRepositoryTag ||
+              (repositoryInstall && !version.trim())
+            }
             onClick={() => onRun(installAction, installTarget)}
           >
             {busy ? '处理中…' : kind === 'connection' ? '安装' : '安装'}
           </button>
           <button
             className="secondary-button"
-            disabled={busy || !packageName || (kind === 'plugin' && repositoryInstall)}
-            title={repositoryInstall && kind === 'plugin' ? '仓库插件请按文档卸载' : '卸载当前包'}
+            disabled={
+              busy || !packageName || (kind === 'plugin' && repositoryInstall)
+            }
+            title={
+              repositoryInstall && kind === 'plugin'
+                ? '仓库插件请按文档卸载'
+                : '卸载当前包'
+            }
             onClick={() => onRun(uninstallAction, packageName)}
           >
             卸载
@@ -2234,10 +2648,14 @@ function CatalogDetail({
         </div>
       </section>
       {repositoryInstall && noRepositoryTag && (
-        <p className="catalog-version-note">该插件仓库没有正式 Release，不能作为可复现的版本安装。</p>
+        <p className="catalog-version-note">
+          该插件仓库没有正式 Release，不能作为可复现的版本安装。
+        </p>
       )}
       {repositoryInstall && versionsError && (
-        <p className="catalog-version-note">无法读取插件 Release，请检查网络后重试。</p>
+        <p className="catalog-version-note">
+          无法读取插件 Release，请检查网络后重试。
+        </p>
       )}
       {configOpen && (
         <PackageConfigPanel
@@ -2474,7 +2892,8 @@ function RuntimePanel({
   developmentRunning,
   onRefresh,
   onRun,
-  onSaveLogin
+  onSaveLogin,
+  developerMode
 }: {
   overview?: RuntimeOverview
   root: string
@@ -2484,9 +2903,15 @@ function RuntimePanel({
   onRefresh: () => void
   onRun: (action: string, packageName?: string) => void
   onSaveLogin: (login: string, packageName?: string) => Promise<boolean>
+  developerMode: boolean
 }) {
   type PendingAction = { label: string; note: string; execute: () => void }
-  type LoginChoice = { action: string; label: string; note: string; summary: string[] }
+  type LoginChoice = {
+    action: string
+    label: string
+    note: string
+    summary: string[]
+  }
   const [customLogin, setCustomLogin] = useState('')
   const [customPackage, setCustomPackage] = useState('')
   const [selectedPlatform, setSelectedPlatform] = useState('')
@@ -2511,14 +2936,24 @@ function RuntimePanel({
   const askLogin = async (login: string) => {
     if (knownPlatform && packageTarget) {
       try {
-        const config = await loadPackageConfig({ root, package: packageTarget }).unwrap()
-        const missing = config.fields.filter(field => field.required && !config.values[field.name]?.trim()).map(field => field.description || field.name)
+        const config = await loadPackageConfig({
+          root,
+          package: packageTarget
+        }).unwrap()
+        const missing = config.fields
+          .filter(field => field.required && !config.values[field.name]?.trim())
+          .map(field => field.description || field.name)
         if (missing.length) {
-          setValidationMessage(`“${knownPlatform.label}”还缺少必填配置：${missing.join('、')}。请先在连接页的“配置”中填写后再保存。`)
+          setValidationMessage(
+            `“${knownPlatform.label}”还缺少必填配置：${missing.join('、')}。请先在连接页的“配置”中填写后再保存。`
+          )
           return
         }
       } catch (reason) {
-        const message = operationErrorMessage(reason, '无法读取该连接包的配置声明；请先确认它已安装。')
+        const message = operationErrorMessage(
+          reason,
+          '无法读取该连接包的配置声明；请先确认它已安装。'
+        )
         // alemonjs.config is optional. A connection without it has no
         // declarative required fields, so it may proceed directly to login.
         if (!message.includes('没有声明 alemonjs.config')) {
@@ -2539,18 +2974,29 @@ function RuntimePanel({
         return
       }
       if (preflight.missing.length) {
-        setValidationMessage(`当前登录连接“${preflight.login}”还缺少必填配置：${preflight.missing.join('、')}。请先在机器人 → 连接中填写后再启动。`)
+        setValidationMessage(
+          `当前登录连接“${preflight.login}”还缺少必填配置：${preflight.missing.join('、')}。请先在机器人 → 连接中填写后再启动。`
+        )
         return
       }
-      ask(label, `${note}\n\n本次启动配置：\n${preflight.summary.join('\n')}`, () => onRun(action))
+      ask(
+        label,
+        `${note}\n\n本次启动配置：\n${preflight.summary.join('\n')}`,
+        () => onRun(action)
+      )
     } catch (reason) {
-      setValidationMessage(operationErrorMessage(reason, '无法完成运行前检查。'))
+      setValidationMessage(
+        operationErrorMessage(reason, '无法完成运行前检查。')
+      )
     }
   }
   const returnToLogin = () => {
     setLoginChoice(null)
     window.requestAnimationFrame(() => {
-      loginControlRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      loginControlRef.current?.scrollIntoView({
+        behavior: 'smooth',
+        block: 'center'
+      })
       loginInputRef.current?.focus()
     })
   }
@@ -2582,71 +3028,207 @@ function RuntimePanel({
           <RefreshCw />
         </button>
       </header>
-      <ConfirmDialog open={Boolean(pending)} title={pending?.label ?? ''} message={pending?.note ?? ''} busy={busy} onCancel={() => setPending(null)} onConfirm={confirm} />
-      <ConfirmDialog open={Boolean(validationMessage)} title="运行前配置不完整" subtitle="请先填写连接包声明的必填字段。" message={validationMessage} confirmLabel="知道了" cancelLabel="关闭" onCancel={() => setValidationMessage('')} onConfirm={() => setValidationMessage('')} />
-      <ConfirmDialog open={Boolean(loginChoice)} title="未配置登录连接" subtitle="当前 alemon.config.yaml 中没有 login。" message="是否以无 login 模式启动？无登录模式不会连接任何平台。" confirmLabel="继续" cancelLabel="返回" busy={busy} onCancel={returnToLogin} onConfirm={() => { if (!loginChoice) return; const choice = loginChoice; setLoginChoice(null); ask(choice.label, `${choice.note}\n\n本次启动配置：\n${choice.summary.join('\n')}`, () => onRun(choice.action)) }} />
+      <ConfirmDialog
+        open={Boolean(pending)}
+        title={pending?.label ?? ''}
+        message={pending?.note ?? ''}
+        busy={busy}
+        onCancel={() => setPending(null)}
+        onConfirm={confirm}
+      />
+      <ConfirmDialog
+        open={Boolean(validationMessage)}
+        title="运行前配置不完整"
+        subtitle="请先填写连接包声明的必填字段。"
+        message={validationMessage}
+        confirmLabel="知道了"
+        cancelLabel="关闭"
+        onCancel={() => setValidationMessage('')}
+        onConfirm={() => setValidationMessage('')}
+      />
+      <ConfirmDialog
+        open={Boolean(loginChoice)}
+        title="未配置登录连接"
+        subtitle="当前 alemon.config.yaml 中没有 login。"
+        message="是否以无 login 模式启动？无登录模式不会连接任何平台。"
+        confirmLabel="继续"
+        cancelLabel="返回"
+        busy={busy}
+        onCancel={returnToLogin}
+        onConfirm={() => {
+          if (!loginChoice) return
+          const choice = loginChoice
+          setLoginChoice(null)
+          ask(
+            choice.label,
+            `${choice.note}\n\n本次启动配置：\n${choice.summary.join('\n')}`,
+            () => onRun(choice.action)
+          )
+        }}
+      />
       <section className="runtime-command-list">
-      <section className="overview-actions">
-        <div>
-          <strong>前台运行</strong>
-          <span>{overview?.hasAppScript ? '执行 yarn app；适合直接观察程序输出。' : '当前项目没有 app 脚本。'}</span>
-        </div>
-        {overview?.hasAppScript ? <button className="secondary-button" disabled={busy} onClick={() => void askStart('app', '前台运行', '会执行 yarn app，进程会保持在当前终端。')}>运行</button> : <button className="secondary-button" disabled={busy} onClick={() => ask('修复前台运行', '会补齐标准 app 脚本（node index.js）。', () => onRun('repair-dev'))}>修复</button>}
-      </section>
-      <section className="overview-actions">
-        <div>
-          <strong>开发运行</strong>
-          <span>
-            {developmentRunning
-              ? '正在由本机服务托管，可随时停止。'
-              : overview?.hasDevScript ? '执行 yarn dev，日志进入运行终端。' : '当前项目没有 dev 脚本。'}
-          </span>
-        </div>
-        {overview?.hasDevScript ? <button
-          className={developmentRunning ? 'secondary-button' : 'primary-button'}
-          disabled={busy || !overview?.hasDevScript}
-          title={overview?.hasDevScript ? '' : '当前 package.json 没有 dev 命令，暂不能启动。'}
-          onClick={() => developmentRunning ? ask('停止开发模式', '会停止此目录正在托管的开发进程。', () => onRun('dev-stop')) : void askStart('dev', '运行', '会执行此项目的 dev 命令，并打开运行终端。')}
-        >
-          {developmentRunning ? '停止开发模式' : '运行'}
-        </button> : <button className="secondary-button" disabled={busy} onClick={() => ask('修复开发模式', '会补齐 dev 脚本，并保留现有 app 脚本。', () => onRun('repair-dev'))}>修复</button>}
-      </section>
-      <section className="overview-actions">
-        <div>
-          <strong>持久化运行</strong>
-          <span>
-            {persistentReady ? '执行 yarn start，由 PM2 守护，适合持续在线。' : '需要 start 脚本和 PM2 配置。'}
-          </span>
-        </div>
-        <button
-          className="secondary-button"
-          disabled={busy || !persistentReady}
-          title={persistentReady ? '' : '补齐 start 脚本和 PM2 配置后可使用。'}
-          onClick={() => void askStart('pm2', '启动或重载 PM2', '会执行 yarn start，按此目录的 PM2 配置启动或重载服务。')}
-        >
-          运行
-        </button>
-        <button
-          className="secondary-button"
-          disabled={busy || !overview?.pm2Configured}
-          title={overview?.pm2Configured ? '' : '当前目录没有 pm2.config.cjs。'}
-          onClick={() =>
-            ask('杀死所有', '会停止此目录由 PM2 托管的服务。', () =>
-              onRun('pm2-stop')
-            )
-          }
-        >
-          杀死所有
-        </button>
-        {!persistentReady && <button className="secondary-button" disabled={busy} onClick={() => ask('修复后台运行', '会补齐 start / stop 脚本、PM2 配置和所需依赖声明。', () => onRun('repair-pm2'))}>修复</button>}
-        <button
-          className="text-button"
-          disabled={busy}
-          onClick={() => onRun('pm2-status')}
-        >
-          查看状态
-        </button>
-      </section>
+
+        {developerMode && (
+          <section className="overview-actions">
+            <div>
+              <strong>开发运行</strong>
+              <span>
+                {developmentRunning
+                  ? '正在由本机服务托管，可随时停止。'
+                  : overview?.hasDevScript
+                    ? '执行 yarn dev，日志进入运行终端。'
+                    : '当前项目没有 dev 脚本。'}
+              </span>
+            </div>
+            {overview?.hasDevScript ? (
+              <button
+                className={
+                  developmentRunning ? 'secondary-button' : 'primary-button'
+                }
+                disabled={busy || !overview?.hasDevScript}
+                title={
+                  overview?.hasDevScript
+                    ? ''
+                    : '当前 package.json 没有 dev 命令，暂不能启动。'
+                }
+                onClick={() =>
+                  developmentRunning
+                    ? ask(
+                        '停止开发模式',
+                        '会停止此目录正在托管的开发进程。',
+                        () => onRun('dev-stop')
+                      )
+                    : void askStart(
+                        'dev',
+                        '运行',
+                        '会执行此项目的 dev 命令，并打开运行终端。'
+                      )
+                }
+              >
+                {developmentRunning ? '停止开发模式' : '运行'}
+              </button>
+            ) : (
+              <button
+                className="secondary-button"
+                disabled={busy}
+                onClick={() =>
+                  ask(
+                    '修复开发模式',
+                    '会补齐 dev 脚本，并保留现有 app 脚本。',
+                    () => onRun('repair-dev')
+                  )
+                }
+              >
+                修复
+              </button>
+            )}
+          </section>
+        )}
+        <section className="overview-actions">
+          <div>
+            <strong>前台运行</strong>
+            <span>
+              {overview?.hasAppScript
+                ? '执行 yarn app；适合直接观察程序输出。'
+                : '当前项目没有 app 脚本。'}
+            </span>
+          </div>
+          {overview?.hasAppScript ? (
+            <button
+              className="secondary-button"
+              disabled={busy}
+              onClick={() =>
+                void askStart(
+                  'app',
+                  '前台运行',
+                  '会执行 yarn app，进程会保持在当前终端。'
+                )
+              }
+            >
+              运行
+            </button>
+          ) : developerMode ? (
+            <button
+              className="secondary-button"
+              disabled={busy}
+              onClick={() =>
+                ask(
+                  '修复前台运行',
+                  '会补齐标准 app 脚本（node index.js）。',
+                  () => onRun('repair-dev')
+                )
+              }
+            >
+              修复
+            </button>
+          ) : (
+            <small>当前项目没有可直接运行的 app 命令。</small>
+          )}
+        </section>
+        {
+          <section className="overview-actions">
+            <div>
+              <strong>持久化运行</strong>
+              <span>
+                {persistentReady
+                  ? '执行 yarn start，由 PM2 守护，适合持续在线。'
+                  : '需要 start 脚本和 PM2 配置。'}
+              </span>
+            </div>
+            <button
+              className="secondary-button"
+              disabled={busy || !persistentReady}
+              title={
+                persistentReady ? '' : '补齐 start 脚本和 PM2 配置后可使用。'
+              }
+              onClick={() =>
+                void askStart(
+                  'pm2',
+                  '启动或重载 PM2',
+                  '会执行 yarn start，按此目录的 PM2 配置启动或重载服务。'
+                )
+              }
+            >
+              运行
+            </button>
+            <button
+              className="secondary-button"
+              disabled={busy || !overview?.pm2Configured}
+              title={
+                overview?.pm2Configured ? '' : '当前目录没有 pm2.config.cjs。'
+              }
+              onClick={() =>
+                ask('杀死所有', '会停止此目录由 PM2 托管的服务。', () =>
+                  onRun('pm2-stop')
+                )
+              }
+            >
+              杀死所有
+            </button>
+            {!persistentReady && (
+              <button
+                className="secondary-button"
+                disabled={busy}
+                onClick={() =>
+                  ask(
+                    '修复后台运行',
+                    '会补齐 start / stop 脚本、PM2 配置和所需依赖声明。',
+                    () => onRun('repair-pm2')
+                  )
+                }
+              >
+                修复
+              </button>
+            )}
+            <button
+              className="text-button"
+              disabled={busy}
+              onClick={() => onRun('pm2-status')}
+            >
+              查看状态
+            </button>
+          </section>
+        }
       </section>
       <section className="runtime-platforms">
         <header>
@@ -2658,39 +3240,143 @@ function RuntimePanel({
           <div className="runtime-login-fields">
             <label>
               已识别平台
-              <select value={selectedPlatform} onChange={event => choosePlatform(event.target.value)}>
+              <select
+                value={selectedPlatform}
+                onChange={event => choosePlatform(event.target.value)}
+              >
                 <option value="">不选择，直接输入</option>
                 {(overview?.platforms ?? []).map(item => (
                   <option key={item.id} value={item.id}>
-                    {item.label}{item.installed ? ' · 已安装' : ' · 需安装'}
+                    {item.label}
+                    {item.installed ? ' · 已安装' : ' · 需安装'}
                   </option>
                 ))}
               </select>
             </label>
             <label>
               登录连接
-              <input ref={loginInputRef} value={customLogin} onChange={event => { setSelectedPlatform(''); setCustomLogin(event.target.value) }} placeholder="可自由输入，如 my-platform" />
+              <input
+                ref={loginInputRef}
+                value={customLogin}
+                onChange={event => {
+                  setSelectedPlatform('')
+                  setCustomLogin(event.target.value)
+                }}
+                placeholder="可自由输入，如 my-platform"
+              />
             </label>
             <label>
               npm 包（可选）
-              <input value={customPackage} onChange={event => { setSelectedPlatform(''); setCustomPackage(event.target.value) }} placeholder="可自由输入，如 @scope/platform" />
+              <input
+                value={customPackage}
+                onChange={event => {
+                  setSelectedPlatform('')
+                  setCustomPackage(event.target.value)
+                }}
+                placeholder="可自由输入，如 @scope/platform"
+              />
             </label>
           </div>
           <footer>
-            <small>{knownPlatform ? knownPlatform.installed ? `${knownPlatform.label} 已安装${knownPlatform.version ? ` · v${knownPlatform.version}` : ''}` : `${knownPlatform.label} 尚未安装，安装后才能设为登录连接。` : '下拉选项会自动填入；也可直接输入任意平台。'}</small>
-            <div>{packageTarget && (!knownPlatform || !knownPlatform.installed) && <button className="secondary-button" disabled={busy} onClick={() => ask('安装平台包', `会通过 yarn 在当前项目安装 ${packageTarget}。`, () => onRun('install-connection', packageTarget))}>未安装，Yarn 安装</button>}<button className="primary-button" disabled={busy || !customLogin.trim() || Boolean(knownPlatform && !knownPlatform.installed)} onClick={() => askLogin(customLogin.trim())}>保存</button></div>
+            <small>
+              {knownPlatform
+                ? knownPlatform.installed
+                  ? `${knownPlatform.label} 已安装${knownPlatform.version ? ` · v${knownPlatform.version}` : ''}`
+                  : `${knownPlatform.label} 尚未安装，安装后才能设为登录连接。`
+                : '下拉选项会自动填入；也可直接输入任意平台。'}
+            </small>
+            <div>
+              {packageTarget &&
+                (!knownPlatform || !knownPlatform.installed) && (
+                  <button
+                    className="secondary-button"
+                    disabled={busy}
+                    onClick={() =>
+                      ask(
+                        '安装平台包',
+                        `会通过 yarn 在当前项目安装 ${packageTarget}。`,
+                        () => onRun('install-connection', packageTarget)
+                      )
+                    }
+                  >
+                    未安装，Yarn 安装
+                  </button>
+                )}
+              <button
+                className="primary-button"
+                disabled={
+                  busy ||
+                  !customLogin.trim() ||
+                  Boolean(knownPlatform && !knownPlatform.installed)
+                }
+                onClick={() => askLogin(customLogin.trim())}
+              >
+                保存
+              </button>
+            </div>
           </footer>
         </section>
       </section>
     </section>
   )
 }
-function RobotPluginWebView({ root, entry, onClose }: { root: string; entry: RobotWebView; onClose: () => void }) {
+function RobotPluginWebView({
+  root,
+  entry,
+  onClose
+}: {
+  root: string
+  entry: RobotWebView
+  onClose: () => void
+}) {
   const [reloadKey, setReloadKey] = useState(0)
   const [loading, setLoading] = useState(true)
-  const rootToken = btoa(String.fromCharCode(...new TextEncoder().encode(root))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '')
-  const source = `/api/v1/robot/webview/${rootToken}/${entry.id}/`
-  return <section className="workspace-content robot-plugin-webview"><header><div><button className="text-button" onClick={onClose}>‹ 返回机器人</button><span>{entry.package}</span></div><div className="robot-plugin-webview-actions"><strong>{entry.name}</strong><button className="icon-button" onClick={() => { setLoading(true); setReloadKey(current => current + 1) }} aria-label="重新加载插件页面" title="重新加载"><RefreshCw /></button></div></header><div className="robot-plugin-webview-frame">{loading && <span>正在加载 {entry.name}…</span>}<iframe key={reloadKey} src={source} title={`${entry.name} 插件页面`} sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-downloads" referrerPolicy="no-referrer" onLoad={() => setLoading(false)} /></div></section>
+  const rootToken = btoa(String.fromCharCode(...new TextEncoder().encode(root)))
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=/g, '')
+  // Keep plugin pages on the other loopback hostname. It is the same local
+  // server, but a different browser origin: installed plugin code cannot read
+  // the management session or its localStorage.
+  const pluginHost = window.location.hostname === 'localhost' ? '127.0.0.1' : 'localhost'
+  const source = `${window.location.protocol}//${pluginHost}${window.location.port ? `:${window.location.port}` : ''}/api/v1/robot/webview/${rootToken}/${entry.id}/`
+  return (
+    <section className="workspace-content robot-plugin-webview">
+      <header>
+        <div>
+          <button className="text-button" onClick={onClose}>
+            ‹ 返回机器人
+          </button>
+          <span>{entry.package}</span>
+        </div>
+        <div className="robot-plugin-webview-actions">
+          <strong>{entry.name}</strong>
+          <button
+            className="icon-button"
+            onClick={() => {
+              setLoading(true)
+              setReloadKey(current => current + 1)
+            }}
+            aria-label="重新加载插件页面"
+            title="重新加载"
+          >
+            <RefreshCw />
+          </button>
+        </div>
+      </header>
+      <div className="robot-plugin-webview-frame">
+        {loading && <span>正在加载 {entry.name}…</span>}
+        <iframe
+          key={reloadKey}
+          src={source}
+          title={`${entry.name} 插件页面`}
+          sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-downloads"
+          referrerPolicy="no-referrer"
+          onLoad={() => setLoading(false)}
+        />
+      </div>
+    </section>
+  )
 }
 
 function ControlCard({
@@ -2702,6 +3388,7 @@ function ControlCard({
   catalogTitle,
   webViews,
   activeWebViewID,
+  developerMode,
   onOpenConsole,
   onOpenWebView,
   onPage,
@@ -2717,6 +3404,7 @@ function ControlCard({
   catalogTitle: string
   webViews: RobotWebView[]
   activeWebViewID: string
+  developerMode: boolean
   onOpenConsole: () => void
   onOpenWebView: (id: string) => void
   onPage: (page: Page) => void
@@ -2734,10 +3422,12 @@ function ControlCard({
       : page
   const subitems =
     activePrimary === 'config'
-      ? [
-          { id: 'npmrc', label: 'npm 源' },
-          { id: 'env', label: '环境变量' }
-        ]
+      ? developerMode
+        ? [
+            { id: 'npmrc', label: 'npm 源' },
+            { id: 'env', label: '环境变量' }
+          ]
+        : []
       : activePrimary === 'build'
         ? [
             { id: 'manifest', label: '包配置' },
@@ -2783,17 +3473,19 @@ function ControlCard({
           <i>◈</i>
         </header>
         <div className="control-list">
-          {directoryActions.map(item => (
-            <button
-              className={activePrimary === item.id ? 'active' : ''}
-              onClick={() => selectPrimary(item)}
-              key={item.id}
-            >
-              <i>{item.icon}</i>
-              <span>{item.label}</span>
-              <ChevronRight />
-            </button>
-          ))}
+          {directoryActions
+            .filter(item => developerMode || item.id !== 'build')
+            .map(item => (
+              <button
+                className={activePrimary === item.id ? 'active' : ''}
+                onClick={() => selectPrimary(item)}
+                key={item.id}
+              >
+                <i>{item.icon}</i>
+                <span>{item.label}</span>
+                <ChevronRight />
+              </button>
+            ))}
         </div>
         {subitems.length > 0 && (
           <>
@@ -2812,7 +3504,7 @@ function ControlCard({
             </div>
           </>
         )}
-        {project && (
+        {project && developerMode && (
           <footer title={project.path}>
             <button
               className="icon-button"
@@ -2826,9 +3518,17 @@ function ControlCard({
         )}
       </section>
       {webViews.length > 0 && (
-        <section className="robot-webview-shortcuts" aria-label="机器人插件 Web 页面">
+        <section
+          className="robot-webview-shortcuts"
+          aria-label="机器人插件 Web 页面"
+        >
           {webViews.map(item => (
-            <button className={item.id === activeWebViewID ? 'active' : ''} key={item.id} onClick={() => onOpenWebView(item.id)} title={item.description || item.package}>
+            <button
+              className={item.id === activeWebViewID ? 'active' : ''}
+              key={item.id}
+              onClick={() => onOpenWebView(item.id)}
+              title={item.description || item.package}
+            >
               <Package />
               <span>{item.name}</span>
               <ChevronRight />
@@ -3292,6 +3992,7 @@ function GitReleasePanelNext({
     refetch
   } = useGitStatusQuery(root, { skip: !root })
   const [initializing, setInitializing] = useState(false)
+  const [gitInitOpen, setGitInitOpen] = useState(false)
   const [sourceCommit, setSourceCommit] = useState('')
   const [gitInit, setGitInit] = useState({
     authorName: '',
@@ -3418,79 +4119,7 @@ function GitReleasePanelNext({
                 ))}
               </ul>
               {needsInitialize && (
-                <section className="git-init-form">
-                  <strong>初始化当前项目仓库</strong>
-                  <p>
-                    只在所选目录创建独立 Git 仓库，不会修改父目录仓库或全局 Git
-                    身份。
-                  </p>
-                  <div>
-                    <label>
-                      提交姓名
-                      <input
-                        value={gitInit.authorName}
-                        onChange={event =>
-                          setGitInit({
-                            ...gitInit,
-                            authorName: event.target.value
-                          })
-                        }
-                        placeholder="你的姓名"
-                      />
-                    </label>
-                    <label>
-                      提交邮箱
-                      <input
-                        type="email"
-                        value={gitInit.authorEmail}
-                        onChange={event =>
-                          setGitInit({
-                            ...gitInit,
-                            authorEmail: event.target.value
-                          })
-                        }
-                        placeholder="name@example.com"
-                      />
-                    </label>
-                    <label>
-                      origin（可选）
-                      <input
-                        value={gitInit.repository}
-                        onChange={event =>
-                          setGitInit({
-                            ...gitInit,
-                            repository: event.target.value
-                          })
-                        }
-                        placeholder="https://github.com/owner/repo.git"
-                      />
-                    </label>
-                    <label>
-                      首个提交
-                      <input
-                        value={gitInit.message}
-                        onChange={event =>
-                          setGitInit({
-                            ...gitInit,
-                            message: event.target.value
-                          })
-                        }
-                      />
-                    </label>
-                  </div>
-                  <button
-                    className="primary-button"
-                    disabled={
-                      busy ||
-                      initializing ||
-                      !gitInit.authorName.trim() ||
-                      !gitInit.authorEmail.trim()
-                    }
-                    onClick={() => void submitInitialize()}
-                  >
-                    {initializing ? '正在初始化…' : '确认初始化 Git'}
-                  </button>
-                </section>
+                <button className="primary-button" disabled={busy || initializing} onClick={() => setGitInitOpen(true)}>填写 Git 信息并初始化</button>
               )}
             </section>
           )}
@@ -3547,6 +4176,7 @@ function GitReleasePanelNext({
           </section>
         </>
       )}
+      <GitInitializeDialog open={gitInitOpen} values={gitInit} busy={busy || initializing} onClose={() => setGitInitOpen(false)} onChange={setGitInit} onConfirm={async () => { await submitInitialize(); setGitInitOpen(false) }} />
     </section>
   )
 }
