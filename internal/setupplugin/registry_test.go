@@ -1,6 +1,8 @@
 package setupplugin
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -91,5 +93,33 @@ func TestRegistryCanDisableAndReenablePlugin(t *testing.T) {
 	}
 	if active := registry.List(); len(active) != 1 || !active[0].Enabled {
 		t.Fatalf("plugin should be active again: %#v", active)
+	}
+}
+
+func TestRegistryRendersOnlinePluginFromAppsXIndex(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/apps-x.md":
+			_, _ = w.Write([]byte("[network]: https://github.com/lemonade-lab/alemonx-network\n"))
+		case "/alx.json":
+			_, _ = w.Write([]byte(`{"id":"alemonx-network","name":"网络","version":"1.0.0","pages":[{"id":"overview","label":"概览"}],"actions":[{"id":"check","label":"检查","page":"overview"}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	registry := Registry{
+		onlineIndexURL: server.URL + "/apps-x.md",
+		httpClient:     server.Client(),
+		onlineManifestURL: func(string) string {
+			return server.URL + "/alx.json"
+		},
+	}
+	plugins := registry.List()
+	if len(plugins) != 1 || !plugins[0].Online || plugins[0].Runnable || plugins[0].Name != "网络" {
+		t.Fatalf("online plugin = %#v", plugins)
+	}
+	if _, err := registry.Run("alemonx-network", "check", nil, false); err == nil {
+		t.Fatal("online plugin must not execute before installation")
 	}
 }

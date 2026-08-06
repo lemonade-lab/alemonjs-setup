@@ -1,8 +1,10 @@
-# Setup 系统插件开发与接入
+# ALemonX 系统插件开发与接入
 
-Setup 系统插件用于为 ALemonX（`alx`）增加**全局的本机管理能力**，例如网络检查、系统服务或防火墙规则。它与机器人项目无关；不要用它实现某个机器人的命令、配置页或 WebView。这些能力应作为机器人插件提供。
+系统插件用于为 ALemonX（`alx`）增加**全局的本机管理能力**，例如网络检查、系统服务或防火墙规则。它与机器人项目无关；不要用它实现某个机器人的命令、配置页或 WebView。这些能力应作为机器人插件提供。
 
 插件由声明式清单和可选执行器组成。ALemonX 发现、列出和渲染清单时不会执行插件代码；只有用户在界面或 MCP 客户端中明确触发某项操作后，执行器才会运行。
+
+默认在线目录是 [Apps-X](https://github.com/lemonade-lab/alemonjs.dev/blob/main/docs/apps-x.md)。ALemonX 从其中由 `lemonade-lab` 维护的 GitHub 仓库链接读取根目录 `alx.json`，并据此渲染系统插件的入口、页签与操作。在线识别不会下载或执行远程代码；要运行操作，仍需将插件安装到本机 `plugins/` 目录。
 
 ## 快速开始
 
@@ -11,7 +13,7 @@ Setup 系统插件用于为 ALemonX（`alx`）增加**全局的本机管理能�
 ```text
 plugins/
   example-status/
-    albs.setup.json
+    alx.json
     runner/
       main.mjs
 ```
@@ -39,7 +41,7 @@ plugins/
 }
 ```
 
-开发时可使用 Go 源码执行器，完整可运行的参考见 [网络与防火墙插件](../plugins/network-firewall/albs.setup.json)：
+开发时可使用 Go 源码执行器，完整可运行的参考见 [网络与防火墙插件](../plugins/network-firewall/alx.json)：
 
 ```json
 {
@@ -54,9 +56,9 @@ plugins/
 
 ALemonX 优先使用 `entry` 中当前系统与架构匹配的发布执行器；缺失或不可用时，才尝试 `development`。发布版本应提供已编译的 `binary` 执行器。
 
-## `albs.setup.json` 清单
+## `alx.json` 清单
 
-清单文件名必须精确为 `albs.setup.json`，最大 64 KiB，且不能是符号链接。`id`、页面 `id` 与操作 `id` 必须匹配 `^[a-z][a-z0-9-]{1,63}$`；插件、页面和操作的 ID 都不可重复。
+清单文件名必须精确为 `alx.json`，最大 64 KiB，且不能是符号链接。`id`、页面 `id` 与操作 `id` 必须匹配 `^[a-z][a-z0-9-]{1,63}$`；插件、页面和操作的 ID 都不可重复。
 
 | 字段 | 必填 | 说明 |
 | --- | --- | --- |
@@ -108,7 +110,7 @@ ALemonX 优先使用 `entry` 中当前系统与架构匹配的发布执行器；
 
 ```json
 {
-  "protocol": "alx.setup/v1",
+  "protocol": "alx/v1",
   "method": "run",
   "action": "open-port",
   "params": { "port": "17117", "protocol": "tcp" }
@@ -137,7 +139,7 @@ import process from 'node:process'
 let input = {}
 try {
   input = JSON.parse(await new Response(process.stdin).text())
-  if (input.protocol !== 'alx.setup/v1' || input.method !== 'run') {
+  if (input.protocol !== 'alx/v1' || input.method !== 'run') {
     throw new Error('不支持的 ALX Setup 插件协议')
   }
   if (input.action !== 'check') throw new Error('未知操作')

@@ -640,6 +640,34 @@ body {
   background-color: #3f3f46 !important;
 }
 
+/* The card has one flexible navigation target and one fixed action target.
+ * Keep this explicit so older broad `.setup-plugin-cards button` rules cannot
+ * turn the action into a full-width row and collapse the navigation content. */
+.setup-plugin-cards > article > .setup-plugin-open {
+  min-width: 0 !important;
+  width: auto !important;
+}
+
+.setup-plugin-cards > article > .setup-plugin-toggle {
+  align-self: center;
+  flex: 0 0 auto;
+  min-height: 2rem !important;
+  min-width: 4rem;
+  padding: 0 0.75rem !important;
+  width: auto !important;
+}
+
+[data-theme='dark'] .setup-plugin-cards > article > .setup-plugin-toggle {
+  border-color: #52525b;
+  background: #18181b;
+  color: #f4f4f5;
+}
+
+[data-theme='dark'] .setup-plugin-cards > article > .setup-plugin-toggle:hover:not(:disabled) {
+  border-color: #71717a;
+  background: #3f3f46;
+}
+
 /* Guide flows still include a small set of legacy, fixed-colour primitives. */
 [data-theme='dark'] .wizard-steps {
   background: #1f1f22 !important;

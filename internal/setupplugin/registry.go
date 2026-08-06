@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,12 +16,15 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"time"
 )
 
 const manifestName = "alx.json"
 const maxManifestSize = 64 * 1024
+const onlineIndexURL = "https://raw.githubusercontent.com/lemonade-lab/alemonjs.dev/main/docs/apps-x.md"
 
 var validID = regexp.MustCompile(`^[a-z][a-z0-9-]{1,63}$`)
+var onlineRepository = regexp.MustCompile(`(?m)^\s*\[[^\]]+\]:\s*(https://github\.com/lemonade-lab/([A-Za-z0-9_.-]+))\s*$`)
 
 // Page is a secondary navigation item contributed by a Setup plugin.
 type Page struct {
@@ -75,6 +80,7 @@ type Plugin struct {
 	Development *RuntimeSpec      `json:"development,omitempty"`
 	Runnable    bool              `json:"runnable"`
 	Enabled     bool              `json:"enabled"`
+	Online      bool              `json:"online,omitempty"`
 	Source      string            `json:"source,omitempty"`
 }
 
@@ -89,8 +95,11 @@ type RuntimeSpec struct {
 // Registry scans immediate child directories in order. Earlier roots win on
 // duplicate IDs, allowing a user-installed plugin to override a bundled one.
 type Registry struct {
-	roots     []string
-	statePath string
+	roots             []string
+	statePath         string
+	onlineIndexURL    string
+	httpClient        *http.Client
+	onlineManifestURL func(string) string
 }
 
 func NewRegistry(roots ...string) Registry {
@@ -98,6 +107,13 @@ func NewRegistry(roots ...string) Registry {
 	if len(roots) == 0 {
 		roots = defaultRoots()
 		statePath = defaultStatePath()
+		return Registry{
+			roots:             uniqueRoots(roots),
+			statePath:         statePath,
+			onlineIndexURL:    onlineIndexURL,
+			httpClient:        &http.Client{Timeout: 5 * time.Second},
+			onlineManifestURL: defaultOnlineManifestURL,
+		}
 	}
 	return Registry{roots: uniqueRoots(roots), statePath: statePath}
 }
@@ -173,6 +189,17 @@ func (r Registry) list(includeDisabled bool) []Plugin {
 			}
 			items = append(items, plugin)
 		}
+	}
+	for _, plugin := range r.onlinePlugins() {
+		if seen[plugin.ID] || !supportsCurrentPlatform(plugin.Platforms) {
+			continue
+		}
+		plugin.Enabled = !disabled[plugin.ID]
+		seen[plugin.ID] = true
+		if !includeDisabled && !plugin.Enabled {
+			continue
+		}
+		items = append(items, plugin)
 	}
 	sort.SliceStable(items, func(i, j int) bool {
 		if items[i].Navigation.Order != items[j].Navigation.Order {
@@ -282,6 +309,9 @@ func (r Registry) Run(id, actionID string, params map[string]string, confirmed b
 	if err != nil {
 		return "", err
 	}
+	if plugin.Online {
+		return "", errors.New("在线系统插件尚未安装，不能执行远程代码")
+	}
 	var action Action
 	found := false
 	for _, item := range plugin.Actions {
@@ -300,7 +330,7 @@ func (r Registry) Run(id, actionID string, params map[string]string, confirmed b
 	if err != nil {
 		return "", err
 	}
-	payload, err := json.Marshal(request{Protocol: "alx.setup/v1", Method: "run", Action: actionID, Params: params})
+	payload, err := json.Marshal(request{Protocol: "alx/v1", Method: "run", Action: actionID, Params: params})
 	if err != nil {
 		return "", err
 	}
@@ -320,7 +350,7 @@ func (r Registry) Run(id, actionID string, params map[string]string, confirmed b
 	}
 	var result response
 	if err := json.Unmarshal(output, &result); err != nil {
-		return "", errors.New("插件返回格式无效；请使用 alx.setup/v1 JSON 协议")
+		return "", errors.New("插件返回格式无效；请使用 alx/v1 JSON 协议")
 	}
 	if result.Error != "" {
 		return result.Output, errors.New(result.Error)
@@ -392,6 +422,10 @@ func load(directory string) (Plugin, error) {
 	if err != nil {
 		return Plugin{}, err
 	}
+	return decodeManifest(data, directory)
+}
+
+func decodeManifest(data []byte, source string) (Plugin, error) {
 	var plugin Plugin
 	if err := json.Unmarshal(data, &plugin); err != nil {
 		return Plugin{}, err
@@ -429,8 +463,65 @@ func load(directory string) (Plugin, error) {
 		seenActions[action.ID] = true
 	}
 	plugin.Runnable = len(plugin.Actions) > 0 && (len(plugin.Entry) > 0 || plugin.Development != nil)
-	plugin.Source = directory
+	plugin.Source = source
 	return plugin, nil
+}
+
+func defaultOnlineManifestURL(repository string) string {
+	name := strings.TrimPrefix(repository, "https://github.com/lemonade-lab/")
+	return "https://raw.githubusercontent.com/lemonade-lab/" + name + "/main/" + manifestName
+}
+
+// onlinePlugins reads the curated Apps-X index. Only repositories owned by
+// lemonade-lab are accepted, so a documentation edit cannot turn discovery
+// into an arbitrary URL fetch. Online manifests are deliberately read-only:
+// they render in the manager but must be installed locally before execution.
+func (r Registry) onlinePlugins() []Plugin {
+	if r.onlineIndexURL == "" || r.httpClient == nil || r.onlineManifestURL == nil {
+		return nil
+	}
+	index, err := r.readOnlineFile(r.onlineIndexURL)
+	if err != nil {
+		return nil
+	}
+	items := make([]Plugin, 0)
+	seen := map[string]bool{}
+	for _, match := range onlineRepository.FindAllStringSubmatch(string(index), -1) {
+		repository := match[1]
+		manifest, err := r.readOnlineFile(r.onlineManifestURL(repository))
+		if err != nil {
+			continue
+		}
+		plugin, err := decodeManifest(manifest, repository)
+		if err != nil || seen[plugin.ID] {
+			continue
+		}
+		plugin.Online = true
+		plugin.Runnable = false
+		seen[plugin.ID] = true
+		items = append(items, plugin)
+	}
+	return items
+}
+
+func (r Registry) readOnlineFile(url string) ([]byte, error) {
+	request, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	response, err := r.httpClient.Do(request)
+	if err != nil {
+		return nil, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("online plugin request returned %s", response.Status)
+	}
+	data, err := io.ReadAll(io.LimitReader(response.Body, maxManifestSize+1))
+	if err != nil || len(data) > maxManifestSize {
+		return nil, errors.New("online plugin document is unavailable")
+	}
+	return data, nil
 }
 
 func validRuntime(value string) bool {

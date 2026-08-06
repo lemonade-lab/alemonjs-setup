@@ -138,6 +138,7 @@ export type SetupPlugin = {
   }>
   runnable: boolean
   enabled: boolean
+  online?: boolean
 }
 
 export const workspaceApi = createApi({

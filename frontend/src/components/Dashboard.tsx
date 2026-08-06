@@ -2948,25 +2948,21 @@ function SystemPluginCenter({
                     {plugin.name}
                   </strong>
                   <small className="text-xs text-slate-400">
-                    v{plugin.version} · {plugin.enabled ? '已启用' : '已卸载'}
+                    v{plugin.version} · {plugin.online ? '在线目录' : plugin.enabled ? '已启用' : '已卸载'}
                   </small>
                 </div>
                 {plugin.enabled && (
                   <ChevronRight className="ml-auto size-4 shrink-0 text-slate-400" />
                 )}
               </button>
-              <button
-                className={cn(
-                  'inline-flex min-h-8 shrink-0 items-center justify-center rounded-lg border px-3 text-xs font-semibold transition disabled:cursor-wait disabled:opacity-50',
-                  plugin.enabled
-                    ? 'border-slate-200 bg-white text-slate-600 hover:border-teal-300 hover:text-teal-700 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-300'
-                    : 'border-teal-700 bg-teal-700 text-white hover:bg-teal-800'
-                )}
+              <Button
+                variant={plugin.enabled ? 'secondary' : 'primary'}
+                className="setup-plugin-toggle"
                 disabled={isLoading}
                 onClick={() => void toggle(plugin)}
               >
                 {plugin.enabled ? '卸载' : '启用'}
-              </button>
+              </Button>
             </article>
           ))}
         </section>
@@ -2993,8 +2989,15 @@ function SetupPluginCenter({ plugin }: { plugin: SetupPlugin }) {
   const [page, setPage] = useState(plugin.pages[0]?.id ?? 'overview')
   const [activeAction, setActiveAction] = useState('')
   const [message, setMessage] = useState('')
+  const [taskID, setTaskID] = useState('')
   const [values, setValues] = useState<Record<string, string>>({})
   const [startTask, { isLoading }] = useStartSetupPluginTaskMutation()
+  const { data: pluginTasks = [] } = useRobotTasksQuery(undefined, {
+    skip: !taskID,
+    pollingInterval: taskID ? 800 : 0,
+    refetchOnMountOrArgChange: true
+  })
+  const pluginTask = pluginTasks.find(item => item.id === taskID)
   const current = plugin.pages.find(item => item.id === page) ?? plugin.pages[0]
   const visibleActions = (plugin.actions ?? []).filter(
     action => !action.page || action.page === current?.id
@@ -3004,6 +3007,7 @@ function SetupPluginCenter({ plugin }: { plugin: SetupPlugin }) {
     setPage(plugin.pages[0]?.id ?? 'overview')
     setActiveAction('')
     setMessage('')
+    setTaskID('')
     setValues(
       Object.fromEntries(
         (plugin.actions ?? []).flatMap(action =>
@@ -3032,8 +3036,8 @@ function SetupPluginCenter({ plugin }: { plugin: SetupPlugin }) {
         params: paramsFor(action)
       }).unwrap()
       setActiveAction('')
-      setMessage(`已开始“${action.label}”，可在右上角操作记录查看进度。`)
-      void task
+      setMessage('')
+      setTaskID(task.id)
     } catch (reason) {
       setMessage(operationErrorMessage(reason, '插件操作未开始。'))
     }
@@ -3087,7 +3091,9 @@ function SetupPluginCenter({ plugin }: { plugin: SetupPlugin }) {
           </header>
           {!plugin.runnable && (
             <p className="setup-plugin-unavailable rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-300">
-              当前系统缺少此插件的执行器。
+              {plugin.online
+                ? '此插件由在线目录识别，当前仅展示其功能；安装到本机后才能执行操作。'
+                : '当前系统缺少此插件的执行器。'}
             </p>
           )}
           {visibleActions.length > 0 && (
@@ -3242,6 +3248,41 @@ function SetupPluginCenter({ plugin }: { plugin: SetupPlugin }) {
             <p className="setup-plugin-message rounded-lg border border-teal-200 bg-teal-50 px-3 py-2 text-xs text-teal-700 dark:border-teal-900 dark:bg-teal-950/40 dark:text-teal-300">
               {message}
             </p>
+          )}
+          {pluginTask && (
+            <section
+              className={cn(
+                'grid gap-2 rounded-xl border p-3 text-xs',
+                pluginTask.status === 'failed'
+                  ? 'border-rose-200 bg-rose-50 text-rose-800 dark:border-rose-900 dark:bg-rose-950/30 dark:text-rose-200'
+                  : pluginTask.status === 'completed'
+                    ? 'border-teal-200 bg-teal-50 text-teal-800 dark:border-teal-900 dark:bg-teal-950/30 dark:text-teal-200'
+                    : 'border-sky-200 bg-sky-50 text-sky-800 dark:border-sky-900 dark:bg-sky-950/30 dark:text-sky-200'
+              )}
+            >
+              <header className="flex items-center justify-between gap-3">
+                <strong>
+                  {pluginTask.status === 'running'
+                    ? '正在执行诊断…'
+                    : pluginTask.status === 'failed'
+                      ? '操作未完成'
+                      : '检查完成'}
+                </strong>
+                {pluginTask.status !== 'running' && (
+                  <button
+                    className="text-xs font-semibold underline underline-offset-2"
+                    onClick={() => setTaskID('')}
+                  >
+                    收起
+                  </button>
+                )}
+              </header>
+              <pre className="m-0 max-h-72 overflow-auto whitespace-pre-wrap rounded-lg bg-white/70 p-2 text-[11px] leading-5 text-slate-700 dark:bg-slate-950/50 dark:text-slate-200">
+                {pluginTask.status === 'failed'
+                  ? pluginTask.error || '插件操作失败。'
+                  : pluginTask.output || '正在等待插件返回结果…'}
+              </pre>
+            </section>
           )}
         </section>
       </div>
