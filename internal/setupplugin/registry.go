@@ -310,6 +310,9 @@ func (r Registry) Run(id, actionID string, params map[string]string, confirmed b
 	output, err := command.CombinedOutput()
 	if err != nil {
 		message := strings.TrimSpace(string(output))
+		if errors.Is(err, exec.ErrNotFound) {
+			return "", fmt.Errorf("插件入口无法启动：未检测到 %s。请先安装插件所需运行环境后重试", entry.name)
+		}
 		if message == "" {
 			message = err.Error()
 		}

@@ -99,6 +99,42 @@ func TestRepairPM2CreatesRunnableProductionEntryAndConfig(t *testing.T) {
 	}
 }
 
+func TestPackageManagerCommandFallsBackToNPXWithoutGlobalYarn(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "yarn.lock"), []byte("# lock\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", "")
+	command, notice := PackageManagerCommand(root, "install")
+	if command.Args[0] != "npx" || !strings.Contains(strings.Join(command.Args, " "), "yarn@1.22.22 install") {
+		t.Fatalf("fallback command = %#v", command.Args)
+	}
+	if !strings.Contains(notice, "不会修改电脑的全局安装") {
+		t.Fatalf("fallback notice = %q", notice)
+	}
+}
+
+func TestRunReportsMissingNodeEnvironmentWithoutRawExecError(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("PATH", "")
+	_, err := run(root, "npx", "--version")
+	if err == nil || !strings.Contains(err.Error(), "Node.js") {
+		t.Fatalf("npx error = %v, want Node.js guidance", err)
+	}
+	if strings.Contains(err.Error(), "executable file not found") {
+		t.Fatalf("npx error leaked raw exec error: %q", err)
+	}
+}
+
+func TestPermissionAdviceStaysInWebOperationFlow(t *testing.T) {
+	message := permissionAdvice("保存 alemon.config.yaml").Error()
+	for _, expected := range []string{"没有权限", "系统设置", "albs"} {
+		if !strings.Contains(message, expected) {
+			t.Fatalf("permission advice = %q, missing %q", message, expected)
+		}
+	}
+}
+
 func TestPM2LogPaginationStartsWithNewestPage(t *testing.T) {
 	lines := make([]string, 241)
 	for index := range lines {

@@ -62,3 +62,15 @@ func TestDevelopmentTemplatePackagesFollowSelections(t *testing.T) {
 		t.Errorf("non-image help template = %q, %v", help, err)
 	}
 }
+
+func TestCreateCommandReportsMissingEnvironmentClearly(t *testing.T) {
+	t.Setenv("PATH", "")
+	logs := []string{}
+	err := run(t.TempDir(), &logs, "git", "--version")
+	if err == nil || !strings.Contains(err.Error(), "左上角“环境”") {
+		t.Fatalf("run error = %v, want Git installation guidance", err)
+	}
+	if strings.Contains(err.Error(), "executable file not found") {
+		t.Fatalf("run error leaked raw exec error: %q", err)
+	}
+}

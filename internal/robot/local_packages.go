@@ -16,6 +16,9 @@ func installLocalPackage(root, source string) (Result, error) {
 	}
 	directory := filepath.Join(root, "packages")
 	if err := os.MkdirAll(directory, 0755); err != nil {
+		if permissionError(err) {
+			return Result{}, permissionAdvice("创建 packages 目录")
+		}
 		return Result{}, fmt.Errorf("无法创建 packages 目录：%w", err)
 	}
 	name := localPackageName(source)
@@ -73,19 +76,19 @@ func installLocalPackage(root, source string) (Result, error) {
 // unpacked into packages/: Yarn owns node_modules and package.json so the
 // selected adapter can participate in the robot runtime.
 func installConnectionPackage(root, source string) (Result, error) {
-	output, err := run(root, "yarn", "add", source)
+	output, err := runNamedPackageManager(root, "yarn", "add", source)
 	if err != nil {
 		return Result{Path: root, Output: output}, fmt.Errorf("安装连接包失败：%w", err)
 	}
-	return Result{Path: root, Output: "已通过 yarn 添加连接依赖 " + source + "。\n" + output}, nil
+	return Result{Path: root, Output: "已添加连接依赖 " + source + "。\n" + output}, nil
 }
 
 func removeConnectionPackage(root, source string) (Result, error) {
-	output, err := run(root, "yarn", "remove", source)
+	output, err := runNamedPackageManager(root, "yarn", "remove", source)
 	if err != nil {
 		return Result{Path: root, Output: output}, fmt.Errorf("卸载连接包失败：%w", err)
 	}
-	return Result{Path: root, Output: "已通过 yarn 移除连接依赖 " + source + "。\n" + output}, nil
+	return Result{Path: root, Output: "已移除连接依赖 " + source + "。\n" + output}, nil
 }
 
 func ensurePackagesWorkspace(root string) error {
@@ -116,6 +119,9 @@ func ensurePackagesWorkspace(root string) error {
 		return err
 	}
 	if err := os.WriteFile(manifest, append(updated, '\n'), 0644); err != nil {
+		if permissionError(err) {
+			return permissionAdvice("保存 packages 工作区配置")
+		}
 		return fmt.Errorf("无法写入 packages 工作区配置：%w", err)
 	}
 	return nil

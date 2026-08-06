@@ -263,13 +263,13 @@ func GitPublish(root, version, sourceCommit string, confirmed bool) (Result, err
 	defer gitRun(path, "worktree", "remove", "--force", sourceWorktree)
 	manager := projectPackageManager(sourceWorktree)
 	logs = append(logs, "安装 "+manager+" 依赖")
-	output, err = run(sourceWorktree, manager, "install")
+	output, err = runPackageManager(sourceWorktree, "install")
 	logs = append(logs, output)
 	if err != nil {
 		return Result{Path: path, Output: strings.Join(logs, "\n")}, fmt.Errorf("安装构建依赖失败：%w", err)
 	}
 	logs = append(logs, "开始构建 "+status.PackageName)
-	output, err = run(sourceWorktree, manager, "run", "build")
+	output, err = runPackageManager(sourceWorktree, "run", "build")
 	logs = append(logs, output)
 	if err != nil {
 		return Result{Path: path, Output: strings.Join(logs, "\n")}, fmt.Errorf("构建失败：%w", err)

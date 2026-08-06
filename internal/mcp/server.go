@@ -802,12 +802,16 @@ func (s *Server) startDevelopment(root string) operationTask {
 		s.mu.Unlock()
 		return task
 	}
-	manager := "npm"
-	if _, err := os.Stat(filepath.Join(root, "yarn.lock")); err == nil {
-		manager = "yarn"
+	command, err := s.robots.DevelopmentCommand(root)
+	if err != nil {
+		task.Status, task.Error = "failed", err.Error()
+		finished := time.Now().UTC()
+		task.FinishedAt = &finished
+		s.mu.Lock()
+		s.tasks[id] = task
+		s.mu.Unlock()
+		return task
 	}
-	command := exec.Command(manager, "run", "dev")
-	command.Dir = root
 	var output bytes.Buffer
 	command.Stdout, command.Stderr = &output, &output
 	if err := command.Start(); err != nil {

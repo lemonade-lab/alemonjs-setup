@@ -34,6 +34,7 @@ type Update struct {
 	DownloadURL     string `json:"downloadUrl,omitempty"`
 	AssetName       string `json:"assetName,omitempty"`
 	PlatformMatched bool   `json:"platformMatched"`
+	DownloadReady   bool   `json:"downloadReady"`
 }
 
 func SetupUpdate(current string) (Update, error) {

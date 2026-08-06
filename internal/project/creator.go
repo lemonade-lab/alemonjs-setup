@@ -62,7 +62,7 @@ func (c *Creator) Create(config Config) (Result, error) {
 	}
 	if info, err := os.Stat(config.Destination); err != nil {
 		if isPermissionError(err) {
-			return c.createWithPrivileges(config)
+			return Result{}, permissionAdvice("访问所选保存位置")
 		}
 		return Result{}, errors.New("保存位置不存在或不是文件夹，请重新选择")
 	} else if !info.IsDir() {
@@ -70,7 +70,7 @@ func (c *Creator) Create(config Config) (Result, error) {
 	}
 	if err := ensureWritableDirectory(config.Destination); err != nil {
 		if isPermissionError(err) {
-			return c.createWithPrivileges(config)
+			return Result{}, permissionAdvice("在所选保存位置创建项目")
 		}
 		return Result{}, err
 	}
@@ -95,22 +95,30 @@ func (c *Creator) Create(config Config) (Result, error) {
 	log("已按你的选择配置项目。")
 
 	packageCommand := config.PackageManager
-	if config.PackageManager == "yarn" {
-		if _, err := exec.LookPath("yarn"); err != nil {
-			// Global npm installation commonly fails for non-admin users. Use an
-			// ephemeral npx invocation instead, leaving the user's system intact.
-			log("未找到 Yarn，临时使用 npm 下载 Yarn；不会修改电脑的全局安装。")
+	packageName := ""
+	if _, err := exec.LookPath(config.PackageManager); err != nil {
+		// Do not try `npm install --global`: that commonly needs administrator
+		// rights. npx is scoped to this one command and keeps a new machine
+		// usable without modifying its global package directory.
+		switch config.PackageManager {
+		case "yarn":
+			packageName = "yarn@1.22.22"
+		case "pnpm":
+			packageName = "pnpm@latest"
+		}
+		if packageName != "" {
+			log("未找到 " + strings.ToUpper(config.PackageManager) + "，临时使用 npm 下载并执行；不会修改电脑的全局安装。")
 			packageCommand = "npx"
 		}
 	}
 	log("正在安装项目依赖…")
 	install := map[string][]string{"yarn": {"install"}, "npm": {"install"}, "pnpm": {"install"}}[config.PackageManager]
 	if packageCommand == "npx" {
-		install = append([]string{"--yes", "yarn@1.22.22"}, install...)
+		install = append([]string{"--yes", packageName}, install...)
 	}
 	if err := run(path, &result.Logs, packageCommand, install...); err != nil {
 		if packageCommand == "npx" {
-			return result, fmt.Errorf("临时使用 Yarn 安装依赖失败；请返回“包管理器”步骤选择 npm 后重试：%w", err)
+			return result, fmt.Errorf("临时使用 %s 安装依赖失败；请确认 Node.js 已安装，或返回“包管理器”步骤选择 npm 后重试：%w", strings.ToUpper(config.PackageManager), err)
 		}
 		return result, fmt.Errorf("安装项目依赖失败：%w", err)
 	}
@@ -398,18 +406,14 @@ func run(directory string, logs *[]string, name string, args ...string) error {
 		*logs = append(*logs, line)
 	}
 	if err != nil {
-		if os.IsPermission(err) || strings.Contains(strings.ToLower(line), "eacces") || strings.Contains(strings.ToLower(line), "permission denied") {
-			elevated, elevatedErr := system.RunWithPrivileges(directory, nil, name, args...)
-			if elevatedErr == nil {
-				if elevated = strings.TrimSpace(elevated); elevated != "" {
-					*logs = append(*logs, elevated)
-				}
-				return nil
-			}
-			if elevated != "" {
-				*logs = append(*logs, strings.TrimSpace(elevated))
-			}
-			return fmt.Errorf("%s %s：当前用户权限不足，系统权限申请未完成：%w", name, strings.Join(args, " "), elevatedErr)
+		if isPermissionError(err) || isPermissionError(errors.New(line)) {
+			return permissionAdvice("执行 " + filepath.Base(name))
+		}
+		if commandNotFound(err, line) {
+			return missingCommandAdvice(filepath.Base(name))
+		}
+		if line != "" {
+			return fmt.Errorf("%s：%w", line, err)
 		}
 		return fmt.Errorf("%s %s：%w", name, strings.Join(args, " "), err)
 	}
@@ -437,4 +441,27 @@ func ensureWritableDirectory(directory string) error {
 
 func isPermissionError(err error) bool {
 	return os.IsPermission(err) || strings.Contains(strings.ToLower(err.Error()), "permission denied") || strings.Contains(strings.ToLower(err.Error()), "eacces")
+}
+
+func permissionAdvice(action string) error {
+	return fmt.Errorf("没有权限%s。请在系统设置中为 albs 授予该磁盘或文件夹的访问权限，或选择当前登录账户可读写的保存位置后重试", action)
+}
+
+func commandNotFound(err error, output string) bool {
+	if errors.Is(err, exec.ErrNotFound) {
+		return true
+	}
+	text := strings.ToLower(err.Error() + "\n" + output)
+	return strings.Contains(text, "executable file not found") || strings.Contains(text, "command not found") || strings.Contains(text, "is not recognized as an internal or external command")
+}
+
+func missingCommandAdvice(name string) error {
+	switch strings.ToLower(name) {
+	case "node", "npm", "npx", "yarn", "pnpm":
+		return errors.New("未检测到 Node.js 运行环境（含 npm/npx）。请先在左上角“环境”中安装 Node.js LTS，完成后重新创建项目")
+	case "git":
+		return errors.New("未检测到 Git。请先在左上角“环境”中安装 Git，完成后重新创建项目")
+	default:
+		return fmt.Errorf("未检测到 %s 命令。请安装对应的系统工具后重新创建项目", name)
+	}
 }

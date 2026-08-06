@@ -42,7 +42,10 @@ func (c *Checker) CheckGoal(goalID, variant string) Report {
 		// Mobile installation is completed on the phone; the desktop app only checks host support.
 	case "build":
 		if variant == "git" {
-			checks = append(checks, c.command("node", "Node.js", "--version", "请安装 Node.js LTS 版本后重新检查。"), c.command("git", "Git", "--version", "请安装 Git 后重新检查。"), c.command("yarn", "Yarn", "--version", "请安装 Yarn 后重新检查。"), c.command("jq", "jq", "--version", "请安装 jq 后重新检查。"))
+			// Git 发布实际只需要 Node.js 与 Git。Yarn/PNPM 会在执行时
+			// 通过 npx 临时运行，jq 也没有参与当前发布链路，不能把它们
+			// 误报为新用户必须全局安装的环境。
+			checks = append(checks, c.command("node", "Node.js", "--version", "请安装 Node.js LTS 版本后重新检查。"), c.command("git", "Git", "--version", "请安装 Git 后重新检查。"))
 		} else {
 			checks = append(checks, c.command("node", "Node.js", "--version", "请安装 Node.js LTS 版本后重新检查。"), c.command("npm", "npm", "--version", "请随 Node.js 一并安装 npm 后重新检查。"))
 		}

@@ -3,6 +3,7 @@ import { useDispatch, useSelector } from 'react-redux'
 import Markdown from 'markdown-to-jsx'
 import {
   Archive,
+  Bot,
   ArrowLeft,
   ArrowRight,
   Check,
@@ -12,6 +13,7 @@ import {
   Eye,
   EyeOff,
   Folder,
+  HardDrive,
   GitBranch,
   Link,
   Network,
@@ -32,6 +34,7 @@ import { EnvConfigForm } from './EnvConfigForm'
 import { NpmPublishPanel } from './NpmPublishPanel'
 import { PackageManifestPanel } from './PackageManifestPanel'
 import { SetupUpdateButton } from './SetupUpdateButton'
+import { AIChatPage } from './AIControl'
 import { ErrorNotice } from './ErrorNotice'
 import { ConfirmDialog } from './ConfirmDialog'
 import { AuthControl } from './AuthControl'
@@ -188,12 +191,15 @@ export function DirectoryPicker({
     path: string
     parent: string
     roots: string[]
+    locations: Array<{ name: string; path: string; kind: 'home' | 'disk' | 'volume' }>
     directories: Directory[]
   }
   const [path, setPath] = useState('')
   const [query, setQuery] = useState('')
   const [hidden, setHidden] = useState(false)
   const [data, setData] = useState<DirectoryData | null>(null)
+  const [directoryError, setDirectoryError] = useState('')
+  const [directoryReload, setDirectoryReload] = useState(0)
   const [selected, setSelected] = useState<string[]>([])
   const [history, setHistory] = useState<string[]>([])
   const [historyIndex, setHistoryIndex] = useState(-1)
@@ -219,11 +225,20 @@ export function DirectoryPicker({
     })
       .then(async response => {
         const body = await response.text()
-        if (!response.ok) throw new Error(body || '目录无法读取。')
+        if (!response.ok) {
+          try {
+            const payload = JSON.parse(body) as { error?: string }
+            throw new Error(payload.error || '目录无法读取。')
+          } catch (reason) {
+            if (reason instanceof Error) throw reason
+            throw new Error('目录无法读取。')
+          }
+        }
         return JSON.parse(body) as DirectoryData
       })
       .then(result => {
         setData(result)
+        setDirectoryError('')
         if (!path) {
           setPath(result.path)
           setHistory([result.path])
@@ -231,11 +246,12 @@ export function DirectoryPicker({
         }
       })
       .catch((reason: unknown) => {
-        if (!(reason instanceof DOMException && reason.name === 'AbortError'))
-          setData(null)
+        if (!(reason instanceof DOMException && reason.name === 'AbortError')) {
+          setDirectoryError(reason instanceof Error ? reason.message : '目录无法读取。')
+        }
       })
     return () => controller.abort()
-  }, [hidden, open, path])
+  }, [directoryReload, hidden, open, path])
   if (!open) return null
   const items = (data?.directories ?? []).filter(item =>
     item.name.toLowerCase().includes(query.toLowerCase())
@@ -256,7 +272,7 @@ export function DirectoryPicker({
       path: `${home}/${name}`
     }))
   ]
-  const otherRoots = (data?.roots ?? []).filter(root => root !== home)
+  const locations = data?.locations ?? []
   const goHistory = (step: number) => {
     const target = history[historyIndex + step]
     if (target) {
@@ -331,17 +347,18 @@ export function DirectoryPicker({
                 {item.name}
               </button>
             ))}
-            {otherRoots.length > 0 && (
+            {locations.length > 0 && (
               <>
-                <small>位置</small>
-                {otherRoots.map(root => (
+                <small>磁盘与位置</small>
+                {locations.map(location => (
                   <button
-                    className={root === data?.path ? 'active' : ''}
-                    key={root}
-                    onClick={() => visit(root)}
+                    className={location.path === data?.path ? 'active' : ''}
+                    key={location.path}
+                    onClick={() => visit(location.path)}
+                    title={location.path}
                   >
-                    <Folder />
-                    {root.split('/').filter(Boolean).pop() || root}
+                    {location.kind === 'home' ? <Folder /> : <HardDrive />}
+                    {location.name}
                   </button>
                 ))}
               </>
@@ -353,6 +370,7 @@ export function DirectoryPicker({
               <span>种类</span>
             </header>
             <div className="directory-picker-list">
+              {directoryError && <div className="directory-picker-error"><strong>需要访问授权</strong><span>{directoryError}</span><button className="secondary-button" onClick={() => setDirectoryReload(current => current + 1)}>重试</button></div>}
               {items.map(item => (
                 <button
                   className={selected.includes(item.path) ? 'selected' : ''}
@@ -422,6 +440,7 @@ export function Dashboard({
   const [pendingBackpackRemoval, setPendingBackpackRemoval] = useState('')
   const [trackRuntimeTasks, setTrackRuntimeTasks] = useState(false)
   const [activeWebViewID, setActiveWebViewID] = useState('')
+  const [aiOpen, setAIOpen] = useState(false)
   const environmentChecked = useRef(false)
   const dispatch = useDispatch()
   const projects = useSelector(
@@ -759,8 +778,15 @@ export function Dashboard({
     setOutput('')
   }
 
-  function openSection(nextSection: Section) {
+  // AI and an installed plugin WebView are content pages, not overlays. Any
+  // normal navigation must leave them first so the control card always works.
+  function closeTemporaryContentPage() {
+    setAIOpen(false)
     setActiveWebViewID('')
+  }
+
+  function openSection(nextSection: Section) {
+    closeTemporaryContentPage()
     setSection(nextSection)
     setOutput('')
     if (nextSection === 'npmrc') {
@@ -778,13 +804,21 @@ export function Dashboard({
     api('GET', { root, file: 'alemon.config.yaml' })
   }
   function selectPage(nextPage: Page) {
-    setActiveWebViewID('')
+    closeTemporaryContentPage()
     setSystemFeature(null)
     setPage(nextPage)
     setCatalogItem(null)
     setOutput('')
   }
+  function openAI() {
+    closeTemporaryContentPage()
+    setSystemFeature(null)
+    setPage('robot')
+    setAIOpen(true)
+    setOutput('')
+  }
   function selectSystemFeature(nextFeature: SystemFeature) {
+    closeTemporaryContentPage()
     setSystemFeature(nextFeature)
     setOutput('')
   }
@@ -793,7 +827,7 @@ export function Dashboard({
     catalog.find(group => group.title === catalogTitle) ?? catalog[0]
   const readyCount =
     report?.checks.filter(item => item.status === 'ready').length ?? 0
-  const robotContent = (
+  const robotContent = aiOpen ? <AIChatPage root={root} /> : (
     <section className="workspace-content">
       {section === 'backpack' && (
         <BackpackPanel
@@ -987,7 +1021,6 @@ export function Dashboard({
           <RobotPluginWebView
             root={root}
             entry={activeWebView}
-            onClose={() => setActiveWebViewID('')}
           />
         ) : (
           <>
@@ -1186,6 +1219,7 @@ export function Dashboard({
               onClone={() => setGitCloneOpen(true)}
               onSelect={id => {
                 dispatch(selectProject(id))
+                closeTemporaryContentPage()
                 setSystemFeature(null)
                 setPage('robot')
                 setSection('config')
@@ -1209,7 +1243,11 @@ export function Dashboard({
                   activeWebViewID={activeWebViewID}
                   developerMode={developerMode}
                   onOpenConsole={() => setConsoleOpen(true)}
-                  onOpenWebView={id => setActiveWebViewID(id)}
+                  onOpenAI={openAI}
+                  onOpenWebView={id => {
+                    closeTemporaryContentPage()
+                    setActiveWebViewID(id)
+                  }}
                   onPage={selectPage}
                   onSection={openSection}
                   onBuildMode={mode => {
@@ -3352,11 +3390,9 @@ function RuntimePanel({
 function RobotPluginWebView({
   root,
   entry,
-  onClose
 }: {
   root: string
   entry: RobotWebView
-  onClose: () => void
 }) {
   const [reloadKey, setReloadKey] = useState(0)
   const [loading, setLoading] = useState(true)
@@ -3373,9 +3409,6 @@ function RobotPluginWebView({
     <section className="workspace-content robot-plugin-webview">
       <header>
         <div>
-          <button className="text-button" onClick={onClose}>
-            ‹ 返回机器人
-          </button>
           <span>{entry.package}</span>
         </div>
         <div className="robot-plugin-webview-actions">
@@ -3419,6 +3452,7 @@ function ControlCard({
   activeWebViewID,
   developerMode,
   onOpenConsole,
+  onOpenAI,
   onOpenWebView,
   onPage,
   onSection,
@@ -3436,6 +3470,7 @@ function ControlCard({
   activeWebViewID: string
   developerMode: boolean
   onOpenConsole: () => void
+  onOpenAI: () => void
   onOpenWebView: (id: string) => void
   onPage: (page: Page) => void
   onSection: (section: Section) => void
@@ -3552,6 +3587,7 @@ function ControlCard({
             >
               <Terminal />
             </button>
+            <button className="icon-button" onClick={onOpenAI} aria-label="打开编程对话" title="编程对话"><Bot /></button>
           </footer>
         )}
       </section>
@@ -3722,6 +3758,7 @@ function OperationLog({
   failed: boolean
   onClose: () => void
 }) {
+  const needsPermission = failed && /没有权限|访问权限|permission denied|eacces/i.test(output)
   return (
     <aside
       className={`robot-output ${failed ? 'failed' : 'completed'}`}
@@ -3731,14 +3768,14 @@ function OperationLog({
       <header>
         <div>
           <i>{failed ? '!' : '✓'}</i>
-          <strong>{failed ? '操作未完成' : '操作已完成'}</strong>
+          <strong>{needsPermission ? '需要访问授权' : failed ? '操作未完成' : '操作已完成'}</strong>
         </div>
         <button onClick={onClose} aria-label="关闭操作结果">
           ×
         </button>
       </header>
       <pre>{output}</pre>
-      <small>完整记录可在右上角的任务按钮中查看。</small>
+      <small>{needsPermission ? '授权完成后，请回到这里重新执行本次操作。' : '完整记录可在右上角的任务按钮中查看。'}</small>
     </aside>
   )
 }

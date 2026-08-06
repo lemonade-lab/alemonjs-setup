@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -22,6 +23,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"alemonjs-setup/internal/access"
+	"alemonjs-setup/internal/ai"
 	"alemonjs-setup/internal/catalog"
 	"alemonjs-setup/internal/project"
 	"alemonjs-setup/internal/releases"
@@ -77,6 +79,7 @@ type server struct {
 	robots         robot.Manager
 	plugins        setupplugin.Registry
 	auth           *access.Manager
+	ai             *ai.Manager
 	mu             sync.RWMutex
 	tasks          []task
 	operations     []operationTask
@@ -120,7 +123,11 @@ func NewServerWithAuth(version string, staticFiles fs.FS, identity *access.Manag
 	if err != nil {
 		panic(err)
 	}
-	s := &server{version: version, assets: assets, static: http.FileServer(http.FS(assets)), checker: system.NewChecker(), plugins: setupplugin.NewRegistry(), auth: identity, development: map[string]developmentProcess{}, stopping: map[string]bool{}, directoryRoots: managedDirectoryRoots()}
+	aiManager, err := ai.New()
+	if err != nil {
+		panic(err)
+	}
+	s := &server{version: version, assets: assets, static: http.FileServer(http.FS(assets)), checker: system.NewChecker(), plugins: setupplugin.NewRegistry(), auth: identity, ai: aiManager, development: map[string]developmentProcess{}, stopping: map[string]bool{}, directoryRoots: managedDirectoryRoots()}
 	if len(templateFiles) > 0 {
 		templates, err := fs.Sub(templateFiles[0], "templates")
 		if err != nil {
@@ -141,6 +148,11 @@ func NewServerWithAuth(version string, staticFiles fs.FS, identity *access.Manag
 	mux.HandleFunc("/api/v1/projects", s.projectsHandler)
 	mux.HandleFunc("/api/v1/releases", s.releasesHandler)
 	mux.HandleFunc("/api/v1/update", s.updateHandler)
+	mux.HandleFunc("/api/v1/update/download", s.downloadUpdateHandler)
+	mux.HandleFunc("/api/v1/update/apply", s.applyUpdateHandler)
+	mux.HandleFunc("/api/v1/update/load", s.loadUpdateHandler)
+	mux.HandleFunc("/api/v1/ai/providers", s.aiProvidersHandler)
+	mux.HandleFunc("/api/v1/ai/chat", s.aiChatHandler)
 	mux.HandleFunc("/api/v1/system/ssh", s.sshHandler)
 	mux.HandleFunc("/api/v1/directories", s.directoryHandler)
 	mux.HandleFunc("/api/v1/catalog", s.catalogHandler)
@@ -464,13 +476,18 @@ func (s *server) directoryHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "该操作暂不支持。")
 		return
 	}
-	path, err := s.managedDirectory(r.URL.Query().Get("path"))
+	roots := s.currentDirectoryRoots()
+	path, err := managedDirectory(r.URL.Query().Get("path"), roots)
 	if err != nil {
 		writeError(w, http.StatusForbidden, err.Error())
 		return
 	}
 	entries, err := os.ReadDir(path)
 	if err != nil {
+		if os.IsPermission(err) {
+			writeJSON(w, http.StatusForbidden, map[string]any{"error": "没有读取此位置的权限。请在系统设置中为 albs 授予“文件与文件夹”或“完全磁盘访问”权限，然后重试。", "permission": true})
+			return
+		}
 		writeError(w, http.StatusBadRequest, "无法读取该目录")
 		return
 	}
@@ -487,7 +504,7 @@ func (s *server) directoryHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	sort.Slice(directories, func(i, j int) bool { return directories[i].Name < directories[j].Name })
 	parent := ""
-	for _, root := range s.directoryRoots {
+	for _, root := range roots {
 		if filepath.Clean(path) != filepath.Clean(root) {
 			if next := filepath.Dir(path); isWithinRoot(next, root) {
 				parent = next
@@ -495,16 +512,26 @@ func (s *server) directoryHandler(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"path": path, "parent": parent, "roots": s.directoryRoots, "directories": directories})
+	writeJSON(w, http.StatusOK, map[string]any{"path": path, "parent": parent, "roots": roots, "locations": directoryLocations(roots), "directories": directories})
 }
 
 func managedDirectoryRoots() []string {
 	value := os.Getenv("ALEMONJS_SETUP_ROOTS")
 	if value == "" {
+		roots := []string{}
 		if home, err := os.UserHomeDir(); err == nil {
-			return []string{home}
+			roots = append(roots, home)
 		}
-		return []string{"/"}
+		if runtime.GOOS != "windows" {
+			roots = appendDirectoryRoot(roots, string(filepath.Separator))
+		}
+		for _, mount := range mountedDirectoryRoots() {
+			roots = appendDirectoryRoot(roots, mount)
+		}
+		if len(roots) == 0 {
+			return []string{"/"}
+		}
+		return roots
 	}
 	roots := []string{}
 	for _, item := range filepath.SplitList(value) {
@@ -515,16 +542,98 @@ func managedDirectoryRoots() []string {
 	return roots
 }
 
+func appendDirectoryRoot(roots []string, path string) []string {
+	path = filepath.Clean(path)
+	for _, root := range roots {
+		if root == path {
+			return roots
+		}
+	}
+	if info, err := os.Stat(path); err == nil && info.IsDir() {
+		return append(roots, path)
+	}
+	return roots
+}
+
+func mountedDirectoryRoots() []string {
+	var base []string
+	switch runtime.GOOS {
+	case "darwin":
+		base = []string{"/Volumes"}
+	case "linux":
+		if home, err := os.UserHomeDir(); err == nil {
+			base = []string{"/media/" + filepath.Base(home), "/run/media/" + filepath.Base(home), "/mnt"}
+		}
+	case "windows":
+		for drive := 'A'; drive <= 'Z'; drive++ {
+			base = append(base, string(drive)+":\\")
+		}
+	}
+	roots := []string{}
+	for _, parent := range base {
+		if runtime.GOOS == "windows" {
+			roots = appendDirectoryRoot(roots, parent)
+			continue
+		}
+		entries, err := os.ReadDir(parent)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			if entry.IsDir() {
+				roots = appendDirectoryRoot(roots, filepath.Join(parent, entry.Name()))
+			}
+		}
+	}
+	return roots
+}
+
+func directoryLocations(roots []string) []map[string]string {
+	home, _ := os.UserHomeDir()
+	items := make([]map[string]string, 0, len(roots))
+	for _, root := range roots {
+		name, kind := filepath.Base(root), "disk"
+		if filepath.Clean(root) == filepath.Clean(home) {
+			name, kind = "主目录", "home"
+		}
+		if filepath.Clean(root) == string(filepath.Separator) {
+			name = "系统磁盘"
+		}
+		if runtime.GOOS == "darwin" && strings.HasPrefix(filepath.Clean(root), "/Volumes/") {
+			kind = "volume"
+		}
+		if runtime.GOOS == "linux" && (strings.HasPrefix(root, "/media/") || strings.HasPrefix(root, "/run/media/")) {
+			kind = "volume"
+		}
+		if runtime.GOOS == "windows" {
+			kind = "volume"
+		}
+		items = append(items, map[string]string{"name": name, "path": root, "kind": kind})
+	}
+	return items
+}
+
+func (s *server) currentDirectoryRoots() []string {
+	if os.Getenv("ALEMONJS_SETUP_ROOTS") != "" {
+		return s.directoryRoots
+	}
+	return managedDirectoryRoots()
+}
+
 func (s *server) managedDirectory(requested string) (string, error) {
+	return managedDirectory(requested, s.currentDirectoryRoots())
+}
+
+func managedDirectory(requested string, roots []string) (string, error) {
 	path := requested
 	if path == "" {
-		path = s.directoryRoots[0]
+		path = roots[0]
 	}
 	absolute, err := filepath.Abs(path)
 	if err != nil {
 		return "", err
 	}
-	for _, root := range s.directoryRoots {
+	for _, root := range roots {
 		if isWithinRoot(absolute, root) {
 			return absolute, nil
 		}
@@ -560,7 +669,185 @@ func (s *server) updateHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
+	if update.Available && update.PlatformMatched {
+		_, update.DownloadReady, err = system.CachedUpdate(update.AssetName)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
 	writeJSON(w, http.StatusOK, update)
+}
+
+func (s *server) aiProvidersHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		items, err := s.ai.List()
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, items)
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "该操作暂不支持。")
+		return
+	}
+	var input struct{ Provider, BaseURL, Model, APIKey string }
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		writeError(w, http.StatusBadRequest, "AI 配置无法识别。")
+		return
+	}
+	if err := s.ai.Save(input.Provider, input.BaseURL, input.Model, input.APIKey); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"output": "AI 配置已仅保存到本机。"})
+}
+
+func (s *server) aiChatHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "该操作暂不支持。")
+		return
+	}
+	var input struct {
+		Provider string              `json:"provider"`
+		Messages []map[string]string `json:"messages"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&input); err != nil || len(input.Messages) == 0 {
+		writeError(w, http.StatusBadRequest, "请填写要发送的消息。")
+		return
+	}
+	if len(input.Messages) > 30 {
+		writeError(w, http.StatusBadRequest, "一次对话最多保留 30 条消息。")
+		return
+	}
+	answer, err := s.ai.Chat(input.Provider, input.Messages)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"answer": answer})
+}
+
+// downloadUpdateHandler downloads the exact asset selected by the server's
+// current-version/platform check. The browser never supplies an arbitrary URL.
+func (s *server) downloadUpdateHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "该操作暂不支持。")
+		return
+	}
+	update, err := releases.SetupUpdate(s.version)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	if !update.Available {
+		writeError(w, http.StatusBadRequest, "当前已经是最新版本。")
+		return
+	}
+	if !update.PlatformMatched {
+		writeError(w, http.StatusBadRequest, "未找到当前系统对应的更新包，请使用手动更新。")
+		return
+	}
+	if _, err := system.DownloadUpdate(update.DownloadURL, update.AssetName); err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"output": "更新包已下载完成。确认后将立即更新并重启应用。", "assetName": update.AssetName})
+}
+
+func (s *server) applyUpdateHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "该操作暂不支持。")
+		return
+	}
+	var input struct {
+		Confirm bool `json:"confirm"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil || !input.Confirm {
+		writeError(w, http.StatusBadRequest, "请确认立即更新并重启应用。")
+		return
+	}
+	update, err := releases.SetupUpdate(s.version)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	if !update.Available || !update.PlatformMatched {
+		writeError(w, http.StatusBadRequest, "当前没有可立即安装的更新。")
+		return
+	}
+	path, ready, err := system.CachedUpdate(update.AssetName)
+	if err != nil || !ready {
+		writeError(w, http.StatusBadRequest, "更新包尚未下载完成，请先下载。")
+		return
+	}
+	result, err := system.ReplaceExecutableFile(path)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := system.ScheduleRestart(); err != nil {
+		writeError(w, http.StatusInternalServerError, "更新已完成，但无法自动重启："+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"output": result + " 正在重启应用。"})
+	go func() {
+		time.Sleep(350 * time.Millisecond)
+		os.Exit(0)
+	}()
+}
+
+func (s *server) loadUpdateHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "该操作暂不支持。")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 200<<20)
+	if err := r.ParseMultipartForm(200 << 20); err != nil {
+		writeError(w, http.StatusBadRequest, "更新包无效或超过 200 MB。")
+		return
+	}
+	if r.FormValue("confirm") != "true" {
+		writeError(w, http.StatusBadRequest, "请确认载入更新包。")
+		return
+	}
+	file, header, err := r.FormFile("package")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "请选择更新包。")
+		return
+	}
+	defer file.Close()
+	lower := strings.ToLower(header.Filename)
+	if !strings.HasSuffix(lower, ".zip") && !strings.HasSuffix(lower, ".tar.gz") && !strings.HasSuffix(lower, ".tgz") {
+		writeError(w, http.StatusBadRequest, "更新包应为 GitHub Release 下载的 zip 或 tar.gz 文件。")
+		return
+	}
+	directory, err := os.MkdirTemp("", "albs-upload-")
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	defer os.RemoveAll(directory)
+	path := filepath.Join(directory, filepath.Base(header.Filename))
+	output, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	_, copyErr := io.Copy(output, file)
+	closeErr := output.Close()
+	if copyErr != nil || closeErr != nil {
+		writeError(w, http.StatusBadRequest, "无法读取更新包。")
+		return
+	}
+	result, err := system.ReplaceExecutableFile(path)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"output": result})
 }
 
 func (s *server) robotHandler(w http.ResponseWriter, r *http.Request) {

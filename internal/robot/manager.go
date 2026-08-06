@@ -280,6 +280,9 @@ func (Manager) WriteProjectFile(root, name, content string) (Result, error) {
 		return Result{}, err
 	}
 	if _, err := os.Stat(filepath.Dir(path)); err != nil {
+		if permissionError(err) {
+			return Result{}, permissionAdvice("访问 " + filepath.Dir(name))
+		}
 		return Result{}, errors.New("目标目录不存在；MCP 不会自动创建目录")
 	}
 	if info, err := os.Lstat(path); err == nil && (!info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0) {
@@ -288,6 +291,9 @@ func (Manager) WriteProjectFile(root, name, content string) (Result, error) {
 		return Result{}, fmt.Errorf("无法检查目标文件：%w", err)
 	}
 	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		if permissionError(err) {
+			return Result{}, permissionAdvice("保存 " + filepath.Base(path))
+		}
 		return Result{}, fmt.Errorf("保存失败：%w", err)
 	}
 	return Result{Path: path, Output: "已保存。"}, nil
@@ -581,9 +587,12 @@ func (Manager) scriptCommand(root, script string) (*exec.Cmd, error) {
 			return nil, err
 		}
 	}
-	manager := projectPackageManager(root)
-	command := exec.Command(manager, "run", script)
-	command.Dir = root
+	command, _ := PackageManagerCommand(root, "run", script)
+	if filepath.Base(command.Path) == "npx" {
+		if _, err := exec.LookPath("npx"); err != nil {
+			return nil, missingCommandAdvice("npx")
+		}
+	}
 	return command, nil
 }
 
@@ -626,11 +635,17 @@ func (Manager) RepairRuntime(root, mode string) (Result, error) {
 		config := filepath.Join(path, "pm2.config.cjs")
 		pm2Config := "const pm2 = globalThis.pm2;\n\nmodule.exports = pm2 || {\n  apps: [\n    {\n      name: 'alemonb',\n      script: 'node index.js',\n      env: {\n        NODE_ENV: 'production'\n      }\n    }\n  ]\n};\n"
 		if err := os.WriteFile(config, []byte(pm2Config), 0644); err != nil {
+			if permissionError(err) {
+				return Result{}, permissionAdvice("保存 PM2 配置")
+			}
 			return Result{}, fmt.Errorf("无法写入 PM2 配置：%w", err)
 		}
 		entry := filepath.Join(path, "index.js")
 		if _, statErr := os.Stat(entry); os.IsNotExist(statErr) {
 			if err := os.WriteFile(entry, []byte("import { start } from 'alemonjs';\n\nstart();\n"), 0644); err != nil {
+				if permissionError(err) {
+					return Result{}, permissionAdvice("保存生产入口")
+				}
 				return Result{}, fmt.Errorf("无法写入生产入口：%w", err)
 			}
 		}
@@ -640,6 +655,9 @@ func (Manager) RepairRuntime(root, mode string) (Result, error) {
 		return Result{}, err
 	}
 	if err := os.WriteFile(filepath.Join(path, "package.json"), append(encoded, '\n'), 0644); err != nil {
+		if permissionError(err) {
+			return Result{}, permissionAdvice("保存 package.json")
+		}
 		return Result{}, err
 	}
 	return Result{Path: path, Output: "已补齐运行脚本与配置，请安装依赖后重试。"}, nil
@@ -668,7 +686,7 @@ func (m Manager) Read(root, name string) (Result, error) {
 	path, err := file(root, name)
 	if err != nil {
 		if permissionError(err) {
-			return m.withPrivileges(privilegedRequest{Operation: "read", Root: root, File: name})
+			return Result{}, permissionAdvice("读取机器人目录")
 		}
 		return Result{}, err
 	}
@@ -681,7 +699,7 @@ func (m Manager) Read(root, name string) (Result, error) {
 			return Result{Path: path, Output: ""}, nil
 		}
 		if permissionError(err) {
-			return m.withPrivileges(privilegedRequest{Operation: "read", Root: root, File: name})
+			return Result{}, permissionAdvice("读取 " + filepath.Base(path))
 		}
 		return Result{}, fmt.Errorf("读取失败：%w", err)
 	}
@@ -691,25 +709,22 @@ func (m Manager) Write(root, name, content string) (Result, error) {
 	path, err := file(root, name)
 	if err != nil {
 		if permissionError(err) {
-			return m.withPrivileges(privilegedRequest{Operation: "write", Root: root, File: name, Content: content})
+			return Result{}, permissionAdvice("访问机器人目录")
 		}
 		return Result{}, err
 	}
 	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
-		if !os.IsPermission(err) {
+		if !permissionError(err) {
 			return Result{}, fmt.Errorf("保存 %s 失败：%w", filepath.Base(path), err)
 		}
-		if elevatedErr := system.WriteFileWithPrivileges(path, []byte(content)); elevatedErr != nil {
-			return Result{}, fmt.Errorf("当前用户没有写入 %s 的权限。请先允许系统权限提示；若这是服务器目录，请把项目交给当前用户管理后重试。详情：%w", filepath.Base(path), elevatedErr)
-		}
+		return Result{}, permissionAdvice("保存 " + filepath.Base(path))
 	}
 	return Result{Path: path, Output: "已保存。"}, nil
 }
 func (m Manager) Run(root, action, message, packageName, version, tag, token string, confirmed bool) (Result, error) {
-	request := privilegedRequest{Operation: "run", Root: root, Action: action, Message: message, PackageName: packageName, Version: version, Tag: tag, Token: token, Confirmed: confirmed}
 	if action == "git-release" {
 		if _, err := workspacePath(root); permissionError(err) {
-			return m.withPrivileges(request)
+			return Result{}, permissionAdvice("访问 Git 工作区")
 		}
 		// message carries the source commit selected in the Git publishing card.
 		// Keeping it on the existing task payload also preserves privileged runs.
@@ -717,7 +732,7 @@ func (m Manager) Run(root, action, message, packageName, version, tag, token str
 	}
 	if err := project(root); err != nil {
 		if permissionError(err) {
-			return m.withPrivileges(request)
+			return Result{}, permissionAdvice("访问机器人目录")
 		}
 		return Result{}, err
 	}
@@ -730,10 +745,7 @@ func (m Manager) Run(root, action, message, packageName, version, tag, token str
 			return Result{}, errors.New("项目依赖不完整：" + strings.Join(missing, "、") + "。请先执行“重载依赖”后再运行")
 		}
 	}
-	manager := "npm"
-	if _, err := os.Stat(filepath.Join(root, "yarn.lock")); err == nil {
-		manager = "yarn"
-	}
+	manager := projectPackageManager(root)
 	var name string
 	var args []string
 	switch action {
@@ -839,8 +851,14 @@ func (m Manager) Run(root, action, message, packageName, version, tag, token str
 	default:
 		return Result{}, errors.New("未知的机器人操作")
 	}
-	output, err := run(root, name, args...)
-	return Result{Path: root, Output: output}, err
+	var output string
+	var runErr error
+	if name == manager {
+		output, runErr = runPackageManager(root, args...)
+	} else {
+		output, runErr = run(root, name, args...)
+	}
+	return Result{Path: root, Output: output}, runErr
 }
 
 func allowedInstallPackage(name string) bool {
@@ -1028,6 +1046,14 @@ func permissionError(err error) bool {
 	text := strings.ToLower(err.Error())
 	return os.IsPermission(err) || strings.Contains(text, "eacces") || strings.Contains(text, "permission denied") || strings.Contains(text, "access is denied")
 }
+
+// permissionAdvice deliberately stays inside the web operation flow.  A
+// background install or save must never surprise a beginner with an operating
+// system administrator dialog.  The dashboard preserves this exact message in
+// its operation record and toast, alongside the directory picker guidance.
+func permissionAdvice(action string) error {
+	return fmt.Errorf("没有权限%s。请在系统设置中为 albs 授予该磁盘或文件夹的访问权限（macOS：\"文件与文件夹\"或\"完全磁盘访问\"），或选择当前登录账户可读写的目录后重试", action)
+}
 func file(root, name string) (string, error) {
 	if err := project(root); err != nil {
 		return "", err
@@ -1050,12 +1076,61 @@ func fixLegacyLvyScript(root string) error {
 		return nil
 	}
 	if err := os.WriteFile(path, []byte(fixed), 0644); err != nil {
+		if permissionError(err) {
+			return permissionAdvice("更新开发脚本")
+		}
 		return fmt.Errorf("无法更新开发脚本：%w", err)
 	}
 	return nil
 }
 func run(root, name string, args ...string) (string, error) {
 	return runWithEnv(root, nil, name, args...)
+}
+
+// PackageManagerCommand keeps a robot usable when its lock file requests a
+// package manager that is not globally installed. npx uses the npm bundled
+// with Node.js and needs no administrator write permission.
+func PackageManagerCommand(root string, args ...string) (*exec.Cmd, string) {
+	return packageManagerCommand(root, projectPackageManager(root), args...)
+}
+
+func packageManagerCommand(root, manager string, args ...string) (*exec.Cmd, string) {
+	if _, err := exec.LookPath(manager); err == nil {
+		command := exec.Command(manager, args...)
+		command.Dir = root
+		return command, ""
+	}
+	packageName := ""
+	switch manager {
+	case "yarn":
+		packageName = "yarn@1.22.22"
+	case "pnpm":
+		packageName = "pnpm@latest"
+	default:
+		command := exec.Command(manager, args...)
+		command.Dir = root
+		return command, ""
+	}
+	command := exec.Command("npx", append([]string{"--yes", packageName}, args...)...)
+	command.Dir = root
+	return command, "未找到 " + strings.ToUpper(manager) + "，临时通过 npm 获取并执行；不会修改电脑的全局安装。"
+}
+
+func runPackageManager(root string, args ...string) (string, error) {
+	return runNamedPackageManager(root, projectPackageManager(root), args...)
+}
+
+func runNamedPackageManager(root, manager string, args ...string) (string, error) {
+	command, notice := packageManagerCommand(root, manager, args...)
+	output, err := run(root, command.Path, command.Args[1:]...)
+	if notice != "" {
+		if output != "" {
+			output = notice + "\n" + output
+		} else {
+			output = notice
+		}
+	}
+	return output, err
 }
 
 func runWithEnv(root string, values map[string]string, name string, args ...string) (string, error) {
@@ -1068,17 +1143,35 @@ func runWithEnv(root string, values map[string]string, name string, args ...stri
 	output, err := cmd.CombinedOutput()
 	text := strings.TrimSpace(string(output))
 	if err != nil {
-		if os.IsPermission(err) || strings.Contains(strings.ToLower(text), "eacces") || strings.Contains(strings.ToLower(text), "permission denied") {
-			elevated, elevatedErr := system.RunWithPrivileges(root, values, name, args...)
-			if elevatedErr == nil {
-				return elevated, nil
-			}
-			if elevated != "" {
-				text = elevated
-			}
-			return text, fmt.Errorf("%s：当前用户权限不足，系统权限申请未完成：%w", strings.Join(append([]string{name}, args...), " "), elevatedErr)
+		if permissionError(err) || permissionError(errors.New(text)) {
+			return text, permissionAdvice("执行 " + filepath.Base(name))
 		}
-		return text, fmt.Errorf("%s：%w", text, err)
+		if commandNotFound(err, text) {
+			return text, missingCommandAdvice(filepath.Base(name))
+		}
+		if text != "" {
+			return text, fmt.Errorf("%s：%w", text, err)
+		}
+		return text, fmt.Errorf("执行 %s 失败：%w", strings.Join(append([]string{filepath.Base(name)}, args...), " "), err)
 	}
 	return text, nil
+}
+
+func commandNotFound(err error, output string) bool {
+	if errors.Is(err, exec.ErrNotFound) {
+		return true
+	}
+	text := strings.ToLower(err.Error() + "\n" + output)
+	return strings.Contains(text, "executable file not found") || strings.Contains(text, "command not found") || strings.Contains(text, "is not recognized as an internal or external command")
+}
+
+func missingCommandAdvice(name string) error {
+	switch strings.ToLower(name) {
+	case "node", "npm", "npx", "yarn", "pnpm":
+		return errors.New("未检测到 Node.js 运行环境（含 npm/npx）。请先在左上角“环境”中安装 Node.js LTS，完成后重新执行；Yarn 和 PNPM 无需全局安装，albs 会临时执行它们")
+	case "git":
+		return errors.New("未检测到 Git。请先在左上角“环境”中安装 Git，完成后重新执行")
+	default:
+		return fmt.Errorf("未检测到 %s 命令。请安装对应的系统工具后重新执行", name)
+	}
 }

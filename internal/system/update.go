@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -19,8 +20,26 @@ import (
 // running program on systems that allow it. It only accepts a concrete asset
 // URL chosen by the version and platform matcher.
 func ReplaceExecutable(downloadURL, assetName string) (string, error) {
+	downloaded, err := DownloadUpdate(downloadURL, assetName)
+	if err != nil {
+		return "", err
+	}
+	return ReplaceExecutableFile(downloaded)
+}
+
+// DownloadUpdate stores a verified-by-name Release archive in the user's cache
+// directory. Keeping it outside the temporary directory means a user can
+// download now and explicitly apply/restart it later.
+func DownloadUpdate(downloadURL, assetName string) (string, error) {
 	if downloadURL == "" {
 		return "", errors.New("没有可用的匹配安装包")
+	}
+	path, exists, err := CachedUpdate(assetName)
+	if err != nil {
+		return "", err
+	}
+	if exists {
+		return path, nil
 	}
 	response, err := (&http.Client{Timeout: 90 * time.Second}).Get(downloadURL)
 	if err != nil {
@@ -30,28 +49,68 @@ func ReplaceExecutable(downloadURL, assetName string) (string, error) {
 	if response.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("下载更新失败：服务器返回 %s", response.Status)
 	}
-	temporary, err := os.MkdirTemp("", "albs-update-")
-	if err != nil {
-		return "", err
-	}
-	defer os.RemoveAll(temporary)
-	downloaded := filepath.Join(temporary, assetName)
-	file, err := os.OpenFile(downloaded, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0700)
+	partial := path + ".part"
+	file, err := os.OpenFile(partial, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
 	if err != nil {
 		return "", err
 	}
 	_, copyErr := io.Copy(file, io.LimitReader(response.Body, 200<<20))
 	closeErr := file.Close()
-	if copyErr != nil {
-		return "", copyErr
-	}
-	if closeErr != nil {
+	if copyErr != nil || closeErr != nil {
+		_ = os.Remove(partial)
+		if copyErr != nil {
+			return "", copyErr
+		}
 		return "", closeErr
 	}
-	binary, err := releaseBinary(downloaded, temporary)
+	if err := os.Rename(partial, path); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+// CachedUpdate returns the persistent location for one release asset and
+// whether a complete file is already available there.
+func CachedUpdate(assetName string) (string, bool, error) {
+	assetName = filepath.Base(assetName)
+	if assetName == "." || assetName == "" || assetName == string(filepath.Separator) {
+		return "", false, errors.New("更新包名称无效")
+	}
+	base, err := os.UserCacheDir()
+	if err != nil {
+		return "", false, fmt.Errorf("无法定位应用存储目录：%w", err)
+	}
+	directory := filepath.Join(base, "alemonjs", "albs", "updates")
+	if err := os.MkdirAll(directory, 0700); err != nil {
+		return "", false, fmt.Errorf("无法创建更新存储目录：%w", err)
+	}
+	path := filepath.Join(directory, assetName)
+	info, err := os.Stat(path)
+	if err == nil && info.Mode().IsRegular() && info.Size() > 0 {
+		return path, true, nil
+	}
+	if err != nil && !os.IsNotExist(err) {
+		return "", false, err
+	}
+	return path, false, nil
+}
+
+// ReplaceExecutableFile applies a user-selected local release archive. The
+// caller must obtain explicit confirmation before passing local files here.
+func ReplaceExecutableFile(source string) (string, error) {
+	temporary, err := os.MkdirTemp("", "albs-update-")
 	if err != nil {
 		return "", err
 	}
+	defer os.RemoveAll(temporary)
+	binary, err := releaseBinary(source, temporary)
+	if err != nil {
+		return "", err
+	}
+	return replaceExecutable(binary, source, temporary)
+}
+
+func replaceExecutable(binary, archive, temporary string) (string, error) {
 	executable, err := os.Executable()
 	if err != nil {
 		return "", fmt.Errorf("无法定位当前 albs：%w", err)
@@ -59,7 +118,7 @@ func ReplaceExecutable(downloadURL, assetName string) (string, error) {
 	if resolved, err := filepath.EvalSymlinks(executable); err == nil {
 		executable = resolved
 	}
-	pluginUpdates, pluginErr := updateBundledPluginExecutors(downloaded, filepath.Dir(executable))
+	pluginUpdates, pluginErr := updateBundledPluginExecutors(archive, filepath.Dir(executable))
 	if runtime.GOOS == "windows" {
 		next := executable + ".new.exe"
 		if err := copyExecutable(binary, next); err != nil {
@@ -83,6 +142,30 @@ func ReplaceExecutable(downloadURL, assetName string) (string, error) {
 	}
 	message := "已更新 albs：" + executable + "。旧版本备份为 " + backup + "；请重新执行命令，后台服务会在下次重启后使用新版本。"
 	return updateMessage(message, pluginUpdates, pluginErr), nil
+}
+
+// ScheduleRestart starts a short-lived helper which relaunches albs after the
+// HTTP response has been written and the current process exits. On Windows it
+// also promotes the .new.exe file created while the old executable was locked.
+func ScheduleRestart() error {
+	executable, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("无法定位当前 albs：%w", err)
+	}
+	if resolved, err := filepath.EvalSymlinks(executable); err == nil {
+		executable = resolved
+	}
+	args := os.Args[1:]
+	if runtime.GOOS == "windows" {
+		replacement := executable + ".new.exe"
+		if _, err := os.Stat(replacement); err == nil {
+			script := "Start-Sleep -Milliseconds 800; Move-Item -LiteralPath $args[1] -Destination $args[0] -Force; Start-Process -FilePath $args[0] -ArgumentList $args[2..($args.Length-1)]"
+			command := append([]string{"-NoProfile", "-WindowStyle", "Hidden", "-Command", script, executable, replacement}, args...)
+			return exec.Command("powershell.exe", command...).Start()
+		}
+	}
+	command := append([]string{"-c", "sleep 0.8; exec \"$@\"", "albs-restart", executable}, args...)
+	return exec.Command("/bin/sh", command...).Start()
 }
 
 func updateMessage(message string, pluginUpdates int, pluginErr error) string {

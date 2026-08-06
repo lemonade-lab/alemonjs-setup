@@ -105,6 +105,9 @@ func (Manager) SavePackageManifest(root string, input PackageManifest) (Result, 
 		return Result{}, err
 	}
 	if err := os.WriteFile(file, append(updated, '\n'), 0644); err != nil {
+		if permissionError(err) {
+			return Result{}, permissionAdvice("保存 package.json")
+		}
 		return Result{}, fmt.Errorf("无法保存 package.json：%w", err)
 	}
 	return Result{Path: file, Output: "发布信息已保存。"}, nil

@@ -24,7 +24,7 @@ export const workspaceApi = createApi({
     goals: build.query<unknown[], void>({ query: () => 'goals' }),
     environmentReport: build.query<Record<string, unknown>, { goalId: string; variant: string }>({ query: (body) => ({ url: 'checks', method: 'POST', body }), keepUnusedDataFor: 5 * 60 }),
     releases: build.query<unknown[], string>({ query: (app) => `releases?app=${encodeURIComponent(app)}` }),
-    setupUpdate: build.query<{ current: string; latest?: string; available: boolean; releaseUrl?: string; downloadUrl?: string; assetName?: string; platformMatched: boolean }, void>({ query: () => 'update' }),
+    setupUpdate: build.query<{ current: string; latest?: string; available: boolean; releaseUrl?: string; downloadUrl?: string; assetName?: string; platformMatched: boolean; downloadReady: boolean }, void>({ query: () => 'update' }),
     setupPlugins: build.query<SetupPlugin[], void>({ query: () => 'setup/plugins', providesTags: ['SetupPlugins'] }),
     setSetupPluginEnabled: build.mutation<{ id: string; enabled: boolean }, { pluginID: string; enabled: boolean }>({ query: ({ pluginID, ...body }) => ({ url: `setup/plugins/${encodeURIComponent(pluginID)}/enabled`, method: 'POST', body }), invalidatesTags: ['SetupPlugins'] }),
     startSetupPluginTask: build.mutation<RobotTask, { pluginID: string; action: string; confirm: boolean; params?: Record<string, string> }>({ query: ({ pluginID, ...body }) => ({ url: `setup/plugins/${encodeURIComponent(pluginID)}/actions`, method: 'POST', body }) }),
