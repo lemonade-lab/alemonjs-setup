@@ -47,7 +47,7 @@ func RunWithPrivileges(directory string, values map[string]string, name string, 
 }
 
 func runWindowsElevated(directory string, values map[string]string, name string, args ...string) (string, error) {
-	outputFile, err := os.CreateTemp("", "albs-elevated-output-*.txt")
+	outputFile, err := os.CreateTemp("", "alx-elevated-output-*.txt")
 	if err != nil {
 		return "", fmt.Errorf("无法准备权限操作：%w", err)
 	}
@@ -59,7 +59,7 @@ func runWindowsElevated(directory string, values map[string]string, name string,
 	if err := outputFile.Close(); err != nil {
 		return "", fmt.Errorf("无法准备权限操作：%w", err)
 	}
-	scriptFile, err := os.CreateTemp("", "albs-elevated-command-*.ps1")
+	scriptFile, err := os.CreateTemp("", "alx-elevated-command-*.ps1")
 	if err != nil {
 		return "", fmt.Errorf("无法准备权限操作：%w", err)
 	}

@@ -168,7 +168,7 @@ func TestRunReportsMissingNodeEnvironmentWithoutRawExecError(t *testing.T) {
 
 func TestPermissionAdviceStaysInWebOperationFlow(t *testing.T) {
 	message := permissionAdvice("保存 alemon.config.yaml").Error()
-	for _, expected := range []string{"没有权限", "系统设置", "albs"} {
+	for _, expected := range []string{"没有权限", "系统设置", "alx"} {
 		if !strings.Contains(message, expected) {
 			t.Fatalf("permission advice = %q, missing %q", message, expected)
 		}

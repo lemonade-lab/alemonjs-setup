@@ -10,14 +10,14 @@ import (
 	"strings"
 	"time"
 
-	"alemonjs-setup/internal/access"
-	"alemonjs-setup/internal/mcp"
-	"alemonjs-setup/internal/project"
-	"alemonjs-setup/internal/releases"
-	"alemonjs-setup/internal/robot"
-	"alemonjs-setup/internal/setupplugin"
-	"alemonjs-setup/internal/system"
-	"alemonjs-setup/internal/web"
+	"alemonx/internal/access"
+	"alemonx/internal/mcp"
+	"alemonx/internal/project"
+	"alemonx/internal/releases"
+	"alemonx/internal/robot"
+	"alemonx/internal/setupplugin"
+	"alemonx/internal/system"
+	"alemonx/internal/web"
 )
 
 //go:embed all:dist
@@ -57,15 +57,15 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	account, arguments, err := option(arguments, "--account", env("ALBS_AUTH_ACCOUNT", ""))
+	account, arguments, err := option(arguments, "--account", env("alx_AUTH_ACCOUNT", ""))
 	if err != nil {
 		log.Fatal(err)
 	}
-	password, arguments, err := option(arguments, "--password", env("ALBS_AUTH_PASSWORD", ""))
+	password, arguments, err := option(arguments, "--password", env("alx_AUTH_PASSWORD", ""))
 	if err != nil {
 		log.Fatal(err)
 	}
-	confirmation, arguments, err := option(arguments, "--confirm-password", env("ALBS_AUTH_CONFIRM_PASSWORD", ""))
+	confirmation, arguments, err := option(arguments, "--confirm-password", env("alx_AUTH_CONFIRM_PASSWORD", ""))
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -179,7 +179,7 @@ func main() {
 			return
 		case "uninstall":
 			if len(arguments) != 1 || !yes {
-				fmt.Println("请使用 albs uninstall --yes 确认移除后台服务。")
+				fmt.Println("请使用 alx uninstall --yes 确认移除后台服务。")
 				return
 			}
 			serviceAction(system.UninstallService)
@@ -199,7 +199,7 @@ func main() {
 			return
 		case "git":
 			if len(arguments) != 2 || arguments[1] != "publish" || !yes {
-				fmt.Println("请使用 albs --cwd /项目目录 git publish --yes 确认发布。")
+				fmt.Println("请使用 alx --cwd /项目目录 git publish --yes 确认发布。")
 				return
 			}
 			publish(cwd, "git-release", true)
@@ -209,7 +209,7 @@ func main() {
 			return
 		}
 	}
-	serve(env("ALBS_BIND", "127.0.0.1"), port)
+	serve(env("alx_BIND", "127.0.0.1"), port)
 }
 
 func authCommand(arguments []string, confirmed bool, account, password, confirmation string) {
@@ -238,7 +238,7 @@ func authCommand(arguments []string, confirmed bool, account, password, confirma
 	}
 	if len(arguments) == 1 && arguments[0] == "disable" {
 		if !confirmed {
-			fmt.Println("请使用 albs auth disable --yes 确认关闭身份认证。 ")
+			fmt.Println("请使用 alx auth disable --yes 确认关闭身份认证。 ")
 			return
 		}
 		if err := manager.Disable(); err != nil {
@@ -291,7 +291,7 @@ func serve(host, port string) {
 	}
 }
 
-// startupMessage is deliberately written for someone opening albs for the
+// startupMessage is deliberately written for someone opening alx for the
 // first time. The terminal should answer "what is this" and "what next"
 // before it exposes implementation details such as the listener address.
 func startupMessage(version, host, port string) string {
@@ -381,13 +381,13 @@ func pluginCommand(arguments []string, confirmed bool) {
 	}
 	if len(arguments) == 2 && arguments[0] == "disable" {
 		if !confirmed {
-			fmt.Printf("请使用 albs plugin disable %s --yes 确认卸载。\n", arguments[1])
+			fmt.Printf("请使用 alx plugin disable %s --yes 确认卸载。\n", arguments[1])
 			return
 		}
 		if err := registry.SetEnabled(arguments[1], false); err != nil {
 			log.Fatal(err)
 		}
-		fmt.Printf("已卸载 Setup 插件：%s；可用 albs plugin enable %s 恢复。\n", arguments[1], arguments[1])
+		fmt.Printf("已卸载 Setup 插件：%s；可用 alx plugin enable %s 恢复。\n", arguments[1], arguments[1])
 		return
 	}
 	usage()
@@ -441,26 +441,26 @@ func flagPresent(arguments []string, name string) (bool, []string) {
 
 func usage() {
 	fmt.Println(`用法:
-  albs [serve] --port 17390           启动浏览器引导
+  alx [serve] --port 17390           启动浏览器引导
 
-  albs mcp                            启动本机 stdio MCP 服务
-  MCP_TOKEN=... albs mcp-http         启动受保护的本机 HTTP MCP 服务
-  albs install --port 17390           注册为后台常驻服务
-  albs open [--port 17390]            打开浏览器
-  albs update                         检查并更新 albs
-  albs status                         查看后台服务状态
-  albs start | stop | restart         管理后台服务
-  albs uninstall --yes                移除后台服务
-  albs plugin list                     查看已发现的 Setup 插件
-  albs plugin disable <id> --yes       卸载（停用）一个 Setup 插件
-  albs plugin enable <id>              重新启用一个 Setup 插件
+  alx mcp                            启动本机 stdio MCP 服务
+  MCP_TOKEN=... alx mcp-http         启动受保护的本机 HTTP MCP 服务
+  alx install --port 17390           注册为后台常驻服务
+  alx open [--port 17390]            打开浏览器
+  alx update                         检查并更新 alx
+  alx status                         查看后台服务状态
+  alx start | stop | restart         管理后台服务
+  alx uninstall --yes                移除后台服务
+  alx plugin list                     查看已发现的 Setup 插件
+  alx plugin disable <id> --yes       卸载（停用）一个 Setup 插件
+  alx plugin enable <id>              重新启用一个 Setup 插件
 
-  albs auth status                      查看身份认证状态
-  albs auth enable --account <账户> --password <密码> --confirm-password <确认密码>
-                                     开启本机身份认证（也支持 ALBS_AUTH_* 环境变量注入）
-  albs auth disable --yes               关闭身份认证
-  albs [--cwd /项目目录] npm publish  发布到 npm 官方仓库
-  albs [--cwd /项目目录] git publish --yes  创建 GitHub Release 标签`)
+  alx auth status                      查看身份认证状态
+  alx auth enable --account <账户> --password <密码> --confirm-password <确认密码>
+                                     开启本机身份认证（也支持 alx_AUTH_* 环境变量注入）
+  alx auth disable --yes               关闭身份认证
+  alx [--cwd /项目目录] npm publish  发布到 npm 官方仓库
+  alx [--cwd /项目目录] git publish --yes  创建 GitHub Release 标签`)
 }
 
 func env(key, fallback string) string {

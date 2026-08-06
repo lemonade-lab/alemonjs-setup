@@ -13,7 +13,7 @@ import (
 	"strings"
 )
 
-const serviceName = "com.alemonjs.albs"
+const serviceName = "com.alemonjs.alx"
 
 // ServiceStatus reports whether the user-level service is registered and running.
 func ServiceStatus() (string, error) {
@@ -24,7 +24,7 @@ func ServiceStatus() (string, error) {
 			return "", err
 		}
 		if _, err := os.Stat(path); err != nil {
-			return "未安装后台服务。运行 albs install 进行安装。", nil
+			return "未安装后台服务。运行 alx install 进行安装。", nil
 		}
 		uid := strconv.Itoa(os.Getuid())
 		if err := exec.Command("launchctl", "print", "gui/"+uid+"/"+serviceName).Run(); err != nil {
@@ -32,7 +32,7 @@ func ServiceStatus() (string, error) {
 		}
 		return "后台服务运行中。", nil
 	case "linux":
-		output, err := exec.Command("systemctl", "--user", "is-active", "albs.service").CombinedOutput()
+		output, err := exec.Command("systemctl", "--user", "is-active", "alx.service").CombinedOutput()
 		if err != nil {
 			return "后台服务未运行（" + strings.TrimSpace(string(output)) + "）。", nil
 		}
@@ -40,7 +40,7 @@ func ServiceStatus() (string, error) {
 	case "windows":
 		output, err := exec.Command("schtasks", "/Query", "/TN", "AlemonJS Setup", "/FO", "LIST").CombinedOutput()
 		if err != nil {
-			return "未安装后台服务。运行 albs install 进行安装。", nil
+			return "未安装后台服务。运行 alx install 进行安装。", nil
 		}
 		return "后台服务已注册。\n" + strings.TrimSpace(string(output)), nil
 	default:
@@ -56,7 +56,7 @@ func StartService() (string, error) {
 			return "", err
 		}
 		if _, err := os.Stat(path); err != nil {
-			return "", errors.New("未安装后台服务，请先运行 albs install")
+			return "", errors.New("未安装后台服务，请先运行 alx install")
 		}
 		uid := strconv.Itoa(os.Getuid())
 		_ = exec.Command("launchctl", "bootout", "gui/"+uid+"/"+serviceName).Run()
@@ -65,7 +65,7 @@ func StartService() (string, error) {
 		}
 		return "后台服务已启动。", nil
 	case "linux":
-		if output, err := exec.Command("systemctl", "--user", "start", "albs.service").CombinedOutput(); err != nil {
+		if output, err := exec.Command("systemctl", "--user", "start", "alx.service").CombinedOutput(); err != nil {
 			return "", fmt.Errorf("启动后台服务失败：%s", strings.TrimSpace(string(output)))
 		}
 		return "后台服务已启动。", nil
@@ -88,7 +88,7 @@ func StopService() (string, error) {
 		}
 		return "后台服务已停止；登录启动配置仍然保留。", nil
 	case "linux":
-		if output, err := exec.Command("systemctl", "--user", "stop", "albs.service").CombinedOutput(); err != nil {
+		if output, err := exec.Command("systemctl", "--user", "stop", "alx.service").CombinedOutput(); err != nil {
 			return "", fmt.Errorf("停止后台服务失败：%s", strings.TrimSpace(string(output)))
 		}
 		return "后台服务已停止；登录启动配置仍然保留。", nil
@@ -122,12 +122,12 @@ func UninstallService() (string, error) {
 			return "", err
 		}
 	case "linux":
-		_ = exec.Command("systemctl", "--user", "disable", "--now", "albs.service").Run()
+		_ = exec.Command("systemctl", "--user", "disable", "--now", "alx.service").Run()
 		home, err := os.UserHomeDir()
 		if err != nil {
 			return "", err
 		}
-		if err := os.Remove(filepath.Join(home, ".config", "systemd", "user", "albs.service")); err != nil && !os.IsNotExist(err) {
+		if err := os.Remove(filepath.Join(home, ".config", "systemd", "user", "alx.service")); err != nil && !os.IsNotExist(err) {
 			return "", err
 		}
 		_ = exec.Command("systemctl", "--user", "daemon-reload").Run()
@@ -136,7 +136,7 @@ func UninstallService() (string, error) {
 	default:
 		return "", fmt.Errorf("暂不支持在 %s 上管理后台服务", runtime.GOOS)
 	}
-	return "后台服务已移除。albs 命令文件仍保留，便于以后重新安装。", nil
+	return "后台服务已移除。alx 命令文件仍保留，便于以后重新安装。", nil
 }
 
 // InstallService registers the current binary as a user-level background service.
@@ -171,7 +171,7 @@ func InstallService(port string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return "albs 命令已安装到：" + executable + "\n" + note + "\n" + result, nil
+	return "alx 命令已安装到：" + executable + "\n" + note + "\n" + result, nil
 }
 
 func installCommand(source string) (string, string, error) {
@@ -181,12 +181,12 @@ func installCommand(source string) (string, string, error) {
 	}
 	directory := filepath.Join(home, ".local", "bin")
 	if runtime.GOOS == "windows" {
-		directory = filepath.Join(home, "AppData", "Local", "albs")
+		directory = filepath.Join(home, "AppData", "Local", "alx")
 	}
 	if err := os.MkdirAll(directory, 0755); err != nil {
-		return "", "", fmt.Errorf("无法创建 albs 命令目录：%w", err)
+		return "", "", fmt.Errorf("无法创建 alx 命令目录：%w", err)
 	}
-	name := "albs"
+	name := "alx"
 	if runtime.GOOS == "windows" {
 		name += ".exe"
 	}
@@ -199,7 +199,7 @@ func installCommand(source string) (string, string, error) {
 		defer input.Close()
 		output, err := os.OpenFile(target, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0755)
 		if err != nil {
-			return "", "", fmt.Errorf("无法安装 albs 命令：%w", err)
+			return "", "", fmt.Errorf("无法安装 alx 命令：%w", err)
 		}
 		_, copyErr := io.Copy(output, input)
 		closeErr := output.Close()
@@ -210,9 +210,9 @@ func installCommand(source string) (string, string, error) {
 			return "", "", closeErr
 		}
 	}
-	note := "现在可使用 albs open 打开引导。"
+	note := "现在可使用 alx open 打开引导。"
 	if !pathContains(directory) {
-		note = "请将 " + directory + " 加入 PATH 后，可直接使用 albs 命令。"
+		note = "请将 " + directory + " 加入 PATH 后，可直接使用 alx 命令。"
 	}
 	return target, note, nil
 }
@@ -256,7 +256,7 @@ func installLaunchAgent(executable, port string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	logs := filepath.Join(home, "Library", "Logs", "albs.log")
+	logs := filepath.Join(home, "Library", "Logs", "alx.log")
 	plist := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict><key>Label</key><string>%s</string><key>ProgramArguments</key><array><string>%s</string><string>serve</string><string>--port</string><string>%s</string></array><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>StandardOutPath</key><string>%s</string><key>StandardErrorPath</key><string>%s</string></dict></plist>
@@ -292,7 +292,7 @@ func installSystemdUserService(executable, port string) (string, error) {
 	if err := os.MkdirAll(directory, 0755); err != nil {
 		return "", err
 	}
-	path := filepath.Join(directory, "albs.service")
+	path := filepath.Join(directory, "alx.service")
 	content := fmt.Sprintf("[Unit]\nDescription=AlemonJS Setup\n[Service]\nExecStart=%s serve --port %s\nRestart=on-failure\n[Install]\nWantedBy=default.target\n", shellQuote(executable), port)
 	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
 		return "", err
@@ -300,7 +300,7 @@ func installSystemdUserService(executable, port string) (string, error) {
 	if output, err := exec.Command("systemctl", "--user", "daemon-reload").CombinedOutput(); err != nil {
 		return "", fmt.Errorf("刷新 systemd 配置失败：%s", strings.TrimSpace(string(output)))
 	}
-	if output, err := exec.Command("systemctl", "--user", "enable", "--now", "albs.service").CombinedOutput(); err != nil {
+	if output, err := exec.Command("systemctl", "--user", "enable", "--now", "alx.service").CombinedOutput(); err != nil {
 		return "", fmt.Errorf("启动后台服务失败：%s", strings.TrimSpace(string(output)))
 	}
 	return "已注册 systemd 用户服务，访问地址：http://127.0.0.1:" + port, nil

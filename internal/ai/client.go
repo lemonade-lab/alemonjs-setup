@@ -43,7 +43,7 @@ func New() (*Manager, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Manager{path: filepath.Join(dir, "alemonjs", "albs-ai.json")}, nil
+	return &Manager{path: filepath.Join(dir, "alemonjs", "alx-ai.json")}, nil
 }
 func (m *Manager) load() (store, error) {
 	var value store

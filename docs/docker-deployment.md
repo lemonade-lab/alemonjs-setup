@@ -9,8 +9,8 @@ Compose 将运行数据放在项目目录，便于备份、迁移与同步：
 | 本机目录 | 容器路径 | 内容 |
 | --- | --- | --- |
 | `workspace/robots/` | `/workspace/robots/` | 机器人项目、Git 仓库、依赖与配置 |
-| `state/` | `/home/albs/.config/` | 身份认证、Setup 插件、AI 等工作台状态 |
-| `ssh/`（可选） | `/home/albs/.ssh/` | 仅供部署使用的 SSH 密钥与 known_hosts |
+| `state/` | `/home/alx/.config/` | 身份认证、Setup 插件、AI 等工作台状态 |
+| `ssh/`（可选） | `/home/alx/.ssh/` | 仅供部署使用的 SSH 密钥与 known_hosts |
 
 本地与线上不应默认共享这些目录：本地的机器人是开发资产，线上目录是部署资产。要发布机器人，请使用 Git、制品包或既有 CI/CD 将代码交付到线上 `workspace/robots/`，再由线上工作台完成依赖、运行与运维管理。不要迁移 `node_modules/`，可在目标服务器通过工作台重新安装依赖。
 
@@ -43,13 +43,13 @@ VERSION=v0.1.0 PLATFORM=linux/arm64 ./docker-buildx.sh
 构建完成会生成 OCI 镜像包，例如：
 
 ```text
-dist/albs-v0.1.0-amd64.oci.tar
+dist/alx-v0.1.0-amd64.oci.tar
 ```
 
 可在本机验证包能导入：
 
 ```bash
-docker load -i dist/albs-v0.1.0-amd64.oci.tar
+docker load -i dist/alx-v0.1.0-amd64.oci.tar
 ```
 
 ## 4. 上传并离线启动
@@ -57,23 +57,23 @@ docker load -i dist/albs-v0.1.0-amd64.oci.tar
 将以下内容传到服务器的同一个目录：
 
 - `docker-compose.yml`
-- `dist/albs-v0.1.0-amd64.oci.tar`
+- `dist/alx-v0.1.0-amd64.oci.tar`
 - 线上环境自己的 `workspace/`、`state/`（可为空，由首次启动创建）
 - `ssh/`（可选，且只放部署专用密钥）
 
 服务器上执行：
 
 ```bash
-docker load -i dist/albs-v0.1.0-amd64.oci.tar
-ALBS_IMAGE=alemonx:v0.1.0 docker compose up -d
+docker load -i dist/alx-v0.1.0-amd64.oci.tar
+alx_IMAGE=alemonx:v0.1.0 docker compose up -d
 docker compose ps
-docker compose logs -f albs
+docker compose logs -f alx
 ```
 
 首次启动后立即开启身份认证：
 
 ```bash
-docker compose exec albs albs auth enable \
+docker compose exec alx alx auth enable \
   --account admin \
   --password '请使用高强度密码' \
   --confirm-password '请使用高强度密码'
@@ -123,14 +123,14 @@ nginx -t && systemctl reload nginx
 更新镜像后：
 
 ```bash
-docker load -i dist/albs-v0.2.0-amd64.oci.tar
-ALBS_IMAGE=alemonx:v0.2.0 docker compose up -d
+docker load -i dist/alx-v0.2.0-amd64.oci.tar
+alx_IMAGE=alemonx:v0.2.0 docker compose up -d
 ```
 
 备份时停止容器或确保机器人无写入任务，然后归档 `workspace/` 与 `state/`：
 
 ```bash
-tar -czf albs-backup-$(date +%F).tar.gz workspace state
+tar -czf alx-backup-$(date +%F).tar.gz workspace state
 ```
 
 恢复时解压这两个目录，再启动 Compose。SSH 密钥应单独、加密保管；不要把个人电脑完整的 `~/.ssh` 挂载到生产容器。
@@ -139,10 +139,10 @@ tar -czf albs-backup-$(date +%F).tar.gz workspace state
 
 ```bash
 docker compose ps
-docker compose logs --tail=200 albs
-docker compose exec albs albs auth status
-docker compose exec albs git --version
-docker compose exec albs node --version
+docker compose logs --tail=200 alx
+docker compose exec alx alx auth status
+docker compose exec alx git --version
+docker compose exec alx node --version
 ```
 
 若工作台无法添加目录，确认机器人目录位于 `workspace/robots/`。这是容器的安全边界；工作台不会管理容器的任意路径。

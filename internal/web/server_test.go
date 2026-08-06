@@ -9,8 +9,8 @@ import (
 	"testing"
 	"testing/fstest"
 
-	"alemonjs-setup/internal/access"
-	"alemonjs-setup/internal/robot"
+	"alemonx/internal/access"
+	"alemonx/internal/robot"
 )
 
 func newTestServer() http.Handler {
@@ -25,7 +25,7 @@ func TestWebViewHTMLRewriteAndRestrictedBridge(t *testing.T) {
 		}
 	}
 	bridge := webViewBridge(robot.WebViewEntry{Package: `plugin"name`, Name: "页面"})
-	for _, expected := range []string{`window.__albsWebview`, `./api/`, `plugin\"name`, `window.appDesktopAPI`, `'message'`, `'events'`, `'api-error'`, `response.clone().json()`} {
+	for _, expected := range []string{`window.__alxWebview`, `./api/`, `plugin\"name`, `window.appDesktopAPI`, `'message'`, `'events'`, `'api-error'`, `response.clone().json()`} {
 		if !strings.Contains(bridge, expected) {
 			t.Fatalf("bridge misses %q", expected)
 		}

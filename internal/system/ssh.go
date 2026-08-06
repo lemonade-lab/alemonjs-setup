@@ -69,13 +69,13 @@ func GenerateSSHKey() (SSHPublicKey, error) {
 	if _, err := os.Stat(target); err == nil {
 		return SSHPublicKey{}, errors.New("已存在 SSH 私钥，但未找到对应公钥；不会覆盖")
 	}
-	output, err := exec.Command("ssh-keygen", "-q", "-t", "ed25519", "-f", target, "-N", "", "-C", "albs").CombinedOutput()
+	output, err := exec.Command("ssh-keygen", "-q", "-t", "ed25519", "-f", target, "-N", "", "-C", "alx").CombinedOutput()
 	if err != nil {
 		if errors.Is(err, exec.ErrNotFound) {
 			return SSHPublicKey{}, errors.New("未检测到 ssh-keygen。请先在左上角“环境”中安装 Git/SSH 工具后重新生成密钥")
 		}
 		if os.IsPermission(err) || strings.Contains(strings.ToLower(string(output)), "permission denied") {
-			return SSHPublicKey{}, errors.New("没有权限创建 SSH 密钥。请在系统设置中为 albs 授予用户目录访问权限后重试")
+			return SSHPublicKey{}, errors.New("没有权限创建 SSH 密钥。请在系统设置中为 alx 授予用户目录访问权限后重试")
 		}
 		return SSHPublicKey{}, fmt.Errorf("生成 SSH 密钥失败：%s", strings.TrimSpace(string(output)))
 	}

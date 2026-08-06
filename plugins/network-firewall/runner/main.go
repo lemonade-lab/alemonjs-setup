@@ -1,5 +1,5 @@
 // Network & Firewall Setup plugin reference runner.
-// It communicates with albs only through a JSON object on stdin/stdout.
+// It communicates with alx only through a JSON object on stdin/stdout.
 package main
 
 import (
@@ -28,11 +28,11 @@ type response struct {
 func main() {
 	var input request
 	if err := json.NewDecoder(os.Stdin).Decode(&input); err != nil {
-		write(response{Error: "无法读取 albs 插件请求：" + err.Error()})
+		write(response{Error: "无法读取 alx 插件请求：" + err.Error()})
 		return
 	}
-	if input.Protocol != "albs.setup/v1" || input.Method != "run" {
-		write(response{Error: "不支持的 albs Setup 插件协议"})
+	if input.Protocol != "alx.setup/v1" || input.Method != "run" {
+		write(response{Error: "不支持的 alx Setup 插件协议"})
 		return
 	}
 	output, err := execute(input.Action, input.Params)
@@ -172,7 +172,7 @@ func changeFirewall(action string, params map[string]string) (string, error) {
 		}
 	case "windows":
 		command = "netsh"
-		name := fmt.Sprintf("ALBS %d/%s", number, protocol)
+		name := fmt.Sprintf("alx %d/%s", number, protocol)
 		if action == "open-port" {
 			args = []string{"advfirewall", "firewall", "add", "rule", "name=" + name, "dir=in", "action=allow", "protocol=" + protocol, "localport=" + strconv.Itoa(number)}
 		} else {

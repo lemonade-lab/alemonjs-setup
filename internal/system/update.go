@@ -80,7 +80,7 @@ func CachedUpdate(assetName string) (string, bool, error) {
 	if err != nil {
 		return "", false, fmt.Errorf("无法定位应用存储目录：%w", err)
 	}
-	directory := filepath.Join(base, "alemonjs", "albs", "updates")
+	directory := filepath.Join(base, "alemonjs", "alx", "updates")
 	if err := os.MkdirAll(directory, 0700); err != nil {
 		return "", false, fmt.Errorf("无法创建更新存储目录：%w", err)
 	}
@@ -98,7 +98,7 @@ func CachedUpdate(assetName string) (string, bool, error) {
 // ReplaceExecutableFile applies a user-selected local release archive. The
 // caller must obtain explicit confirmation before passing local files here.
 func ReplaceExecutableFile(source string) (string, error) {
-	temporary, err := os.MkdirTemp("", "albs-update-")
+	temporary, err := os.MkdirTemp("", "alx-update-")
 	if err != nil {
 		return "", err
 	}
@@ -113,7 +113,7 @@ func ReplaceExecutableFile(source string) (string, error) {
 func replaceExecutable(binary, archive, temporary string) (string, error) {
 	executable, err := os.Executable()
 	if err != nil {
-		return "", fmt.Errorf("无法定位当前 albs：%w", err)
+		return "", fmt.Errorf("无法定位当前 alx：%w", err)
 	}
 	if resolved, err := filepath.EvalSymlinks(executable); err == nil {
 		executable = resolved
@@ -124,7 +124,7 @@ func replaceExecutable(binary, archive, temporary string) (string, error) {
 		if err := copyExecutable(binary, next); err != nil {
 			return "", err
 		}
-		message := "新版已下载到 " + next + "。请退出 albs 后用它替换当前文件。"
+		message := "新版已下载到 " + next + "。请退出 alx 后用它替换当前文件。"
 		return updateMessage(message, pluginUpdates, pluginErr), nil
 	}
 	next := executable + ".new"
@@ -138,19 +138,19 @@ func replaceExecutable(binary, archive, temporary string) (string, error) {
 	}
 	if err := os.Rename(next, executable); err != nil {
 		_ = os.Remove(next)
-		return "", fmt.Errorf("无法替换当前 albs：%w", err)
+		return "", fmt.Errorf("无法替换当前 alx：%w", err)
 	}
-	message := "已更新 albs：" + executable + "。旧版本备份为 " + backup + "；请重新执行命令，后台服务会在下次重启后使用新版本。"
+	message := "已更新 alx：" + executable + "。旧版本备份为 " + backup + "；请重新执行命令，后台服务会在下次重启后使用新版本。"
 	return updateMessage(message, pluginUpdates, pluginErr), nil
 }
 
-// ScheduleRestart starts a short-lived helper which relaunches albs after the
+// ScheduleRestart starts a short-lived helper which relaunches alx after the
 // HTTP response has been written and the current process exits. On Windows it
 // also promotes the .new.exe file created while the old executable was locked.
 func ScheduleRestart() error {
 	executable, err := os.Executable()
 	if err != nil {
-		return fmt.Errorf("无法定位当前 albs：%w", err)
+		return fmt.Errorf("无法定位当前 alx：%w", err)
 	}
 	if resolved, err := filepath.EvalSymlinks(executable); err == nil {
 		executable = resolved
@@ -164,7 +164,7 @@ func ScheduleRestart() error {
 			return exec.Command("powershell.exe", command...).Start()
 		}
 	}
-	command := append([]string{"-c", "sleep 0.8; exec \"$@\"", "albs-restart", executable}, args...)
+	command := append([]string{"-c", "sleep 0.8; exec \"$@\"", "alx-restart", executable}, args...)
 	return exec.Command("/bin/sh", command...).Start()
 }
 
@@ -207,7 +207,7 @@ func releaseBinary(source, directory string) (string, error) {
 }
 func isBinaryName(name string) bool {
 	name = strings.ToLower(filepath.Base(name))
-	return name == "albs" || name == "albs.exe" || strings.HasPrefix(name, "albs-") || strings.HasPrefix(name, "alemonjs-setup")
+	return name == "alx" || name == "alx.exe" || strings.HasPrefix(name, "alx-") || strings.HasPrefix(name, "alemonx")
 }
 func unzipBinary(source, directory string) (string, error) {
 	archive, err := zip.OpenReader(source)
@@ -235,7 +235,7 @@ func unzipBinary(source, directory string) (string, error) {
 		}
 		return target, nil
 	}
-	return "", errors.New("安装包中未找到 albs 可执行文件")
+	return "", errors.New("安装包中未找到 alx 可执行文件")
 }
 func untarBinary(source, directory string) (string, error) {
 	input, err := os.Open(source)
@@ -275,11 +275,11 @@ func untarBinary(source, directory string) (string, error) {
 		}
 		return target, nil
 	}
-	return "", errors.New("安装包中未找到 albs 可执行文件")
+	return "", errors.New("安装包中未找到 alx 可执行文件")
 }
 
 // updateBundledPluginExecutors only updates an already installed plugin. An
-// explicit uninstall therefore remains respected: updating albs never silently
+// explicit uninstall therefore remains respected: updating alx never silently
 // recreates a plugin directory the user removed.
 func updateBundledPluginExecutors(source, executableDirectory string) (int, error) {
 	if !strings.HasSuffix(strings.ToLower(source), ".zip") {
@@ -300,7 +300,7 @@ func updateBundledPluginExecutors(source, executableDirectory string) (int, erro
 			continue
 		}
 		pluginDirectory := filepath.Join(executableDirectory, "plugins", parts[1])
-		manifest, manifestErr := os.Lstat(filepath.Join(pluginDirectory, "albs.setup.json"))
+		manifest, manifestErr := os.Lstat(filepath.Join(pluginDirectory, "alx.setup.json"))
 		if manifestErr != nil || !manifest.Mode().IsRegular() || manifest.Mode()&os.ModeSymlink != 0 {
 			continue
 		}

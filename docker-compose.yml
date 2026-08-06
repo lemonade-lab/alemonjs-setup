@@ -1,30 +1,30 @@
 services:
-  albs:
+  alx:
     # 开发/首次部署：docker compose up -d --build
-    # 离线部署前：docker load -i dist/albs-<version>-linux-amd64.oci.tar
-    image: ${ALBS_IMAGE:-alemonx:local}
+    # 离线部署前：docker load -i dist/alx-<version>-linux-amd64.oci.tar
+    image: ${alx_IMAGE:-alemonx:local}
     build:
       context: .
       dockerfile: Dockerfile
       args:
-        VERSION: ${ALBS_VERSION:-dev}
-    container_name: albs
+        VERSION: ${alx_VERSION:-dev}
+    container_name: alx
     restart: unless-stopped
     init: true
     ports:
       # 默认只允许宿主机访问；线上请交给 HTTPS 反向代理，或显式设置 0.0.0.0。
-      - "${ALBS_LISTEN_ADDRESS:-127.0.0.1}:${ALBS_PORT:-17390}:17390"
+      - "${alx_LISTEN_ADDRESS:-127.0.0.1}:${alx_PORT:-17390}:17390"
     environment:
       TZ: ${TZ:-Asia/Shanghai}
-      ALBS_BIND: 0.0.0.0
+      alx_BIND: 0.0.0.0
       PORT: 17390
       # 容器内工作台只管理该目录，避免访问容器其它路径。
       ALEMONJS_SETUP_ROOTS: /workspace/robots
-      HOME: /home/albs
-      XDG_CONFIG_HOME: /home/albs/.config
+      HOME: /home/alx
+      XDG_CONFIG_HOME: /home/alx/.config
     volumes:
       # 每个环境各自持久化：本地可开发，线上可持续管理其机器人。
       - ./workspace:/workspace
-      - ./state:/home/albs/.config
+      - ./state:/home/alx/.config
       # SSH 管理会在此创建或读取部署专用密钥；不要挂载个人完整 ~/.ssh。
-      - ${ALBS_SSH_DIR:-./ssh}:/home/albs/.ssh
+      - ${alx_SSH_DIR:-./ssh}:/home/alx/.ssh

@@ -66,7 +66,7 @@ func PrepareGitBuild(root, branch, commit string) (GitBuildSession, error) {
 	if _, err = gitRun(path, "merge-base", "--is-ancestor", commit, branchRef); err != nil {
 		return GitBuildSession{}, errors.New("所选提交不属于源码分支")
 	}
-	worktree, err := os.MkdirTemp("", "albs-git-build-")
+	worktree, err := os.MkdirTemp("", "alx-git-build-")
 	if err != nil {
 		return GitBuildSession{}, err
 	}
@@ -272,7 +272,7 @@ func publishPreparedWorktree(state *gitBuildState, version string, artifacts []s
 		return Result{}, errors.New("请确认后再开始 GIT 发布")
 	}
 	logs := []string{"使用已完成的构建 " + shortGitSHA(state.Commit)}
-	worktree, err := os.MkdirTemp("", "albs-release-")
+	worktree, err := os.MkdirTemp("", "alx-release-")
 	if err != nil {
 		return Result{}, err
 	}
@@ -303,7 +303,7 @@ func publishPreparedWorktree(state *gitBuildState, version string, artifacts []s
 	if err != nil {
 		return Result{}, err
 	}
-	if err := os.WriteFile(filepath.Join(worktree, ".albs-release.json"), append(mappingData, '\n'), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(worktree, ".alx-release.json"), append(mappingData, '\n'), 0644); err != nil {
 		return Result{}, err
 	}
 	if _, err := gitRun(worktree, "add", "-A"); err != nil {
@@ -330,7 +330,7 @@ func publishPreparedWorktree(state *gitBuildState, version string, artifacts []s
 }
 
 func retryPreparedGitTag(state gitBuildState) (Result, error) {
-	worktree, err := os.MkdirTemp("", "albs-tag-retry-")
+	worktree, err := os.MkdirTemp("", "alx-tag-retry-")
 	if err != nil {
 		return Result{}, err
 	}

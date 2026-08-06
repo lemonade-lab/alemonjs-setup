@@ -1,5 +1,5 @@
 // Package setupplugin discovers declarative extensions that add system
-// controls to albs. Discovery never executes plugin code: a plugin becomes
+// controls to alx. Discovery never executes plugin code: a plugin becomes
 // runnable only after a later, explicitly approved action protocol is added.
 package setupplugin
 
@@ -16,7 +16,7 @@ import (
 	"strings"
 )
 
-const manifestName = "albs.setup.json"
+const manifestName = "alx.setup.json"
 const maxManifestSize = 64 * 1024
 
 var validID = regexp.MustCompile(`^[a-z][a-z0-9-]{1,63}$`)
@@ -111,14 +111,14 @@ func defaultRoots() []string {
 		roots = append(roots, filepath.Join(cwd, "plugins"))
 	}
 	if config, err := os.UserConfigDir(); err == nil {
-		roots = append(roots, filepath.Join(config, "albs", "plugins"))
+		roots = append(roots, filepath.Join(config, "alx", "plugins"))
 	}
 	return roots
 }
 
 func defaultStatePath() string {
 	if config, err := os.UserConfigDir(); err == nil {
-		return filepath.Join(config, "albs", "setup-plugins.json")
+		return filepath.Join(config, "alx", "setup-plugins.json")
 	}
 	return ""
 }
@@ -253,7 +253,7 @@ func (r Registry) SetEnabled(id string, enabled bool) error {
 }
 
 // Find returns one currently discoverable plugin. It rescans deliberately so
-// adding a folder is reflected without restarting albs.
+// adding a folder is reflected without restarting alx.
 func (r Registry) Find(id string) (Plugin, error) {
 	for _, plugin := range r.List() {
 		if plugin.ID == id {
@@ -300,7 +300,7 @@ func (r Registry) Run(id, actionID string, params map[string]string, confirmed b
 	if err != nil {
 		return "", err
 	}
-	payload, err := json.Marshal(request{Protocol: "albs.setup/v1", Method: "run", Action: actionID, Params: params})
+	payload, err := json.Marshal(request{Protocol: "alx.setup/v1", Method: "run", Action: actionID, Params: params})
 	if err != nil {
 		return "", err
 	}
@@ -320,7 +320,7 @@ func (r Registry) Run(id, actionID string, params map[string]string, confirmed b
 	}
 	var result response
 	if err := json.Unmarshal(output, &result); err != nil {
-		return "", errors.New("插件返回格式无效；请使用 albs.setup/v1 JSON 协议")
+		return "", errors.New("插件返回格式无效；请使用 alx.setup/v1 JSON 协议")
 	}
 	if result.Error != "" {
 		return result.Output, errors.New(result.Error)

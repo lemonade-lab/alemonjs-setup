@@ -232,7 +232,7 @@ function FlowView({
     goal?.id === 'desktop'
       ? 'alemondesk'
       : goal?.id === 'web' && webEdition === 'clean'
-        ? 'albs'
+        ? 'alx'
         : null
   const { data: releaseData = [] } = useReleasesQuery(releaseApp ?? '', {
     skip: !releaseApp
@@ -865,7 +865,7 @@ function FlowView({
               }}
             >
               <strong>纯净版</strong>
-              <small>检查 Node.js 与 Git 后启动 albs</small>
+              <small>检查 Node.js 与 Git 后启动 alx</small>
             </button>
             <button
               className={webEdition === 'docker' ? 'choice selected' : 'choice'}

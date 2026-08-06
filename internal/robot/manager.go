@@ -15,8 +15,8 @@ import (
 	"strings"
 	"time"
 
-	"alemonjs-setup/internal/catalog"
-	"alemonjs-setup/internal/system"
+	"alemonx/internal/catalog"
+	"alemonx/internal/system"
 )
 
 type Manager struct{}
@@ -1028,13 +1028,13 @@ func (Manager) withPrivileges(request privilegedRequest) (Result, error) {
 	if err != nil {
 		return Result{}, fmt.Errorf("无法申请系统权限：%w", err)
 	}
-	requestFile, err := os.CreateTemp("", "albs-robot-request-*.json")
+	requestFile, err := os.CreateTemp("", "alx-robot-request-*.json")
 	if err != nil {
 		return Result{}, fmt.Errorf("无法准备权限申请：%w", err)
 	}
 	requestPath := requestFile.Name()
 	defer os.Remove(requestPath)
-	resultFile, err := os.CreateTemp("", "albs-robot-result-*.json")
+	resultFile, err := os.CreateTemp("", "alx-robot-result-*.json")
 	if err != nil {
 		return Result{}, fmt.Errorf("无法准备权限申请：%w", err)
 	}
@@ -1170,7 +1170,7 @@ func permissionError(err error) bool {
 // system administrator dialog.  The dashboard preserves this exact message in
 // its operation record and toast, alongside the directory picker guidance.
 func permissionAdvice(action string) error {
-	return fmt.Errorf("没有权限%s。请在系统设置中为 albs 授予该磁盘或文件夹的访问权限（macOS：\"文件与文件夹\"或\"完全磁盘访问\"），或选择当前登录账户可读写的目录后重试", action)
+	return fmt.Errorf("没有权限%s。请在系统设置中为 alx 授予该磁盘或文件夹的访问权限（macOS：\"文件与文件夹\"或\"完全磁盘访问\"），或选择当前登录账户可读写的目录后重试", action)
 }
 func file(root, name string) (string, error) {
 	if err := project(root); err != nil {
@@ -1399,7 +1399,7 @@ func commandNotFound(err error, output string) bool {
 func missingCommandAdvice(name string) error {
 	switch strings.ToLower(name) {
 	case "node", "npm", "npx", "yarn", "pnpm":
-		return errors.New("未检测到 Node.js 运行环境（含 npm/npx）。请先在左上角“环境”中安装 Node.js LTS，完成后重新执行；Yarn 和 PNPM 无需全局安装，albs 会临时执行它们")
+		return errors.New("未检测到 Node.js 运行环境（含 npm/npx）。请先在左上角“环境”中安装 Node.js LTS，完成后重新执行；Yarn 和 PNPM 无需全局安装，alx 会临时执行它们")
 	case "git":
 		return errors.New("未检测到 Git。请先在左上角“环境”中安装 Git，完成后重新执行")
 	default:

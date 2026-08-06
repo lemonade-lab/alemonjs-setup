@@ -28,10 +28,10 @@ Setup 会把当前机器人的插件页面嵌入后台。WebView 是插件自己
 ## 可用能力
 
 ```ts
-window.__albsWebview.context // { package, name }
-window.__albsWebview.postMessage(value)
-window.__albsWebview.onMessage(listener)
-window.__albsWebview.request('./api/example', options)
+window.__alxWebview.context // { package, name }
+window.__alxWebview.postMessage(value)
+window.__alxWebview.onMessage(listener)
+window.__alxWebview.request('./api/example', options)
 ```
 
 `request` 仅接受以 `./api/` 开头的路径，并只会代理到当前机器人应用。`postMessage` 会在首次调用时启动当前目录独立的 `alemonjs/desktop.js` desk Node.js 进程，再通过 stdin/stdout JSON IPC 与插件 desktop 模块双向通信；它不会启动机器人 `app/dev`。`appDesktopAPI.postMessage`、`appDesktopAPI.onMessage` 和 `appDesktopAPI.themeOn` 有最小兼容实现，不能视为 AlemonDesk 的完整 Wails API。

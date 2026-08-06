@@ -6,23 +6,23 @@ AlemonJS Setup 同时支持 MCP 的两种标准传输：**stdio** 和 **Streamab
 
 | 客户端类别 | 推荐方式 | 本项目的保证 | 客户端侧仍需完成 |
 | --- | --- | --- | --- |
-| Codex 桌面端 | STDIO；也可用流式 HTTP 表单 | 覆盖 `initialize`、`notifications/initialized`、工具发现、调用、资源发现/读取及两种传输 | 确保 `albs` 在 Codex 可启动的 PATH；HTTP 时填写 Token。 |
+| Codex 桌面端 | STDIO；也可用流式 HTTP 表单 | 覆盖 `initialize`、`notifications/initialized`、工具发现、调用、资源发现/读取及两种传输 | 确保 `alx` 在 Codex 可启动的 PATH；HTTP 时填写 Token。 |
 | 豆包等桌面 Agent | 该产品提供的标准 MCP 命令或 HTTP 表单 | 与 Codex 使用相同 JSON-RPC、工具和权限边界 | 在各自的 MCP 设置中选择 STDIO 或流式 HTTP；产品的授权 UI 由客户端负责。 |
 | 其它 MCP 客户端 | STDIO 或 Streamable HTTP | 不依赖厂商私有 API；工具 schema、annotations、文本结果与 structuredContent 均为标准 MCP 数据 | 客户端必须支持 MCP 2025-06-18 或兼容版本，并展示真实的用户确认。 |
 
-“支持”指协议互操作，不表示任一第三方客户端会绕过自身的账号、管理员策略、网络策略或人工确认机制。启动前可用 `command -v albs` 确认 STDIO 客户端能够找到二进制文件。
+“支持”指协议互操作，不表示任一第三方客户端会绕过自身的账号、管理员策略、网络策略或人工确认机制。启动前可用 `command -v alx` 确认 STDIO 客户端能够找到二进制文件。
 
 ## 连接方式
 
 ### STDIO（推荐）
 
-`albs mcp` 由 AI 客户端作为本机子进程启动，不复用浏览器会话，也不监听网络端口。在 Codex 的“连接至自定义 MCP”表单中填写：
+`alx mcp` 由 AI 客户端作为本机子进程启动，不复用浏览器会话，也不监听网络端口。在 Codex 的“连接至自定义 MCP”表单中填写：
 
 | 字段 | 值 |
 | --- | --- |
 | 名称 | `alemonx` |
 | 类型 | `STDIO` |
-| 启动命令 | `albs` |
+| 启动命令 | `alx` |
 | 参数 | `mcp` |
 | 环境变量（可选） | `MCP_ALLOWED_ROOTS=/你的/机器人目录` |
 
@@ -31,7 +31,7 @@ AlemonJS Setup 同时支持 MCP 的两种标准传输：**stdio** 和 **Streamab
 对于使用图形化“流式 HTTP”表单的客户端，先设置随机的 `MCP_TOKEN` 并启动受保护的 loopback 服务：
 
 ```bash
-MCP_TOKEN='生成的高强度随机值' albs --mcp-port 17391 mcp-http
+MCP_TOKEN='生成的高强度随机值' alx --mcp-port 17391 mcp-http
 ```
 
 在表单中填写：
@@ -48,7 +48,7 @@ MCP_TOKEN='生成的高强度随机值' albs --mcp-port 17391 mcp-http
 可选地用 `MCP_ALLOWED_ROOTS` 限制 Agent 只能管理特定工作区；多个路径以操作系统的路径分隔符连接（macOS/Linux 使用 `:`，Windows 使用 `;`）：
 
 ```bash
-MCP_ALLOWED_ROOTS='/Users/me/robots:/Users/me/workspaces' albs mcp
+MCP_ALLOWED_ROOTS='/Users/me/robots:/Users/me/workspaces' alx mcp
 ```
 
 一旦配置，项目读写、任务操作与新项目创建都会在服务端验证目录是否位于这些根路径内。

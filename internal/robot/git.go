@@ -15,7 +15,7 @@ var gitVersionPattern = regexp.MustCompile(`^v\d+\.\d+\.\d+$`)
 
 // GitStatus describes the package-release workflow.  A Git release here means
 // publishing the built Node package to the project's release branch, not
-// building alemonjs-setup itself.
+// building alemonx itself.
 type GitStatus struct {
 	Root               string            `json:"root,omitempty"`
 	Repository         string            `json:"repository,omitempty"`
@@ -56,7 +56,7 @@ type GitSourceBranch struct {
 	Commits []GitCommit `json:"commits"`
 }
 
-// ReleaseMapping is stored inside every release commit as .albs-release.json.
+// ReleaseMapping is stored inside every release commit as .alx-release.json.
 // It makes it possible to answer exactly which source revision produced a
 // published package even after the source branch has moved on.
 type ReleaseMapping struct {
@@ -414,7 +414,7 @@ func GitPublishWithOptions(root, version, sourceBranch, sourceCommit string, art
 		return Result{Path: path, Output: "检查通过：将从 " + shortGitSHA(sourceCommit) + " 构建 " + status.PackageName + "，把发布文件提交至 release，并创建标签 " + version}, errors.New("请确认后再开始 GIT 发布")
 	}
 	logs := []string{"已选择源码提交 " + shortGitSHA(sourceCommit), "准备独立构建目录"}
-	sourceWorktree, err := os.MkdirTemp("", "albs-source-")
+	sourceWorktree, err := os.MkdirTemp("", "alx-source-")
 	if err != nil {
 		return Result{}, err
 	}
@@ -440,7 +440,7 @@ func GitPublishWithOptions(root, version, sourceBranch, sourceCommit string, art
 	if _, err := os.Stat(filepath.Join(sourceWorktree, "lib")); err != nil {
 		return Result{Path: path, Output: strings.Join(logs, "\n")}, errors.New("构建结束后仍未找到 lib 目录，无法创建 Git 发布包")
 	}
-	worktree, err := os.MkdirTemp("", "albs-release-")
+	worktree, err := os.MkdirTemp("", "alx-release-")
 	if err != nil {
 		return Result{}, err
 	}
@@ -470,7 +470,7 @@ func GitPublishWithOptions(root, version, sourceBranch, sourceCommit string, art
 	if err != nil {
 		return Result{}, err
 	}
-	if err := os.WriteFile(filepath.Join(worktree, ".albs-release.json"), append(mappingData, '\n'), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(worktree, ".alx-release.json"), append(mappingData, '\n'), 0644); err != nil {
 		return Result{}, err
 	}
 	if _, err := gitRun(worktree, "add", "-A"); err != nil {
@@ -522,7 +522,7 @@ func releaseMappings(root, ref string) []ReleaseMapping {
 	commits := gitLines(root, "log", ref, "--format=%H", "-8")
 	mappings := []ReleaseMapping{}
 	for _, commit := range commits {
-		data, err := gitRun(root, "show", commit+":.albs-release.json")
+		data, err := gitRun(root, "show", commit+":.alx-release.json")
 		if err != nil {
 			continue
 		}

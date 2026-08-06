@@ -1,4 +1,4 @@
-# AlemonJS Setup（`albs`）
+# AlemonJS Setup（`alx`）
 
 AlemonJS Setup 是 AlemonJS 机器人的本地管理台。它把环境检查、创建或导入机器人、运行、日志、插件、连接、Git 与发布整理到浏览器界面中；不需要记忆命令，也不提供可输入的网页终端。
 
@@ -17,20 +17,20 @@ AlemonJS Setup 是 AlemonJS 机器人的本地管理台。它把环境检查、�
 
 ## 给使用者：下载并开始
 
-在 [GitHub Releases](https://github.com/lemonade-lab/alemonx/releases) 下载最新版本。Release 提供的是压缩包，解压后得到 `albs`（Windows 为 `albs.exe`）。
+在 [GitHub Releases](https://github.com/lemonade-lab/alemonx/releases) 下载最新版本。Release 提供的是压缩包，解压后得到 `alx`（Windows 为 `alx.exe`）。
 
 | 系统 | 下载文件 |
 | --- | --- |
-| Windows 64 位 | `albs-windows-amd64.zip` |
-| macOS Apple Silicon | `albs-darwin-arm64.zip` |
-| macOS Intel | `albs-darwin-amd64.zip` |
-| Linux 64 位 | `albs-linux-amd64.zip` |
+| Windows 64 位 | `alx-windows-amd64.zip` |
+| macOS Apple Silicon | `alx-darwin-arm64.zip` |
+| macOS Intel | `alx-darwin-amd64.zip` |
+| Linux 64 位 | `alx-linux-amd64.zip` |
 
-Windows 直接双击 `albs.exe`。macOS / Linux 在解压目录运行：
+Windows 直接双击 `alx.exe`。macOS / Linux 在解压目录运行：
 
 ```bash
-chmod +x albs
-./albs
+chmod +x alx
+./alx
 ```
 
 终端会显示本地地址，例如 `http://127.0.0.1:17390`。在浏览器打开它，即会进入“你现在想做什么？”引导页。
@@ -86,38 +86,38 @@ chmod +x albs
 也可用 CLI 配置认证：
 
 ```bash
-albs auth enable --account lemonade --password 'your-password' --confirm-password 'your-password'
-albs auth status
-albs auth disable --yes
+alx auth enable --account lemonade --password 'your-password' --confirm-password 'your-password'
+alx auth status
+alx auth disable --yes
 ```
 
-自动化脚本可改用 `ALBS_AUTH_ACCOUNT`、`ALBS_AUTH_PASSWORD` 与 `ALBS_AUTH_CONFIRM_PASSWORD`，避免把密码写入命令历史。
+自动化脚本可改用 `alx_AUTH_ACCOUNT`、`alx_AUTH_PASSWORD` 与 `alx_AUTH_CONFIRM_PASSWORD`，避免把密码写入命令历史。
 
 ## CLI
 
-将 `albs` 放入 `PATH` 后，可选地把管理台注册为登录后常驻服务：
+将 `alx` 放入 `PATH` 后，可选地把管理台注册为登录后常驻服务：
 
 ```bash
-albs install --port 17390
-albs open
-albs status
-albs start
-albs stop
-albs restart
-albs update
-albs uninstall --yes
+alx install --port 17390
+alx open
+alx status
+alx start
+alx stop
+alx restart
+alx update
+alx uninstall --yes
 ```
 
 项目发布也可以自动化执行：
 
 ```bash
-albs --cwd /path/to/robot npm publish
-albs --cwd /path/to/robot git publish --yes
+alx --cwd /path/to/robot npm publish
+alx --cwd /path/to/robot git publish --yes
 ```
 
 ## MCP：让 AI 助手协助管理机器人
 
-`albs` 支持标准 MCP。它不提供任意 shell、任意路径读写或密钥读取；写入文件、安装依赖、启动、构建、打包与发布均要求客户端显式确认。
+`alx` 支持标准 MCP。它不提供任意 shell、任意路径读写或密钥读取；写入文件、安装依赖、启动、构建、打包与发布均要求客户端显式确认。
 
 **STDIO（推荐 Codex 与桌面客户端）**：
 
@@ -125,7 +125,7 @@ albs --cwd /path/to/robot git publish --yes
 {
   "mcpServers": {
     "alemonx": {
-      "command": "albs",
+      "command": "alx",
       "args": ["mcp"]
     }
   }
@@ -135,7 +135,7 @@ albs --cwd /path/to/robot git publish --yes
 **Streamable HTTP**：
 
 ```bash
-MCP_TOKEN='高强度随机值' albs --mcp-port 17391 mcp-http
+MCP_TOKEN='高强度随机值' alx --mcp-port 17391 mcp-http
 ```
 
 填写地址 `http://127.0.0.1:17391/mcp`，认证填写 `Bearer <MCP_TOKEN>`。完整控制边界与任务约定见 [MCP 控制面文档](docs/mcp.md)。
@@ -187,18 +187,18 @@ docker compose up -d --build
 ```bash
 chmod +x docker-buildx.sh
 VERSION=v0.1.0 PLATFORM=linux/amd64 ./docker-buildx.sh
-# 产物：dist/albs-v0.1.0-amd64.oci.tar
+# 产物：dist/alx-v0.1.0-amd64.oci.tar
 ```
 
 将镜像包、`docker-compose.yml`、`.env`（可选）以及需要迁移的 `workspace/`、`state/`、`ssh/` 上传到服务器后：
 
 ```bash
-docker load -i dist/albs-v0.1.0-amd64.oci.tar
-ALBS_IMAGE=alemonx:v0.1.0 docker compose up -d
-docker compose exec albs albs auth enable --account admin --password '请使用高强度密码' --confirm-password '请使用高强度密码'
+docker load -i dist/alx-v0.1.0-amd64.oci.tar
+alx_IMAGE=alemonx:v0.1.0 docker compose up -d
+docker compose exec alx alx auth enable --account admin --password '请使用高强度密码' --confirm-password '请使用高强度密码'
 ```
 
-Compose 默认只绑定服务器本机 `127.0.0.1:17390`。线上请由 HTTPS 反向代理转发该端口；确认已开启身份认证后，如确有必要才设置 `ALBS_LISTEN_ADDRESS=0.0.0.0` 对外暴露。不要在生产容器挂载个人完整的 `~/.ssh`，应只放入部署专用密钥到 `./ssh/`。
+Compose 默认只绑定服务器本机 `127.0.0.1:17390`。线上请由 HTTPS 反向代理转发该端口；确认已开启身份认证后，如确有必要才设置 `alx_LISTEN_ADDRESS=0.0.0.0` 对外暴露。不要在生产容器挂载个人完整的 `~/.ssh`，应只放入部署专用密钥到 `./ssh/`。
 
 ## 仓库结构
 

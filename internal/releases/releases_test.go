@@ -4,9 +4,9 @@ import "testing"
 
 func TestMatchingAssetForDoesNotTreatDarwinAsWindows(t *testing.T) {
 	assets := []Asset{
-		{Name: "albs-darwin-arm64.zip", URL: "mac-arm"},
-		{Name: "albs-darwin-amd64.zip", URL: "mac-intel"},
-		{Name: "albs-windows-amd64.zip", URL: "windows"},
+		{Name: "alx-darwin-arm64.zip", URL: "mac-arm"},
+		{Name: "alx-darwin-amd64.zip", URL: "mac-intel"},
+		{Name: "alx-windows-amd64.zip", URL: "windows"},
 	}
 
 	if got := matchingAssetFor(assets, "windows", "amd64"); got.URL != "windows" {
@@ -18,7 +18,7 @@ func TestMatchingAssetForDoesNotTreatDarwinAsWindows(t *testing.T) {
 }
 
 func TestMatchingAssetForRequiresExactPlatformAndArchitecture(t *testing.T) {
-	assets := []Asset{{Name: "albs-darwin-arm64.zip", URL: "mac-arm"}}
+	assets := []Asset{{Name: "alx-darwin-arm64.zip", URL: "mac-arm"}}
 	if got := matchingAssetFor(assets, "windows", "amd64"); got.Name != "" {
 		t.Fatalf("Windows should not receive unmatched asset: %#v", got)
 	}

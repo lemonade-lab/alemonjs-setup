@@ -46,7 +46,7 @@ func installLocalPackage(root, source string) (Result, error) {
 		}
 		return Result{Path: target, Output: "已安装到 packages/" + name + version + "。\n" + output}, nil
 	}
-	temporary, err := os.MkdirTemp("", "albs-package-")
+	temporary, err := os.MkdirTemp("", "alx-package-")
 	if err != nil {
 		return Result{}, err
 	}
@@ -241,7 +241,7 @@ func replaceLocalPackage(root, packageName, version string) (Result, error) {
 	if previous.Path == "" {
 		return Result{}, errors.New("背包中没有可更新的本地插件包")
 	}
-	backup := previous.Path + ".albs-backup"
+	backup := previous.Path + ".alx-backup"
 	if _, err := os.Stat(backup); err == nil {
 		return Result{}, errors.New("检测到未完成的插件更新，请先刷新背包后重试")
 	}

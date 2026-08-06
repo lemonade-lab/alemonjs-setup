@@ -20,7 +20,7 @@ async function readStatus() {
 }
 
 function notifyAuthChanged() {
-  window.dispatchEvent(new Event('albs:auth-changed'))
+  window.dispatchEvent(new Event('alx:auth-changed'))
 }
 
 export function AuthGate({ children }: { children: ReactNode }) {
@@ -40,8 +40,8 @@ export function AuthGate({ children }: { children: ReactNode }) {
   }
   useEffect(() => {
     refresh()
-    window.addEventListener('albs:auth-changed', refresh)
-    return () => window.removeEventListener('albs:auth-changed', refresh)
+    window.addEventListener('alx:auth-changed', refresh)
+    return () => window.removeEventListener('alx:auth-changed', refresh)
   }, [])
   const login = async () => {
     setBusy(true)
@@ -74,7 +74,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
         <div>
           <strong className="text-sm text-slate-800">身份认证</strong>
           <p className="mt-1 text-xs leading-5 text-slate-500">
-            此 albs 服务已开启账户保护，请登录后继续。
+            此 alx 服务已开启账户保护，请登录后继续。
           </p>
         </div>
         <label className="grid gap-1 text-xs font-semibold text-slate-600">
@@ -129,8 +129,8 @@ export function AuthControl() {
   }
   useEffect(() => {
     refresh()
-    window.addEventListener('albs:auth-changed', refresh)
-    return () => window.removeEventListener('albs:auth-changed', refresh)
+    window.addEventListener('alx:auth-changed', refresh)
+    return () => window.removeEventListener('alx:auth-changed', refresh)
   }, [])
   const enable = async () => {
     setBusy(true)

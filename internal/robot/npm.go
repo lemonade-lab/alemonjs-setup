@@ -143,7 +143,7 @@ func (Manager) NPMPackPreviewAtCommit(root, sourceCommit string) (NPMPackPreview
 	if err != nil {
 		return NPMPackPreview{}, errors.New("所选源码提交不存在，请刷新后重新选择")
 	}
-	worktree, err := os.MkdirTemp("", "albs-npm-preview-")
+	worktree, err := os.MkdirTemp("", "alx-npm-preview-")
 	if err != nil {
 		return NPMPackPreview{}, err
 	}
@@ -214,7 +214,7 @@ func (Manager) NPMPublish(root, sourceCommit, tag, token string) (Result, error)
 	if _, err := gitRun(path, "merge-base", "--is-ancestor", sourceCommit, "HEAD"); err != nil {
 		return Result{}, errors.New("所选提交不属于当前源码分支，请刷新后重新选择")
 	}
-	worktree, err := os.MkdirTemp("", "albs-npm-source-")
+	worktree, err := os.MkdirTemp("", "alx-npm-source-")
 	if err != nil {
 		return Result{}, err
 	}
@@ -287,7 +287,7 @@ func publishWithToken(root, target, tag, token string) (string, error) {
 	if strings.ContainsAny(token, "\r\n") {
 		return "", errors.New("npm 令牌格式无效")
 	}
-	directory, err := os.MkdirTemp("", "alemonjs-setup-npm-")
+	directory, err := os.MkdirTemp("", "alemonx-npm-")
 	if err != nil {
 		return "", fmt.Errorf("无法创建临时发布配置：%w", err)
 	}

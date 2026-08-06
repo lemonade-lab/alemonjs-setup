@@ -24,7 +24,7 @@ type Asset struct {
 	Size int64  `json:"size"`
 }
 
-var allowed = map[string]string{"alemondesk": "lemonade-lab/alemondesk", "alemonapp": "lemonade-lab/alemonapp", "albs": "lemonade-lab/albs", "alemonjs-setup": "lemonade-lab/alemonjs-setup"}
+var allowed = map[string]string{"alemondesk": "lemonade-lab/alemondesk", "alemonapp": "lemonade-lab/alemonapp", "alx": "lemonade-lab/alx", "alemonx": "lemonade-lab/alemonx"}
 
 type Update struct {
 	Current         string `json:"current"`
@@ -39,7 +39,7 @@ type Update struct {
 
 func SetupUpdate(current string) (Update, error) {
 	result := Update{Current: current}
-	items, err := List("alemonjs-setup")
+	items, err := List("alemonx")
 	if err != nil {
 		return result, err
 	}

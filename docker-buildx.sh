@@ -4,8 +4,8 @@ set -eu
 IMAGE_NAME=${IMAGE_NAME:-alemonx}
 VERSION=${VERSION:-$(git describe --tags --always --dirty 2>/dev/null || echo dev)}
 PLATFORM=${PLATFORM:-linux/amd64}
-ARCHIVE=${ARCHIVE:-dist/albs-${VERSION}-${PLATFORM#linux/}.oci.tar}
-BUILDER=${BUILDER:-albs-builder}
+ARCHIVE=${ARCHIVE:-dist/alx-${VERSION}-${PLATFORM#linux/}.oci.tar}
+BUILDER=${BUILDER:-alx-builder}
 
 mkdir -p "$(dirname "$ARCHIVE")"
 if ! docker buildx inspect "$BUILDER" >/dev/null 2>&1; then

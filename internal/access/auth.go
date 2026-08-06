@@ -1,4 +1,4 @@
-// Package access implements the optional local account protection for albs.
+// Package access implements the optional local account protection for alx.
 package access
 
 import (
@@ -45,7 +45,7 @@ func DefaultPath() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("无法定位用户配置目录：%w", err)
 	}
-	return filepath.Join(directory, "alemonjs", "albs-auth.json"), nil
+	return filepath.Join(directory, "alemonjs", "alx-auth.json"), nil
 }
 
 func New() (*Manager, error) {

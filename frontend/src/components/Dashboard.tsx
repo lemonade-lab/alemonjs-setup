@@ -2280,9 +2280,9 @@ function McpControl() {
   const [transport, setTransport] = useState<'stdio' | 'http'>('stdio')
   const [copied, setCopied] = useState(false)
   const stdioConfig =
-    '{\n  "mcpServers": {\n    "alemonx": {\n      "command": "albs",\n      "args": ["mcp"]\n    }\n  }\n}'
+    '{\n  "mcpServers": {\n    "alemonx": {\n      "command": "alx",\n      "args": ["mcp"]\n    }\n  }\n}'
   const httpCommand =
-    "MCP_TOKEN='请生成高强度随机值' albs --mcp-port 17391 mcp-http"
+    "MCP_TOKEN='请生成高强度随机值' alx --mcp-port 17391 mcp-http"
   const copy = async (value: string) => {
     try {
       await navigator.clipboard.writeText(value)
@@ -2401,7 +2401,7 @@ function McpControl() {
             <>
               <p className="m-0 text-xs leading-5 text-slate-600 dark:text-slate-300">
                 在 Codex 的“连接至自定义 MCP”中选择<strong> STDIO</strong>
-                ，把下列字段逐行填入。Codex 会直接启动本机 <code>albs</code>
+                ，把下列字段逐行填入。Codex 会直接启动本机 <code>alx</code>
                 ，无需额外开启端口。
               </p>
               <dl className="mcp-form-guide m-0 overflow-hidden rounded-lg border border-blue-100 dark:border-blue-900">
@@ -2416,7 +2416,7 @@ function McpControl() {
                 <div>
                   <dt>启动命令</dt>
                   <dd>
-                    <code>albs</code>
+                    <code>alx</code>
                   </dd>
                 </div>
                 <div>
@@ -4793,11 +4793,11 @@ function PluginWebViewFrame({
         type?: string
         value?: { status?: number; message?: string }
       }
-      if (message?.source !== 'albs-webview') return
+      if (message?.source !== 'alx-webview') return
       if (message.type === 'ready') {
         frameRef.current?.contentWindow?.postMessage(
           {
-            source: 'albs-parent',
+            source: 'alx-parent',
             value: {
               type: 'theme',
               data: document.documentElement.dataset.theme ?? 'light'

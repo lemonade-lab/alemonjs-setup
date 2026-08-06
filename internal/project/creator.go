@@ -12,7 +12,7 @@ import (
 	"regexp"
 	"strings"
 
-	"alemonjs-setup/internal/system"
+	"alemonx/internal/system"
 )
 
 type Config struct {
@@ -155,13 +155,13 @@ func (c *Creator) createWithPrivileges(config Config) (Result, error) {
 	if err != nil {
 		return Result{}, fmt.Errorf("无法申请系统权限：%w", err)
 	}
-	configFile, err := os.CreateTemp("", "albs-create-request-*.json")
+	configFile, err := os.CreateTemp("", "alx-create-request-*.json")
 	if err != nil {
 		return Result{}, fmt.Errorf("无法准备权限申请：%w", err)
 	}
 	configPath := configFile.Name()
 	defer os.Remove(configPath)
-	resultFile, err := os.CreateTemp("", "albs-create-result-*.json")
+	resultFile, err := os.CreateTemp("", "alx-create-result-*.json")
 	if err != nil {
 		return Result{}, fmt.Errorf("无法准备权限申请：%w", err)
 	}
@@ -427,7 +427,7 @@ func run(directory string, logs *[]string, name string, args ...string) error {
 }
 
 func ensureWritableDirectory(directory string) error {
-	file, err := os.CreateTemp(directory, ".alemonjs-setup-write-check-")
+	file, err := os.CreateTemp(directory, ".alemonx-write-check-")
 	if err != nil {
 		if os.IsPermission(err) {
 			return errors.New("保存位置当前不可写，需要申请系统权限")
@@ -450,7 +450,7 @@ func isPermissionError(err error) bool {
 }
 
 func permissionAdvice(action string) error {
-	return fmt.Errorf("没有权限%s。请在系统设置中为 albs 授予该磁盘或文件夹的访问权限，或选择当前登录账户可读写的保存位置后重试", action)
+	return fmt.Errorf("没有权限%s。请在系统设置中为 alx 授予该磁盘或文件夹的访问权限，或选择当前登录账户可读写的保存位置后重试", action)
 }
 
 func commandNotFound(err error, output string) bool {

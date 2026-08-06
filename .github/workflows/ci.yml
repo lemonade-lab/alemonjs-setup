@@ -37,10 +37,10 @@ jobs:
     strategy:
       matrix:
         include:
-          - { goos: windows, goarch: amd64, binary: albs.exe, bundle: albs-windows-amd64.zip, plugin_binary: network-firewall-windows-amd64.exe }
-          - { goos: darwin, goarch: arm64, binary: albs, bundle: albs-darwin-arm64.zip, plugin_binary: network-firewall-darwin-arm64 }
-          - { goos: darwin, goarch: amd64, binary: albs, bundle: albs-darwin-amd64.zip, plugin_binary: network-firewall-darwin-amd64 }
-          - { goos: linux, goarch: amd64, binary: albs, bundle: albs-linux-amd64.zip, plugin_binary: network-firewall-linux-amd64 }
+          - { goos: windows, goarch: amd64, binary: alx.exe, bundle: alx-windows-amd64.zip, plugin_binary: network-firewall-windows-amd64.exe }
+          - { goos: darwin, goarch: arm64, binary: alx, bundle: alx-darwin-arm64.zip, plugin_binary: network-firewall-darwin-arm64 }
+          - { goos: darwin, goarch: amd64, binary: alx, bundle: alx-darwin-amd64.zip, plugin_binary: network-firewall-darwin-amd64 }
+          - { goos: linux, goarch: amd64, binary: alx, bundle: alx-linux-amd64.zip, plugin_binary: network-firewall-linux-amd64 }
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -58,7 +58,7 @@ jobs:
           mkdir -p "bundle/plugins/network-firewall/dist" release
           CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build -trimpath -ldflags "-s -w -X main.Version=${GITHUB_REF_NAME}" -o "bundle/${{ matrix.binary }}" .
           CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build -trimpath -ldflags "-s -w" -o "bundle/plugins/network-firewall/dist/${{ matrix.plugin_binary }}" ./plugins/network-firewall/runner
-          cp plugins/network-firewall/albs.setup.json "bundle/plugins/network-firewall/"
+          cp plugins/network-firewall/alx.setup.json "bundle/plugins/network-firewall/"
           (cd bundle && zip -r "../release/${{ matrix.bundle }}" .)
       - uses: actions/upload-artifact@v4
         with:

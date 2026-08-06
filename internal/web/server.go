@@ -23,14 +23,14 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"alemonjs-setup/internal/access"
-	"alemonjs-setup/internal/ai"
-	"alemonjs-setup/internal/catalog"
-	"alemonjs-setup/internal/project"
-	"alemonjs-setup/internal/releases"
-	"alemonjs-setup/internal/robot"
-	"alemonjs-setup/internal/setupplugin"
-	"alemonjs-setup/internal/system"
+	"alemonx/internal/access"
+	"alemonx/internal/ai"
+	"alemonx/internal/catalog"
+	"alemonx/internal/project"
+	"alemonx/internal/releases"
+	"alemonx/internal/robot"
+	"alemonx/internal/setupplugin"
+	"alemonx/internal/system"
 )
 
 type goal struct {
@@ -107,7 +107,7 @@ var goals = []goal{
 	{ID: "develop", Title: "开发机器人", Description: "创建一个可按需配置的 AlemonJS 开发项目。", Steps: []string{"环境检查", "项目名称", "开发语言", "代码规范", "版本管理", "本地运行", "包管理器", "开发能力包", "图片开发", "样式方案", "开发技能", "确认创建"}},
 	{ID: "desktop", Title: "安装桌面版", Description: "下载 AlemonDesk。", Steps: []string{"选择下载镜像", "下载桌面版"}, Mirrors: githubMirrors("alemondesk")},
 	{ID: "mobile", Title: "安装手机版", Description: "下载 AlemonApp Android 安装包。", Steps: []string{"下载 Android 安装包"}, DownloadURL: "https://download.alemonjs.com/application/alemonapp/app-universal-release.apk"},
-	{ID: "web", Title: "部署 Web 版", Description: "部署 albs。", Steps: []string{"选择部署方式", "环境检查", "快速启动"}, Mirrors: githubMirrors("albs")},
+	{ID: "web", Title: "部署 Web 版", Description: "部署 alx。", Steps: []string{"选择部署方式", "环境检查", "快速启动"}, Mirrors: githubMirrors("alx")},
 }
 
 func githubMirrors(repository string) []mirror {
@@ -129,7 +129,7 @@ func NewServer(version string, staticFiles fs.FS, templateFiles ...fs.FS) http.H
 }
 
 // NewServerWithAuth permits tests and embedders to provide an isolated auth
-// store instead of reading the current user's albs configuration.
+// store instead of reading the current user's alx configuration.
 func NewServerWithAuth(version string, staticFiles fs.FS, identity *access.Manager, templateFiles ...fs.FS) http.Handler {
 	assets, err := fs.Sub(staticFiles, "dist")
 	if err != nil {
@@ -211,7 +211,7 @@ func NewServerWithAuth(version string, staticFiles fs.FS, identity *access.Manag
 	return router
 }
 
-const authCookieName = "albs_session"
+const authCookieName = "alx_session"
 
 func (s *server) authToken(r *http.Request) string {
 	cookie, err := r.Cookie(authCookieName)
@@ -643,7 +643,7 @@ func (s *server) directoryHandler(w http.ResponseWriter, r *http.Request) {
 	entries, err := os.ReadDir(path)
 	if err != nil {
 		if os.IsPermission(err) {
-			writeJSON(w, http.StatusForbidden, map[string]any{"error": "没有读取此位置的权限。请在系统设置中为 albs 授予“文件与文件夹”或“完全磁盘访问”权限，然后重试。", "permission": true})
+			writeJSON(w, http.StatusForbidden, map[string]any{"error": "没有读取此位置的权限。请在系统设置中为 alx 授予“文件与文件夹”或“完全磁盘访问”权限，然后重试。", "permission": true})
 			return
 		}
 		writeError(w, http.StatusBadRequest, "无法读取该目录")
@@ -1013,7 +1013,7 @@ func (s *server) loadUpdateHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "更新包应为 GitHub Release 下载的 zip 或 tar.gz 文件。")
 		return
 	}
-	directory, err := os.MkdirTemp("", "albs-upload-")
+	directory, err := os.MkdirTemp("", "alx-upload-")
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -1605,7 +1605,7 @@ func rewriteWebViewHTML(content string) string {
 // setup process privileges. The package metadata is JSON-quoted to keep a
 // malformed manifest from becoming executable JavaScript.
 func webViewBridge(entry robot.WebViewEntry) string {
-	return `(function(){var listeners=[],lastAPIError='';function emit(value){listeners.slice().forEach(function(listener){try{listener(value)}catch(_){}})}function send(type,value){parent.postMessage({source:'albs-webview',type:type,value:value},'*')}function reportAPIError(status,message){var key=String(status||0)+'/'+String(message||'');if(lastAPIError===key)return;lastAPIError=key;send('api-error',{status:status||0,message:message||''});window.setTimeout(function(){lastAPIError=''},5000)}function responseError(response){response.clone().json().then(function(payload){reportAPIError(response.status,payload&&typeof payload.error==='string'?payload.error:'')}).catch(function(){reportAPIError(response.status,'')})}function isPluginAPI(input){try{var url=new URL(typeof input==='string'?input:input.url,location.href);return /\/api\//.test(url.pathname)}catch(_){return false}}var nativeFetch=window.fetch;window.fetch=function(input,init){return nativeFetch.apply(this,arguments).then(function(response){if(isPluginAPI(input)&&!response.ok)responseError(response);return response})};var NativeXHR=window.XMLHttpRequest;function TrackedXHR(){var xhr=new NativeXHR(),url='';var open=xhr.open;xhr.open=function(method,nextURL){url=nextURL;return open.apply(xhr,arguments)};xhr.addEventListener('loadend',function(){if(isPluginAPI(url)&&xhr.status>=400){var message='';try{var body=JSON.parse(xhr.responseText);message=typeof body.error==='string'?body.error:''}catch(_){}reportAPIError(xhr.status,message)}});return xhr}TrackedXHR.prototype=NativeXHR.prototype;window.XMLHttpRequest=TrackedXHR;function post(value){send('message',value);return nativeFetch('message',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({value:value})}).then(function(response){if(!response.ok)throw new Error('插件 desk 通信不可用')})}function pull(){nativeFetch('events').then(function(response){return response.ok?response.json():null}).then(function(payload){(payload&&payload.events||[]).forEach(emit)}).catch(function(){})}var api=Object.freeze({context:Object.freeze({package:` + strconv.Quote(entry.Package) + `,name:` + strconv.Quote(entry.Name) + `}),postMessage:post,onMessage:function(listener){if(typeof listener!=='function')return function(){};listeners.push(listener);return function(){listeners=listeners.filter(function(item){return item!==listener})}},request:function(path,options){if(typeof path!=='string'||!/^\.\/api\//.test(path))return Promise.reject(new Error('只允许请求插件 ./api/ 路径'));return window.fetch(path,options)}});window.__albsWebview=api;window.appDesktopAPI=Object.freeze({postMessage:api.postMessage,onMessage:api.onMessage,themeVariables:function(){return getComputedStyle(document.documentElement)},themeOn:function(listener){return api.onMessage(function(value){if(value&&value.type==='theme')listener(value.data)})}});window.addEventListener('message',function(event){var data=event.data;if(data&&data.source==='albs-parent'){emit(data.value)}});pull();window.setInterval(pull,800);send('ready',{package:api.context.package,name:api.context.name});})();`
+	return `(function(){var listeners=[],lastAPIError='';function emit(value){listeners.slice().forEach(function(listener){try{listener(value)}catch(_){}})}function send(type,value){parent.postMessage({source:'alx-webview',type:type,value:value},'*')}function reportAPIError(status,message){var key=String(status||0)+'/'+String(message||'');if(lastAPIError===key)return;lastAPIError=key;send('api-error',{status:status||0,message:message||''});window.setTimeout(function(){lastAPIError=''},5000)}function responseError(response){response.clone().json().then(function(payload){reportAPIError(response.status,payload&&typeof payload.error==='string'?payload.error:'')}).catch(function(){reportAPIError(response.status,'')})}function isPluginAPI(input){try{var url=new URL(typeof input==='string'?input:input.url,location.href);return /\/api\//.test(url.pathname)}catch(_){return false}}var nativeFetch=window.fetch;window.fetch=function(input,init){return nativeFetch.apply(this,arguments).then(function(response){if(isPluginAPI(input)&&!response.ok)responseError(response);return response})};var NativeXHR=window.XMLHttpRequest;function TrackedXHR(){var xhr=new NativeXHR(),url='';var open=xhr.open;xhr.open=function(method,nextURL){url=nextURL;return open.apply(xhr,arguments)};xhr.addEventListener('loadend',function(){if(isPluginAPI(url)&&xhr.status>=400){var message='';try{var body=JSON.parse(xhr.responseText);message=typeof body.error==='string'?body.error:''}catch(_){}reportAPIError(xhr.status,message)}});return xhr}TrackedXHR.prototype=NativeXHR.prototype;window.XMLHttpRequest=TrackedXHR;function post(value){send('message',value);return nativeFetch('message',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({value:value})}).then(function(response){if(!response.ok)throw new Error('插件 desk 通信不可用')})}function pull(){nativeFetch('events').then(function(response){return response.ok?response.json():null}).then(function(payload){(payload&&payload.events||[]).forEach(emit)}).catch(function(){})}var api=Object.freeze({context:Object.freeze({package:` + strconv.Quote(entry.Package) + `,name:` + strconv.Quote(entry.Name) + `}),postMessage:post,onMessage:function(listener){if(typeof listener!=='function')return function(){};listeners.push(listener);return function(){listeners=listeners.filter(function(item){return item!==listener})}},request:function(path,options){if(typeof path!=='string'||!/^\.\/api\//.test(path))return Promise.reject(new Error('只允许请求插件 ./api/ 路径'));return window.fetch(path,options)}});window.__alxWebview=api;window.appDesktopAPI=Object.freeze({postMessage:api.postMessage,onMessage:api.onMessage,themeVariables:function(){return getComputedStyle(document.documentElement)},themeOn:function(listener){return api.onMessage(function(value){if(value&&value.type==='theme')listener(value.data)})}});window.addEventListener('message',function(event){var data=event.data;if(data&&data.source==='alx-parent'){emit(data.value)}});pull();window.setInterval(pull,800);send('ready',{package:api.context.package,name:api.context.name});})();`
 }
 
 // proxyRobotWebViewAPI connects a WebView's relative ./api/* requests to the
@@ -2118,7 +2118,7 @@ func (s *server) health(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *server) app(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"name": "alemonjs-setup", "version": s.version})
+	writeJSON(w, http.StatusOK, map[string]string{"name": "alemonx", "version": s.version})
 }
 
 func (s *server) listGoals(w http.ResponseWriter, _ *http.Request) {
