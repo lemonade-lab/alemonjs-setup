@@ -38,7 +38,12 @@ function removeLegacyPrivateDrafts() {
 
 removeLegacyPrivateDrafts()
 
-export type WorkspaceProject = { id: string; path: string; name: string }
+export type WorkspaceProject = {
+  id: string
+  path: string
+  name: string
+  pinned?: boolean
+}
 export type WorkspaceWebViewTab = {
   key: string
   root: string
@@ -91,6 +96,16 @@ const workspaceSlice = createSlice({
       state.projects = state.projects.filter(item => item.id !== action.payload)
       if (state.activeProjectID === action.payload)
         state.activeProjectID = state.projects[0]?.id ?? ''
+    },
+    pinProject(state, action: PayloadAction<string>) {
+      const target = state.projects.find(item => item.id === action.payload)
+      if (!target) return
+      target.pinned = !target.pinned
+      state.projects = [...state.projects].sort((left, right) => {
+        if (left.pinned && !right.pinned) return -1
+        if (!left.pinned && right.pinned) return 1
+        return 0
+      })
     },
     setDraft(state, action: PayloadAction<{ key: string; content: string }>) {
       state.drafts[action.payload.key] = action.payload.content
@@ -197,6 +212,7 @@ export const {
   addProjects,
   selectProject,
   removeProject,
+  pinProject,
   setDraft,
   clearDraft,
   setDeveloperMode,

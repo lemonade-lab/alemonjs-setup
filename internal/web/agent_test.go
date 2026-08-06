@@ -69,3 +69,18 @@ func TestAgentSessionInvalidID(t *testing.T) {
 		t.Fatalf("状态码 = %d，应为 400", response.Code)
 	}
 }
+
+func TestTitleFromMessage(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"帮我看一下机器人项目结构", "帮我看一下机器人"},
+		{"你好", "你好"},
+		{"  修复登录报错  ", "修复登录报错"},
+		{"# 优化性能", "优化性能"},
+		{"很短的", "很短的"},
+	}
+	for _, c := range cases {
+		if got := titleFromMessage(c.in); got != c.want {
+			t.Errorf("titleFromMessage(%q) = %q, 期望 %q", c.in, got, c.want)
+		}
+	}
+}

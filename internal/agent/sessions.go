@@ -19,6 +19,7 @@ type Session struct {
 	Root     string    `json:"root"`
 	Provider string    `json:"provider"`
 	Model    string    `json:"model"`
+	Archived bool      `json:"archived"`
 	Updated  time.Time `json:"updated"`
 }
 
@@ -88,7 +89,12 @@ func (s *SessionStore) List() ([]Session, error) {
 		return nil, err
 	}
 	out := make([]Session, 0, len(index.Sessions))
-	out = append(out, index.Sessions...)
+	for _, session := range index.Sessions {
+		if session.Archived {
+			continue
+		}
+		out = append(out, session)
+	}
 	return out, nil
 }
 
@@ -108,8 +114,9 @@ func (s *SessionStore) Get(id string) (Session, error) {
 	return Session{}, errors.New("会话不存在")
 }
 
-// Create records a new session with an empty transcript.
-func (s *SessionStore) Create(root, provider, model string) (Session, error) {
+// Create records a new session with an empty transcript. An empty title falls
+// back to the derived directory name.
+func (s *SessionStore) Create(root, provider, model, title string) (Session, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := time.Now()
@@ -120,7 +127,7 @@ func (s *SessionStore) Create(root, provider, model string) (Session, error) {
 		Model:    model,
 		Updated:  now,
 	}
-	session.Title = deriveTitle(root)
+	session.Title = cleanTitle(title, deriveTitle(root))
 	index, err := s.loadIndex()
 	if err != nil {
 		return Session{}, err
@@ -133,6 +140,65 @@ func (s *SessionStore) Create(root, provider, model string) (Session, error) {
 		return Session{}, err
 	}
 	return session, nil
+}
+
+// Rename updates a session's title. It returns an error for unknown ids or
+// empty titles.
+func (s *SessionStore) Rename(id, title string) (Session, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	title = strings.TrimSpace(title)
+	if title == "" {
+		return Session{}, errors.New("标题不能为空")
+	}
+	index, err := s.loadIndex()
+	if err != nil {
+		return Session{}, err
+	}
+	for i := range index.Sessions {
+		if index.Sessions[i].ID == id {
+			index.Sessions[i].Title = title
+			index.Sessions[i].Updated = time.Now()
+			if err := s.saveIndex(index); err != nil {
+				return Session{}, err
+			}
+			return index.Sessions[i], nil
+		}
+	}
+	return Session{}, errors.New("会话不存在")
+}
+
+// Archive toggles a session's archived flag. Archived sessions stay on disk
+// and remain loadable, but are hidden from the default listing.
+func (s *SessionStore) Archive(id string, archived bool) (Session, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	index, err := s.loadIndex()
+	if err != nil {
+		return Session{}, err
+	}
+	for i := range index.Sessions {
+		if index.Sessions[i].ID == id {
+			index.Sessions[i].Archived = archived
+			index.Sessions[i].Updated = time.Now()
+			if err := s.saveIndex(index); err != nil {
+				return Session{}, err
+			}
+			return index.Sessions[i], nil
+		}
+	}
+	return Session{}, errors.New("会话不存在")
+}
+
+// cleanTitle normalizes a user-provided session title, enforcing a 2-8
+// character length. Longer or empty titles fall back to the default.
+func cleanTitle(title, fallback string) string {
+	trimmed := strings.TrimSpace(title)
+	runes := []rune(trimmed)
+	if len(runes) < 2 || len(runes) > 8 {
+		return fallback
+	}
+	return trimmed
 }
 
 // Append writes one JSONL entry to a session's transcript.

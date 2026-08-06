@@ -66,10 +66,15 @@ func (s *server) agentChatHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Session bookkeeping: persist the user message now and the full transcript
-	// after the run. A missing sessionId auto-creates one.
+	// after the run. A missing sessionId auto-creates one, using the first user
+	// message as the conversation title.
 	sessionID := input.SessionID
 	if sessionID == "" {
-		session, createErr := s.agentSessions.Create(input.Root, input.Provider, input.Model)
+		title := ""
+		if len(input.Messages) > 0 {
+			title = titleFromMessage(input.Messages[len(input.Messages)-1]["content"])
+		}
+		session, createErr := s.agentSessions.Create(input.Root, input.Provider, input.Model, title)
 		if createErr == nil {
 			sessionID = session.ID
 		}
@@ -115,7 +120,16 @@ func (s *server) agentChatHandler(w http.ResponseWriter, r *http.Request) {
 
 	start := time.Now()
 	result, err := loop.Run(r.Context(), messages)
-	if sessionID != "" {
+	s.logAgentRun(input.Root, len(messages), time.Since(start), err)
+	if err != nil {
+		if stream {
+			return
+		}
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	// 只有运行成功时 result 非 nil；出错时 result 为 nil，不能遍历。
+	if sessionID != "" && result != nil {
 		for _, message := range result.Messages {
 			if message.Role == "system" {
 				continue
@@ -123,12 +137,7 @@ func (s *server) agentChatHandler(w http.ResponseWriter, r *http.Request) {
 			_ = s.agentSessions.Append(sessionID, message)
 		}
 	}
-	s.logAgentRun(input.Root, len(messages), time.Since(start), err)
 	if stream {
-		return
-	}
-	if err != nil {
-		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"answer": result.Answer, "sessionId": sessionID})
@@ -211,6 +220,24 @@ func agentBasePrompt() string {
 		"修改文件前先读取确认目标；一次只改一个文件的一段代码，保持项目现有风格；改完用 agent_run_command 运行项目的验证命令（如 tsgo、eslint）检查结果，失败必须修复后再交付。"
 }
 
+// titleFromMessage derives a short session title from the first user message.
+// It takes the first 2-8 characters, stripping leading whitespace and markdown.
+func titleFromMessage(content string) string {
+	trimmed := strings.TrimSpace(content)
+	trimmed = strings.TrimLeft(trimmed, "#*-_> ")
+	runes := []rune(trimmed)
+	if len(runes) == 0 {
+		return ""
+	}
+	if len(runes) > 8 {
+		runes = runes[:8]
+	}
+	if len(runes) < 2 {
+		return string(runes)
+	}
+	return string(runes)
+}
+
 // agentSessionsHandler lists agent sessions (GET) or creates one (POST).
 func (s *server) agentSessionsHandler(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
@@ -226,6 +253,7 @@ func (s *server) agentSessionsHandler(w http.ResponseWriter, r *http.Request) {
 			Root     string `json:"root"`
 			Provider string `json:"provider"`
 			Model    string `json:"model"`
+			Title    string `json:"title"`
 		}
 		if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&input); err != nil {
 			writeError(w, http.StatusBadRequest, "请求无法识别。")
@@ -235,7 +263,7 @@ func (s *server) agentSessionsHandler(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "请先选择一个有效的机器人目录。")
 			return
 		}
-		session, err := s.agentSessions.Create(input.Root, input.Provider, input.Model)
+		session, err := s.agentSessions.Create(input.Root, input.Provider, input.Model, input.Title)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
@@ -272,6 +300,27 @@ func (s *server) agentSessionHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"output": "会话已删除。"})
+	case http.MethodPatch:
+		var input struct {
+			Title    string `json:"title"`
+			Archived *bool  `json:"archived"`
+		}
+		if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&input); err != nil {
+			writeError(w, http.StatusBadRequest, "请求无法识别。")
+			return
+		}
+		var session agent.Session
+		var err error
+		if input.Archived != nil {
+			session, err = s.agentSessions.Archive(id, *input.Archived)
+		} else {
+			session, err = s.agentSessions.Rename(id, input.Title)
+		}
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, session)
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "该操作暂不支持。")
 	}

@@ -15,6 +15,7 @@ import {
   Archive,
   Bot,
   ArrowLeft,
+  Pencil,
   ArrowRight,
   Check,
   ChevronDown,
@@ -27,10 +28,14 @@ import {
   HardDrive,
   GitBranch,
   Globe2,
+  History,
   KeyRound,
   Link,
+  MessageSquare,
+  MoreVertical,
   Network,
   Package,
+  Pin,
   Play,
   Plug,
   Plus,
@@ -39,6 +44,7 @@ import {
   Send,
   Settings,
   Terminal,
+  Trash2,
   X
 } from 'lucide-react'
 import { RobotConfigForm } from './RobotConfigForm'
@@ -100,6 +106,7 @@ import {
   openWebviewTab,
   pruneWebviewTabs,
   selectProject,
+  pinProject as pinWorkspaceProject,
   setDeveloperMode,
   setDraft
 } from '../store/workspaceStore'
@@ -657,6 +664,33 @@ export function Dashboard({
   const [pendingProjectRemoval, setPendingProjectRemoval] = useState<string | null>(null)
   const [trackRuntimeTasks, setTrackRuntimeTasks] = useState(false)
   const [aiOpen, setAIOpen] = useState(false)
+  const [agentSessions, setAgentSessions] = useState<
+    Array<{ id: string; title: string; root: string; updated: string }>
+  >([])
+  const [agentSessionId, setAgentSessionId] = useState('')
+  const [renameTarget, setRenameTarget] = useState<{
+    id: string
+    title: string
+  } | null>(null)
+  const [renameTitle, setRenameTitle] = useState('')
+  const loadAgentSessions = useCallback(async () => {
+    try {
+      const response = await fetch('/api/v1/agent/sessions')
+      if (!response.ok) return
+      const data = (await response.json()) as Array<{
+        id: string
+        title: string
+        root: string
+        updated: string
+      }>
+      setAgentSessions(data)
+    } catch {
+      // 会话列表加载失败不阻塞
+    }
+  }, [])
+  useEffect(() => {
+    void loadAgentSessions()
+  }, [loadAgentSessions])
   useEffect(() => {
     const closeWhenAnotherToolOpens = (event: Event) => {
       if ((event as CustomEvent<string>).detail !== 'environment')
@@ -1086,6 +1120,10 @@ export function Dashboard({
     setPendingProjectRemoval(id)
   }
 
+  const pinProject = (id: string) => {
+    dispatch(pinWorkspaceProject(id))
+  }
+
   function confirmRemoveProject() {
     if (!pendingProjectRemoval) return
     dispatch(removeWorkspaceProject(pendingProjectRemoval))
@@ -1124,12 +1162,51 @@ export function Dashboard({
     setCatalogItem(null)
     setOutput('')
   }
-  function openAI() {
+  function openAI(sessionID?: string) {
     closeTemporaryContentPage()
     setSystemFeature(null)
     setPage('robot')
+    setAgentSessionId(sessionID ?? '')
     setAIOpen(true)
     setOutput('')
+  }
+  // 新增对话直接打开干净页；首个问题发出时后端自动生成标题。
+  function openNewSession() {
+    if (!activeProject) return
+    openAI()
+  }
+  function requestRename(id: string, title: string) {
+    setRenameTarget({ id, title })
+    setRenameTitle(title)
+  }
+  async function archiveSession(id: string) {
+    try {
+      const response = await fetch(`/api/v1/agent/sessions/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ archived: true })
+      })
+      if (!response.ok) return
+      if (id === agentSessionId) openAI()
+      await loadAgentSessions()
+    } catch {
+      // 归档失败不阻塞
+    }
+  }
+  async function renameSession(id: string) {
+    if (!renameTarget || renameTitle.trim().length < 2) return
+    try {
+      const response = await fetch(`/api/v1/agent/sessions/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: renameTitle.trim() })
+      })
+      if (!response.ok) return
+      setRenameTarget(null)
+      await loadAgentSessions()
+    } catch {
+      // 重命名失败不阻塞
+    }
   }
   function selectSystemFeature(nextFeature: SystemFeature) {
     closeTemporaryContentPage()
@@ -1141,7 +1218,9 @@ export function Dashboard({
     catalog.find(group => group.title === catalogTitle) ?? catalog[0]
   const readyCount =
     report?.checks.filter(item => item.status === 'ready').length ?? 0
-  const robotContent = aiOpen ? <AgentChatPage root={root} /> : (
+  const robotContent = aiOpen ? (
+    <AgentChatPage root={root} initialSessionId={agentSessionId} />
+  ) : (
     <section className="workspace-content">
       {section === 'backpack' && (
         <BackpackPanel
@@ -1590,13 +1669,61 @@ export function Dashboard({
             onChooseDestination={() => setGitDestinationPickerOpen(true)}
             onConfirm={cloneRobotRepository}
           />
+          {renameTarget && (
+            <div className="fixed inset-0 z-[300] grid place-items-center bg-slate-900/40 p-4">
+              <div className="grid w-full max-w-sm gap-4 rounded-xl bg-white p-5 shadow-2xl">
+                <h3 className="text-base font-semibold text-slate-900">
+                  重命名对话
+                </h3>
+                <label className="grid gap-1.5 text-xs font-medium text-slate-600">
+                  名称（2-8 个字）
+                  <input
+                    className="h-10 rounded-md border border-slate-300 px-3 text-sm outline-none focus:border-brand-600 focus:ring-2 focus:ring-brand-100"
+                    value={renameTitle}
+                    onChange={event => setRenameTitle(event.target.value)}
+                    maxLength={8}
+                    autoFocus
+                    onKeyDown={event => {
+                      if (event.key === 'Enter') {
+                        event.preventDefault()
+                        if (renameTarget) void renameSession(renameTarget.id)
+                      }
+                    }}
+                  />
+                </label>
+                <footer className="flex justify-end gap-2">
+                  <button
+                    className="secondary-button"
+                    onClick={() => setRenameTarget(null)}
+                  >
+                    取消
+                  </button>
+                  <button
+                    className="primary-button"
+                    disabled={renameTitle.trim().length < 2}
+                    onClick={() => {
+                      if (renameTarget) void renameSession(renameTarget.id)
+                    }}
+                  >
+                    确定
+                  </button>
+                </footer>
+              </div>
+            </div>
+          )}
           <section className="console-layout">
             <ProjectRail
               feature={systemFeature}
               setupPlugins={setupPlugins}
               projects={projects}
               activeID={activeProjectID}
+              agentSessions={agentSessions}
               onFeature={selectSystemFeature}
+              onOpenAgent={openAI}
+              onPinProject={pinProject}
+              onNewSession={openNewSession}
+              onRenameSession={requestRename}
+              onArchiveSession={archiveSession}
               onAdd={chooseDirectories}
               onClone={() => setGitCloneOpen(true)}
               onSelect={id => {
@@ -1694,21 +1821,33 @@ function ProjectRail({
   setupPlugins,
   projects,
   activeID,
+  agentSessions,
   onFeature,
   onAdd,
   onClone,
   onSelect,
-  onRemove
+  onRemove,
+  onOpenAgent,
+  onPinProject,
+  onNewSession,
+  onRenameSession,
+  onArchiveSession
 }: {
   feature: SystemFeature | null
   setupPlugins: SetupPlugin[]
   projects: Project[]
   activeID: string
+  agentSessions: Array<{ id: string; title: string; root: string; updated: string }>
   onFeature: (feature: SystemFeature) => void
   onAdd: () => void
   onClone: () => void
   onSelect: (id: string) => void
   onRemove: (id: string) => void
+  onOpenAgent: (sessionID?: string) => void
+  onPinProject: (id: string) => void
+  onNewSession: () => void
+  onRenameSession: (id: string, title: string) => void
+  onArchiveSession: (id: string) => void
 }) {
   const activePlugins = setupPlugins.filter(item => item.enabled)
   return (
@@ -1799,14 +1938,20 @@ function ProjectRail({
             </button>
           </div>
         </header>
-        <div className="grid content-start gap-1.5 overflow-auto p-2">
+        <div className="grid content-start gap-1.5 overflow-auto p-2 h-full">
           {projects.map(project => (
             <ProjectItem
               active={project.id === activeID}
               key={project.id}
               project={project}
+              agentSessions={agentSessions}
               onSelect={onSelect}
               onRemove={onRemove}
+              onOpenAgent={onOpenAgent}
+              onPin={onPinProject}
+              onNewSession={onNewSession}
+              onRename={onRenameSession}
+              onArchive={onArchiveSession}
             />
           ))}
           {!projects.length && (
@@ -2330,19 +2475,54 @@ function GitInitializeDialog({
 function ProjectItem({
   project,
   active,
+  agentSessions,
   onSelect,
-  onRemove
+  onRemove,
+  onOpenAgent,
+  onPin,
+  onNewSession,
+  onRename,
+  onArchive
 }: {
   project: Project
   active: boolean
+  agentSessions: Array<{ id: string; title: string; root: string; updated: string }>
   onSelect: (id: string) => void
   onRemove: (id: string) => void
+  onOpenAgent: (sessionID?: string) => void
+  onPin: (id: string) => void
+  onNewSession: () => void
+  onRename: (id: string, title: string) => void
+  onArchive: (id: string) => void
 }) {
   const [validate, { data }] = useLazyRobotProjectQuery()
+  const [recordsOpen, setRecordsOpen] = useState(false)
+  const [moreOpen, setMoreOpen] = useState(false)
+  const [ctxMenu, setCtxMenu] = useState<{
+    id: string
+    title: string
+    x: number
+    y: number
+  } | null>(null)
+  const moreRef = useRef<HTMLDivElement | null>(null)
+  const ctxRef = useRef<HTMLDivElement | null>(null)
   useEffect(() => {
     void validate(project.path)
   }, [project.path, validate])
+  useEffect(() => {
+    const close = (event: globalThis.MouseEvent) => {
+      if (moreRef.current && !moreRef.current.contains(event.target as Node)) {
+        setMoreOpen(false)
+      }
+      if (ctxRef.current && !ctxRef.current.contains(event.target as Node)) {
+        setCtxMenu(null)
+      }
+    }
+    document.addEventListener('mousedown', close)
+    return () => document.removeEventListener('mousedown', close)
+  }, [])
   const invalid = data?.valid === false
+  const ownSessions = agentSessions.filter(item => item.root === project.path)
   return (
     <article
       className={cn(
@@ -2354,7 +2534,7 @@ function ProjectItem({
       )}
     >
       <button
-        className="grid w-full gap-1 pr-6 text-left"
+        className="grid w-full gap-1 pr-14 text-left"
         onClick={() => onSelect(project.id)}
       >
         <strong className="flex min-w-0 items-center gap-1.5 truncate text-xs font-semibold text-slate-800">
@@ -2372,14 +2552,130 @@ function ProjectItem({
           {invalid ? data.error || project.path : project.path}
         </small>
       </button>
-      <button
-        className="absolute right-2 top-2 inline-flex size-6 items-center justify-center rounded text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"
-        onClick={() => onRemove(project.id)}
-        aria-label={`移除 ${project.name}`}
-        title="移除目录"
-      >
-        <X className="size-3.5" />
-      </button>
+      <div className="absolute right-2 top-2 flex items-center gap-0.5">
+        <button
+          className={cn(
+            'inline-flex size-6 items-center justify-center rounded transition',
+            recordsOpen
+              ? 'bg-slate-200 text-slate-700'
+              : 'text-slate-400 hover:bg-slate-100 hover:text-slate-700'
+          )}
+          onClick={() => setRecordsOpen(value => !value)}
+          aria-label={`${project.name} 的对话记录`}
+          title="对话记录"
+        >
+          <History className="size-3.5" />
+        </button>
+        <div ref={moreRef} className="relative">
+          <button
+            className={cn(
+              'inline-flex size-6 items-center justify-center rounded transition',
+              moreOpen
+                ? 'bg-slate-200 text-slate-700'
+                : 'text-slate-400 hover:bg-slate-100 hover:text-slate-700'
+            )}
+            onClick={() => setMoreOpen(value => !value)}
+            aria-label={`${project.name} 的更多操作`}
+            title="更多操作"
+          >
+            <MoreVertical className="size-3.5" />
+          </button>
+          {moreOpen && (
+            <div className="absolute right-0 top-6 z-20 grid min-w-36 gap-0.5 rounded-lg border border-slate-200 bg-white p-1 shadow-lg">
+              <button
+                className="flex min-h-8 items-center gap-2 rounded px-2 text-left text-xs text-slate-600 transition hover:bg-slate-100"
+                onClick={() => {
+                  onPin(project.id)
+                  setMoreOpen(false)
+                }}
+              >
+                <Pin className="size-3.5 text-slate-400" />
+                置顶
+              </button>
+              <button
+                className="flex min-h-8 items-center gap-2 rounded px-2 text-left text-xs text-slate-600 transition hover:bg-slate-100"
+                onClick={() => {
+                  onNewSession()
+                  setMoreOpen(false)
+                }}
+              >
+                <Plus className="size-3.5 text-slate-400" />
+                新增对话
+              </button>
+              <button
+                className="flex min-h-8 items-center gap-2 rounded px-2 text-left text-xs text-red-600 transition hover:bg-red-50"
+                onClick={() => {
+                  onRemove(project.id)
+                  setMoreOpen(false)
+                }}
+              >
+                <Trash2 className="size-3.5" />
+                移除
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+      {recordsOpen && (
+        <div className="mt-2 grid gap-0.5 border-t border-slate-200 pt-2">
+          <button
+            className="flex min-h-7 items-center gap-1.5 rounded px-1.5 text-left text-[11px] text-slate-500 transition hover:bg-slate-100 hover:text-slate-700"
+            onClick={onNewSession}
+          >
+            <Plus className="size-3" />
+            新增对话
+          </button>
+          {ownSessions.length === 0 ? (
+            <p className="px-1.5 py-1 text-[11px] text-slate-400">
+              还没有对话记录
+            </p>
+          ) : (
+            ownSessions.map(item => (
+              <button
+                className="flex min-h-7 items-center gap-1.5 rounded px-1.5 text-left text-[11px] text-slate-600 transition hover:bg-slate-100"
+                key={item.id}
+                onClick={() => onOpenAgent(item.id)}
+                onContextMenu={event => {
+                  event.preventDefault()
+                  setCtxMenu({ id: item.id, title: item.title, x: event.clientX, y: event.clientY })
+                }}
+                title={`${item.title}（右键操作）`}
+              >
+                <MessageSquare className="size-3 shrink-0 text-slate-400" />
+                <span className="min-w-0 flex-1 truncate">{item.title}</span>
+              </button>
+            ))
+          )}
+        </div>
+      )}
+      {ctxMenu && (
+        <div
+          ref={ctxRef}
+          className="fixed z-[200] grid min-w-36 gap-0.5 rounded-lg border border-slate-200 bg-white p-1 shadow-lg"
+          style={{ left: ctxMenu.x, top: ctxMenu.y }}
+        >
+          <button
+            className="flex min-h-8 items-center gap-2 rounded px-2 text-left text-xs text-slate-600 transition hover:bg-slate-100"
+            onClick={() => {
+              onRename(ctxMenu.id, ctxMenu.title)
+              setCtxMenu(null)
+            }}
+          >
+            <Pencil className="size-3.5 text-slate-400" />
+            重命名
+          </button>
+          <button
+            className="flex min-h-8 items-center gap-2 rounded px-2 text-left text-xs text-slate-600 transition hover:bg-slate-100"
+            onClick={() => {
+              onArchive(ctxMenu.id)
+              setCtxMenu(null)
+            }}
+          >
+            <Archive className="size-3.5 text-slate-400" />
+            归档
+          </button>
+        </div>
+      )}
     </article>
   )
 }

@@ -129,7 +129,13 @@ function StepStatus({ status }: { status: Activity['status'] }) {
 // AgentChatPage is the built-in coding-agent workspace. It streams the agent
 // loop's progress over SSE and renders each tool call as a timeline step while
 // the final answer streams in. Provider settings live behind the gear button.
-export function AgentChatPage({ root }: { root: string }) {
+export function AgentChatPage({
+  root,
+  initialSessionId
+}: {
+  root: string
+  initialSessionId?: string
+}) {
   const [providers, setProviders] = useState<Provider[]>([])
   const [provider, setProvider] = useState('')
   const [model, setModel] = useState('')
@@ -212,6 +218,32 @@ export function AgentChatPage({ root }: { root: string }) {
   useEffect(() => {
     void loadSessions()
   }, [loadSessions])
+
+  // When opened from the directory session tree, load that conversation.
+  const initialLoaded = useRef(false)
+  useEffect(() => {
+    if (!initialSessionId || initialLoaded.current) return
+    initialLoaded.current = true
+    void (async () => {
+      try {
+        const response = await fetch(`/api/v1/agent/sessions/${initialSessionId}`)
+        if (!response.ok) return
+        const data = (await response.json()) as {
+          session: SessionMeta
+          messages: Array<{ role: string; content: string }>
+        }
+        setSessionId(data.session.id)
+        setMessages(
+          data.messages.filter(
+            message => message.content && message.role !== 'system'
+          ) as ChatMessage[]
+        )
+        setActivity([])
+      } catch {
+        setNotice('加载会话失败。')
+      }
+    })()
+  }, [initialSessionId])
 
   const newSession = () => {
     if (busy) return
@@ -494,14 +526,6 @@ export function AgentChatPage({ root }: { root: string }) {
           </div>
         </div>
         <div className="agent-header-actions">
-          <button
-            className="icon-button size-8 p-0"
-            onClick={() => setSessionOpen(value => !value)}
-            title="会话历史"
-            aria-label="会话历史"
-          >
-            <Clock3 className="size-4" />
-          </button>
           {busy && (
             <span className="agent-status-pill">
               <Loader2 className="spinner size-3 animate-spin" /> 执行中
