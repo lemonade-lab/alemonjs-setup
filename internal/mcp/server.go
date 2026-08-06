@@ -217,7 +217,7 @@ func tools() []map[string]any {
 	return []map[string]any{
 		tool("alemonjs_project_status", "项目状态", "读取本机 AlemonJS/Node.js 机器人项目的依赖和包管理器状态，不修改文件。", objectSchema(map[string]any{"root": stringSchema("机器人项目的绝对路径，目录必须含 package.json。")}, "root"), true, false),
 		tool("alemonjs_check_environment", "检查环境", "检查 Setup 中指定目标所需的本机运行环境，不修改系统。", objectSchema(map[string]any{"goalId": map[string]any{"type": "string", "enum": []string{"install", "develop", "desktop", "mobile", "web", "build"}, "description": "Setup 目标 ID。"}, "variant": stringSchema("web 可为 clean/docker；build 可为 npm/git。")}, "goalId"), true, false),
-		toolExternal("alemonjs_list_releases", "列出版本", "从官方 GitHub 仓库读取支持应用的发布版本。", objectSchema(map[string]any{"app": map[string]any{"type": "string", "enum": []string{"alemondesk", "alemonapp", "alemongo", "alemonjs-setup"}, "description": "应用 ID。"}}, "app")),
+		toolExternal("alemonjs_list_releases", "列出版本", "从官方 GitHub 仓库读取支持应用的发布版本。", objectSchema(map[string]any{"app": map[string]any{"type": "string", "enum": []string{"alemondesk", "alemonapp", "albs", "alemonjs-setup"}, "description": "应用 ID。"}}, "app")),
 		toolExternal("alemonjs_check_setup_update", "检查 Setup 更新", "检查当前 AlemonJS Setup 是否有官方更新。", objectSchema(map[string]any{})),
 		toolExternal("alemonjs_list_catalog", "读取生态目录", "读取官方 AlemonJS 应用或环境连接目录。", objectSchema(map[string]any{"kind": map[string]any{"type": "string", "enum": []string{"apps", "environment"}, "description": "目录类型。"}}, "kind")),
 		toolExternal("alemonjs_get_catalog_document", "读取生态文档", "读取官方生态目录中的 GitHub/Gitee 文档；不接受任意网络地址。", objectSchema(map[string]any{"source": stringSchema("官方目录条目的 URL。")}, "source")),

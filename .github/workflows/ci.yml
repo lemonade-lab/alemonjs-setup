@@ -28,7 +28,7 @@ jobs:
         working-directory: frontend
       - run: yarn lint && yarn build
         working-directory: frontend
-      - run: go test ./internal/... && go vet ./internal/... && go build -o /tmp/alemonjs-setup .
+      - run: go test ./internal/... && go vet ./internal/... && go build -o /tmp/alemonx .
 
   package:
     if: startsWith(github.ref, 'refs/tags/v')

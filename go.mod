@@ -1,4 +1,4 @@
-module alemonjs-setup
+module alemonx
 
 go 1.23.0
 

@@ -209,7 +209,7 @@ func main() {
 			return
 		}
 	}
-	serve(port)
+	serve(env("ALBS_BIND", "127.0.0.1"), port)
 }
 
 func authCommand(arguments []string, confirmed bool, account, password, confirmation string) {
@@ -278,14 +278,14 @@ func privilegedCreate(configPath, resultPath string) {
 	}
 }
 
-func serve(port string) {
+func serve(host, port string) {
 	server := &http.Server{
-		Addr:              "127.0.0.1:" + port,
+		Addr:              host + ":" + port,
 		Handler:           web.NewServer(Version, staticFiles, templateFiles),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
-	fmt.Print(startupMessage(Version, port))
+	fmt.Print(startupMessage(Version, host, port))
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatal(err)
 	}
@@ -294,8 +294,12 @@ func serve(port string) {
 // startupMessage is deliberately written for someone opening albs for the
 // first time. The terminal should answer "what is this" and "what next"
 // before it exposes implementation details such as the listener address.
-func startupMessage(version, port string) string {
-	address := "http://127.0.0.1:" + port
+func startupMessage(version, host, port string) string {
+	addressHost := host
+	if addressHost == "0.0.0.0" || addressHost == "::" {
+		addressHost = "127.0.0.1"
+	}
+	address := "http://" + addressHost + ":" + port
 	return fmt.Sprintf(`
 
   AlemonJS Setup v%s 已准备就绪

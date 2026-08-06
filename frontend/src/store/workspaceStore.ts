@@ -9,7 +9,7 @@ const storage = {
     Promise.resolve(window.localStorage.removeItem(key))
 }
 
-const workspacePersistKey = 'persist:alemonjs-setup-workspace'
+const workspacePersistKey = 'persist:alemonx-workspace'
 const isPrivateDraft = (key: string) =>
   key.endsWith(':.env') ||
   key.endsWith(':.npmrc') ||
@@ -179,7 +179,7 @@ const privateDraftsTransform = createTransform<
 
 export const persistedWorkspace = persistReducer(
   {
-    key: 'alemonjs-setup-workspace',
+    key: 'alemonx-workspace',
     storage,
     whitelist: [
       'projects',

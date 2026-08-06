@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"alemonjs-setup/internal/system"
 )
 
 var gitBranchPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/-]*$`)
@@ -36,11 +38,24 @@ func cloneRepositoryURL(repository string) (*url.URL, string, error) {
 	return parsed, parts[1], nil
 }
 
+// ValidateCloneRepository checks the URL format and local SSH prerequisite
+// before a clone task is queued.
+func ValidateCloneRepository(repository string) error {
+	parsed, _, err := cloneRepositoryURL(repository)
+	if err != nil {
+		return err
+	}
+	return requireSSHKey(parsed)
+}
+
 // CloneBranches silently reads remote heads for a completed repository URL.
 // It is read-only and does not create any local directory.
 func CloneBranches(repository string) ([]string, string, error) {
 	parsed, _, err := cloneRepositoryURL(repository)
 	if err != nil {
+		return nil, "", err
+	}
+	if err := requireSSHKey(parsed); err != nil {
 		return nil, "", err
 	}
 	remote := strings.TrimSpace(repository)
@@ -104,6 +119,9 @@ func CloneRepository(destination, repository, branch, name, mirror string) (Resu
 	if err != nil {
 		return Result{}, err
 	}
+	if err := requireSSHKey(parsed); err != nil {
+		return Result{}, err
+	}
 	branch = strings.TrimSpace(branch)
 	if branch != "" && (!gitBranchPattern.MatchString(branch) || strings.Contains(branch, "..") || strings.HasPrefix(branch, "-")) {
 		return Result{}, errors.New("Git 分支或 tag 无效")
@@ -144,4 +162,18 @@ func CloneRepository(destination, repository, branch, name, mirror string) (Resu
 		return Result{Path: target.Path, Output: output}, fmt.Errorf("克隆仓库失败：%w", err)
 	}
 	return Result{Path: target.Path, Output: "已克隆到 " + target.Path + "。\n" + output}, nil
+}
+
+func requireSSHKey(repository *url.URL) error {
+	if repository.Scheme != "ssh" {
+		return nil
+	}
+	keys, err := system.SSHKeys()
+	if err != nil {
+		return fmt.Errorf("无法检查 SSH 配置：%w", err)
+	}
+	if len(keys) == 0 {
+		return errors.New("未配置 SSH 公钥，无法使用 SSH 地址克隆。请在顶部“SSH 管理”中生成密钥、将公钥添加到代码平台，或改用 HTTPS 地址")
+	}
+	return nil
 }

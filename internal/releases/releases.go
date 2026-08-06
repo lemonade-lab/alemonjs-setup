@@ -24,7 +24,7 @@ type Asset struct {
 	Size int64  `json:"size"`
 }
 
-var allowed = map[string]string{"alemondesk": "lemonade-lab/alemondesk", "alemonapp": "lemonade-lab/alemonapp", "alemongo": "lemonade-lab/alemongo", "alemonjs-setup": "lemonade-lab/alemonjs-setup"}
+var allowed = map[string]string{"alemondesk": "lemonade-lab/alemondesk", "alemonapp": "lemonade-lab/alemonapp", "albs": "lemonade-lab/albs", "alemonjs-setup": "lemonade-lab/alemonjs-setup"}
 
 type Update struct {
 	Current         string `json:"current"`

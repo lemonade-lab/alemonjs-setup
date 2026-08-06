@@ -62,7 +62,7 @@ const guideSlice = createSlice({
 })
 
 const persistedGuide = persistReducer(
-  { key: 'alemonjs-setup-guide', storage, whitelist: ['developer', 'project'] },
+  { key: 'alemonx-guide', storage, whitelist: ['developer', 'project'] },
   guideSlice.reducer
 )
 export const store = configureStore({

@@ -17,7 +17,7 @@ AlemonJS Setup 是 AlemonJS 机器人的本地管理台。它把环境检查、�
 
 ## 给使用者：下载并开始
 
-在 [GitHub Releases](https://github.com/lemonade-lab/alemonjs-setup/releases) 下载最新版本。Release 提供的是压缩包，解压后得到 `albs`（Windows 为 `albs.exe`）。
+在 [GitHub Releases](https://github.com/lemonade-lab/alemonx/releases) 下载最新版本。Release 提供的是压缩包，解压后得到 `albs`（Windows 为 `albs.exe`）。
 
 | 系统 | 下载文件 |
 | --- | --- |
@@ -124,7 +124,7 @@ albs --cwd /path/to/robot git publish --yes
 ```json
 {
   "mcpServers": {
-    "alemonjs-setup": {
+    "alemonx": {
       "command": "albs",
       "args": ["mcp"]
     }
@@ -167,6 +167,38 @@ make build      # 构建嵌入前端与模板的单文件
 
 cd frontend && yarn lint && yarn build
 ```
+
+## Docker：本地打包与线上同一工作台
+
+完整的构建、离线导入、HTTPS 反代、更新与备份步骤请见 [Docker 部署说明](docs/docker-deployment.md)。
+
+Docker 让同一个产品在两个场景中运行：本地工作台用于开发、调试机器人；线上工作台用于持续运行和管理线上机器人。每个环境独立持久化自己的 `workspace/robots/`（机器人项目）、`state/`（登录、Setup 插件与 AI 配置）和可选的 `ssh/`（部署专用 SSH 密钥）。
+
+在仓库目录直接启动本地工作台：
+
+```bash
+docker compose up -d --build
+```
+
+首次启动会自动创建上述目录并处理容器写入权限，打开 `http://127.0.0.1:17390` 即可使用。
+
+本地构建一个可离线导入的 OCI 镜像包（默认 Linux amd64；Apple Silicon 服务器使用 `PLATFORM=linux/arm64`）：
+
+```bash
+chmod +x docker-buildx.sh
+VERSION=v0.1.0 PLATFORM=linux/amd64 ./docker-buildx.sh
+# 产物：dist/albs-v0.1.0-amd64.oci.tar
+```
+
+将镜像包、`docker-compose.yml`、`.env`（可选）以及需要迁移的 `workspace/`、`state/`、`ssh/` 上传到服务器后：
+
+```bash
+docker load -i dist/albs-v0.1.0-amd64.oci.tar
+ALBS_IMAGE=alemonx:v0.1.0 docker compose up -d
+docker compose exec albs albs auth enable --account admin --password '请使用高强度密码' --confirm-password '请使用高强度密码'
+```
+
+Compose 默认只绑定服务器本机 `127.0.0.1:17390`。线上请由 HTTPS 反向代理转发该端口；确认已开启身份认证后，如确有必要才设置 `ALBS_LISTEN_ADDRESS=0.0.0.0` 对外暴露。不要在生产容器挂载个人完整的 `~/.ssh`，应只放入部署专用密钥到 `./ssh/`。
 
 ## 仓库结构
 

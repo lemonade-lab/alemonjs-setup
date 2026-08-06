@@ -118,7 +118,7 @@ function PurposeGroup({
           ],
           ['desktop', '桌面版', '下载适合当前电脑的 AlemonDesk 安装包。'],
           ['mobile', '手机版', '下载 Android 通用 APK 安装包。'],
-          ['web', 'Web 版', '下载 AlemonGo，或使用 Docker 部署。']
+          ['web', 'Web 版', '下载 albs，或使用 Docker 部署。']
         ]
       : [
           [

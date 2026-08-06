@@ -4,6 +4,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type MouseEvent,
   type ReactNode
 } from 'react'
 import { createPortal } from 'react-dom'
@@ -231,6 +232,13 @@ export function DirectoryPicker({
   const [selected, setSelected] = useState<string[]>([])
   const [history, setHistory] = useState<string[]>([])
   const [historyIndex, setHistoryIndex] = useState(-1)
+  const [contextMenu, setContextMenu] = useState<{
+    x: number
+    y: number
+    target?: Directory
+  } | null>(null)
+  const [newFolderName, setNewFolderName] = useState('')
+  const [deleteTarget, setDeleteTarget] = useState<Directory | null>(null)
 
   const visit = (nextPath: string) => {
     if (!nextPath || nextPath === path) return
@@ -286,9 +294,12 @@ export function DirectoryPicker({
   const items = (data?.directories ?? []).filter(item =>
     item.name.toLowerCase().includes(query.toLowerCase())
   )
-  const toggleSelection = (itemPath: string) =>
+  const selectDirectory = (
+    itemPath: string,
+    event: Pick<MouseEvent<HTMLButtonElement>, 'metaKey' | 'ctrlKey'>
+  ) =>
     setSelected(current =>
-      multiple
+      multiple && (event.metaKey || event.ctrlKey)
         ? current.includes(itemPath)
           ? current.filter(entry => entry !== itemPath)
           : [...current, itemPath]
@@ -311,12 +322,33 @@ export function DirectoryPicker({
       setSelected([])
     }
   }
+  const directoryAction = async (
+    method: 'POST' | 'DELETE',
+    body: Record<string, string>
+  ) => {
+    try {
+      const response = await fetch('/api/v1/directories', {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      })
+      const data = (await response.json()) as { error?: string }
+      if (!response.ok) throw new Error(data.error || '目录操作未完成。')
+      setDirectoryReload(current => current + 1)
+      setDirectoryError('')
+    } catch (reason) {
+      setDirectoryError(
+        reason instanceof Error ? reason.message : '目录操作未完成。'
+      )
+    }
+  }
   return (
     <div
       className={cn(
         'fixed inset-0 z-[95] flex items-center justify-center bg-slate-950/30 p-4',
         priority && 'z-[200]'
       )}
+      onClick={() => setContextMenu(null)}
     >
       <section
         className="directory-picker finder-picker grid h-[min(700px,calc(100vh-32px))] w-full max-w-5xl grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden rounded-xl border border-slate-200 bg-white shadow-[0_24px_70px_rgb(15_23_42/0.26)]"
@@ -324,7 +356,7 @@ export function DirectoryPicker({
         aria-label="选择目录"
       >
         <header className="grid grid-cols-[auto_minmax(0,1fr)_minmax(180px,280px)] items-center gap-4 border-b border-slate-200 px-4 py-3">
-          <div className="flex items-center gap-2">
+          <div className="flex flex-row items-center gap-2">
             <nav className="flex items-center gap-1" aria-label="目录导航">
               <button
                 className="icon-button size-8 p-0"
@@ -359,9 +391,9 @@ export function DirectoryPicker({
                 )}
               </button>
             </nav>
-            <small className="hidden text-[11px] text-slate-400 lg:block">
-              单击选择，双击打开
-            </small>
+            <div className="hidden text-[11px] text-slate-400 lg:block">
+              单击选择，⌘/Ctrl + 单击多选，双击打开
+            </div>
           </div>
           <strong className="truncate text-center text-sm font-semibold text-slate-800">
             {data?.path
@@ -455,8 +487,14 @@ export function DirectoryPicker({
                       : 'text-slate-700 hover:bg-slate-100'
                   )}
                   key={item.path}
-                  onClick={() => toggleSelection(item.path)}
+                  onClick={event => selectDirectory(item.path, event)}
                   onDoubleClick={() => visit(item.path)}
+                  onContextMenu={event => {
+                    event.preventDefault()
+                    event.stopPropagation()
+                    setSelected([item.path])
+                    setContextMenu({ x: event.clientX, y: event.clientY, target: item })
+                  }}
                 >
                   <span className="flex min-w-0 items-center gap-2">
                     <Folder className="size-4 shrink-0 text-slate-500" />
@@ -489,6 +527,68 @@ export function DirectoryPicker({
           </div>
         </footer>
       </section>
+      {contextMenu && (
+        <div
+          className="fixed z-[210] grid min-w-32 overflow-hidden rounded-md border border-slate-200 bg-white py-1 shadow-lg"
+          style={{ left: contextMenu.x, top: contextMenu.y }}
+          role="menu"
+          onClick={event => event.stopPropagation()}
+        >
+          <button
+            className="px-3 py-2 text-left text-xs text-slate-700 hover:bg-slate-100"
+            onClick={() => {
+              setNewFolderName(' ')
+              setContextMenu(null)
+            }}
+          >
+            新建文件夹
+          </button>
+          {contextMenu.target && (
+            <button
+              className="px-3 py-2 text-left text-xs text-red-700 hover:bg-red-50"
+              onClick={() => {
+                setDeleteTarget(contextMenu.target ?? null)
+                setContextMenu(null)
+              }}
+            >
+              删除文件夹
+            </button>
+          )}
+        </div>
+      )}
+      {newFolderName !== '' && (
+        <div className="fixed inset-0 z-[220] grid place-items-center bg-slate-950/30 p-4">
+          <form
+            className="grid w-full max-w-sm gap-3 rounded-xl bg-white p-4 shadow-xl"
+            onSubmit={event => {
+              event.preventDefault()
+              const name = newFolderName.trim()
+              if (!name || !data?.path) return
+              void directoryAction('POST', { path: data.path, name })
+                setNewFolderName(' ')
+            }}
+          >
+            <strong className="text-sm text-slate-800">新建文件夹</strong>
+            <input autoFocus className="h-9 rounded-md border border-slate-300 px-2 text-sm outline-none focus:border-brand-600" value={newFolderName} onChange={event => setNewFolderName(event.target.value)} placeholder="文件夹名称" />
+            <div className="flex justify-end gap-2"><button type="button" className="secondary-button" onClick={() => setNewFolderName('')}>取消</button><button className="primary-button" disabled={!newFolderName.trim()}>新建</button></div>
+          </form>
+        </div>
+      )}
+      {deleteTarget && (
+        <ConfirmDialog
+          open
+          title="删除文件夹"
+          subtitle={deleteTarget.name}
+          message="将永久删除该文件夹及其中的全部内容，此操作无法撤销。"
+          confirmLabel="删除"
+          destructive
+          onCancel={() => setDeleteTarget(null)}
+          onConfirm={() => {
+            void directoryAction('DELETE', { path: deleteTarget.path })
+            setDeleteTarget(null)
+          }}
+        />
+      )}
     </div>
   )
 }
@@ -518,6 +618,7 @@ export function Dashboard({
   const [releaseVersion, setReleaseVersion] = useState('')
   const [environmentOpen, setEnvironmentOpen] = useState(false)
   const [directoryPickerOpen, setDirectoryPickerOpen] = useState(false)
+  const [cloneProgress, setCloneProgress] = useState(0)
   const [gitCloneOpen, setGitCloneOpen] = useState(false)
   const [gitDestinationPickerOpen, setGitDestinationPickerOpen] =
     useState(false)
@@ -878,6 +979,7 @@ export function Dashboard({
   ) {
     if (!gitDestination) return
     setBusy(true)
+    setCloneProgress(10)
     try {
       const response = await fetch('/api/v1/robot/git-clone', {
         method: 'POST',
@@ -891,15 +993,34 @@ export function Dashboard({
         })
       })
       const data = (await response.json()) as {
-        path?: string
+        id?: string
         output?: string
         error?: string
       }
-      if (!response.ok || !data.path)
+      if (!response.ok || !data.id)
         throw new Error(data.error || '克隆仓库失败。')
-      showOutput(data.output || '仓库已克隆。')
-      setGitCloneOpen(false)
-      await addSelectedDirectories([data.path])
+      for (;;) {
+        await new Promise(resolve => window.setTimeout(resolve, 550))
+        const taskResponse = await fetch(
+          `/api/v1/robot/tasks?${new URLSearchParams({ id: data.id })}`
+        )
+        const task = (await taskResponse.json()) as {
+          status?: string
+          progress?: number
+          path?: string
+          output?: string
+          error?: string
+        }
+        setCloneProgress(task.progress ?? 10)
+        if (task.status === 'running') continue
+        if (task.status === 'failed') throw new Error(task.error || '克隆仓库失败。')
+        const targetPath = task.path
+        if (!targetPath) throw new Error('克隆完成，但无法识别机器人目录。')
+        showOutput(task.output || '仓库已克隆。')
+        setGitCloneOpen(false)
+        await addSelectedDirectories([targetPath])
+        return
+      }
     } catch (reason) {
       showOutput(
         operationErrorMessage(reason, '克隆仓库失败，请检查 Git 地址和网络。'),
@@ -907,6 +1028,7 @@ export function Dashboard({
       )
     } finally {
       setBusy(false)
+      setCloneProgress(0)
     }
   }
 
@@ -1235,7 +1357,10 @@ export function Dashboard({
         )}
       </>
     ) : (
-      <EmptyWorkspace onAdd={chooseDirectories} />
+      <EmptyWorkspace
+        onAdd={chooseDirectories}
+        onClone={() => setGitCloneOpen(true)}
+      />
     )
 
   const environmentReady = report
@@ -1367,6 +1492,7 @@ export function Dashboard({
             open={gitCloneOpen}
             destination={gitDestination}
             busy={busy}
+            progress={cloneProgress}
             onClose={() => setGitCloneOpen(false)}
             onChooseDestination={() => setGitDestinationPickerOpen(true)}
             onConfirm={cloneRobotRepository}
@@ -1605,6 +1731,7 @@ function GitCloneDialog({
   open,
   destination,
   busy,
+  progress,
   onClose,
   onChooseDestination,
   onConfirm
@@ -1612,6 +1739,7 @@ function GitCloneDialog({
   open: boolean
   destination: string
   busy: boolean
+  progress: number
   onClose: () => void
   onChooseDestination: () => void
   onConfirm: (
@@ -1761,6 +1889,7 @@ function GitCloneDialog({
     }
   }, [open, repository])
   if (!open) return null
+  const usesSSH = /^(git@|ssh:\/\/)/.test(repository.trim())
   return (
     <div className="fixed inset-0 z-[95] flex items-center justify-center bg-slate-950/30 p-4">
       <section
@@ -1840,6 +1969,7 @@ function GitCloneDialog({
                   const value = event.target.value
                   setRepository(value)
                   setBranch('')
+                  if (/^(git@|ssh:\/\/)/.test(value.trim())) setConnection('ssh')
                   const derived =
                     value
                       .trim()
@@ -1855,6 +1985,11 @@ function GitCloneDialog({
                     : 'https://github.com/组织/机器人仓库.git'
                 }
               />
+              {usesSSH && !sshLoading && !sshKeys.length && (
+                <small className="font-normal text-red-700">
+                  此 SSH 地址无法使用：请先在顶部 SSH 管理中生成密钥并添加公钥，或改用 HTTPS 地址。
+                </small>
+              )}
             </label>
             <div className="grid gap-3 sm:grid-cols-2">
               <label className="grid gap-1 text-xs font-semibold text-slate-600">
@@ -1868,10 +2003,15 @@ function GitCloneDialog({
                   <option value="">默认分支</option>
                   {branches.map(item => (
                     <option key={item} value={item}>
-                      {item}
+                      {formatBranchLabel(item)}
                     </option>
                   ))}
                 </select>
+                {branch && (
+                  <small className="truncate text-[11px] font-normal text-slate-500" title={branch}>
+                    已选：{branch}
+                  </small>
+                )}
               </label>
               <label className="grid gap-1 text-xs font-semibold text-slate-600">
                 下载来源
@@ -1917,6 +2057,12 @@ function GitCloneDialog({
           </section>
         </div>
         <footer className="flex justify-end gap-2 border-t border-slate-200 px-4 py-3">
+          {busy && (
+            <div className="mr-auto grid min-w-44 gap-1 self-center">
+              <div className="flex justify-between text-[11px] text-slate-500"><span>正在下载仓库</span><span>{progress}%</span></div>
+              <div className="h-1.5 overflow-hidden rounded-full bg-slate-200"><div className="h-full rounded-full bg-brand-600 transition-[width] duration-500" style={{ width: `${Math.max(8, progress)}%` }} /></div>
+            </div>
+          )}
           <button className="secondary-button" onClick={onClose}>
             取消
           </button>
@@ -1924,6 +2070,7 @@ function GitCloneDialog({
             className="primary-button"
             disabled={
               busy ||
+              ((connection === 'ssh' || usesSSH) && !sshLoading && !sshKeys.length) ||
               !repository.trim() ||
               !destination ||
               !name.trim() ||
@@ -1950,6 +2097,11 @@ function GitCloneDialog({
 
 function gitDestinationLabel(path: string) {
   return path || '选择存放位置'
+}
+
+function formatBranchLabel(branch: string) {
+  const limit = 48
+  return branch.length > limit ? `${branch.slice(0, limit - 1)}…` : branch
 }
 
 function isCompleteGitRepositoryURL(value: string) {
@@ -2128,7 +2280,7 @@ function McpControl() {
   const [transport, setTransport] = useState<'stdio' | 'http'>('stdio')
   const [copied, setCopied] = useState(false)
   const stdioConfig =
-    '{\n  "mcpServers": {\n    "alemonjs-setup": {\n      "command": "albs",\n      "args": ["mcp"]\n    }\n  }\n}'
+    '{\n  "mcpServers": {\n    "alemonx": {\n      "command": "albs",\n      "args": ["mcp"]\n    }\n  }\n}'
   const httpCommand =
     "MCP_TOKEN='请生成高强度随机值' albs --mcp-port 17391 mcp-http"
   const copy = async (value: string) => {
@@ -2203,7 +2355,7 @@ function McpControl() {
                 <div className="grid grid-cols-[92px_minmax(0,1fr)] gap-2 border-b border-blue-100 px-2 py-2 last:border-b-0 dark:border-blue-900">
                   <dt className="text-xs font-semibold text-slate-500">名称</dt>
                   <dd className="m-0 min-w-0 break-words text-xs text-slate-700 dark:text-slate-200">
-                    alemonjs-setup
+                    alemonx
                   </dd>
                 </div>
                 <div className="grid grid-cols-[92px_minmax(0,1fr)] gap-2 border-b border-blue-100 px-2 py-2 last:border-b-0 dark:border-blue-900">
@@ -2255,7 +2407,7 @@ function McpControl() {
               <dl className="mcp-form-guide m-0 overflow-hidden rounded-lg border border-blue-100 dark:border-blue-900">
                 <div>
                   <dt>名称</dt>
-                  <dd>alemonjs-setup</dd>
+                  <dd>alemonx</dd>
                 </div>
                 <div>
                   <dt>类型</dt>
@@ -2528,14 +2680,29 @@ function EnvironmentPanel({
     </aside>
   )
 }
-function EmptyWorkspace({ onAdd }: { onAdd: () => void }) {
+function EmptyWorkspace({
+  onAdd,
+  onClone
+}: {
+  onAdd: () => void
+  onClone: () => void
+}) {
   return (
     <section className="workspace-content empty-workspace">
       <span>◈</span>
-      <strong>从左侧添加机器人目录</strong>
-      <button className="primary-button" onClick={onAdd}>
-        添加目录
-      </button>
+      <div>
+        <strong>开始管理你的机器人</strong>
+        <p>选择已有目录，或从 Git 克隆一个新的机器人项目。</p>
+      </div>
+      <footer>
+        <button className="secondary-button" onClick={onClone}>
+          <GitBranch className="size-3.5" />
+          从 Git 克隆
+        </button>
+        <button className="primary-button" onClick={onAdd}>
+          添加本地目录
+        </button>
+      </footer>
     </section>
   )
 }

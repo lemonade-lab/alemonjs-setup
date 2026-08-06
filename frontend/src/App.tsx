@@ -224,7 +224,7 @@ function FlowView({
   const [selectedAssetURL, setSelectedAssetURL] = useState<string | null>(null)
   const [folderError, setFolderError] = useState('')
   const automaticCheck = useRef<string | null>(null)
-  const currentStepElement = useRef<HTMLDivElement | null>(null)
+  const currentStepElement = useRef<HTMLButtonElement | null>(null)
   const capabilities = config.capabilities ?? []
   const isDeveloper = goal?.id === 'develop'
   const isInstaller = goal?.id === 'install'
@@ -232,7 +232,7 @@ function FlowView({
     goal?.id === 'desktop'
       ? 'alemondesk'
       : goal?.id === 'web' && webEdition === 'clean'
-        ? 'alemongo'
+        ? 'albs'
         : null
   const { data: releaseData = [] } = useReleasesQuery(releaseApp ?? '', {
     skip: !releaseApp
@@ -452,7 +452,7 @@ function FlowView({
                   }
                 >
                   <strong>当前运行目录（推荐）</strong>
-                  <small>直接在启动 alemonjs-setup 的文件夹里创建。</small>
+                  <small>直接在启动 alemonx 的文件夹里创建。</small>
                 </button>
                 <button
                   className={
@@ -777,7 +777,7 @@ function FlowView({
                 }
               >
                 <strong>当前运行目录（推荐）</strong>
-                <small>直接在启动 alemonjs-setup 的文件夹里安装。</small>
+                <small>直接在启动 alemonx 的文件夹里安装。</small>
               </button>
               <button
                 className={
@@ -865,7 +865,7 @@ function FlowView({
               }}
             >
               <strong>纯净版</strong>
-              <small>检查 Node.js 与 Git 后启动 AlemonGo</small>
+              <small>检查 Node.js 与 Git 后启动 albs</small>
             </button>
             <button
               className={webEdition === 'docker' ? 'choice selected' : 'choice'}
@@ -1109,10 +1109,13 @@ function FlowView({
       <aside className="wizard-steps">
         <p>{goal?.title ?? '开始'}</p>
         {totalSteps.map((label, index) => (
-          <div
+          <button
+            type="button"
             ref={index === step ? currentStepElement : null}
             key={label}
             className={index < step ? 'done' : index === step ? 'current' : ''}
+            disabled={index > step}
+            aria-current={index === step ? 'step' : undefined}
             onClick={
               index <= step
                 ? () => (index === 0 ? resetPurpose() : setFlowStep(index))
@@ -1121,10 +1124,15 @@ function FlowView({
           >
             <span>{index < step ? '✓' : index + 1}</span>
             {label}
-          </div>
+          </button>
         ))}
       </aside>
       <section className="wizard-page">
+        {goal && (
+          <p className="wizard-progress" aria-live="polite">
+            第 {step + 1} / {totalSteps.length} 步 · {totalSteps[step]}
+          </p>
+        )}
         <div className="wizard-content">
           {!goal || step === 0 ? (
             <div className="guide-question">

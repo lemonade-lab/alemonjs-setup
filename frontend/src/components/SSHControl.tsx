@@ -73,9 +73,6 @@ export function SSHControl() {
           <header className="flex items-start justify-between gap-3">
             <div className="grid gap-0.5">
               <strong className="text-xs text-slate-800">SSH 管理</strong>
-              <span className="text-[11px] leading-4 text-slate-500">
-                仅展示公钥，不读取私钥。
-              </span>
             </div>
             <Button
               variant="icon"
@@ -92,13 +89,10 @@ export function SSHControl() {
             <div className="grid gap-2">
               {keys.map(key => (
                 <article
-                  className="grid gap-1.5 rounded-lg border border-slate-200 bg-slate-50 p-2.5"
+                  className="flex items-center justify-between rounded-lg border border-slate-200 bg-slate-50 p-2.5"
                   key={key.name}
                 >
                   <strong className="text-xs text-slate-700">{key.name}</strong>
-                  <code className="max-h-12 overflow-auto break-all text-[10px] text-slate-500">
-                    {key.value}
-                  </code>
                   <Button
                     variant="secondary"
                     className="gap-1.5 justify-self-end"

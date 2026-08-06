@@ -603,14 +603,19 @@ button {
   text-transform: uppercase;
 }
 
-.wizard-steps > div {
+.wizard-steps > :is(div, button) {
   align-items: center;
+  background: transparent;
+  border: 0;
   color: #64748b;
+  cursor: default;
   display: flex;
   font-size: 0.88rem;
   gap: 10px;
   margin: 5px 0;
   padding: 10px 12px;
+  text-align: left;
+  width: 100%;
 }
 
 .wizard-steps span {
@@ -5373,7 +5378,7 @@ button {
   border-bottom: 1px solid #edf1f5;
 }
 .directory-picker header div {
-  display: grid;
+  // display: grid;
   gap: 3px;
   min-width: 0;
 }
@@ -6126,7 +6131,7 @@ textarea:focus-visible {
     display: none;
   }
 
-  .wizard-steps > div {
+  .wizard-steps > :is(div, button) {
     flex: 0 0 auto;
     font-size: 0;
     margin: 0;
@@ -7337,7 +7342,7 @@ textarea:hover {
   background: #fafbfc;
   border-color: var(--line);
 }
-.wizard-steps > div {
+.wizard-steps > :is(div, button) {
   border-radius: 7px;
   font-size: 0.78rem;
 }

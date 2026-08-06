@@ -58,10 +58,12 @@ type task struct {
 type operationTask struct {
 	ID         string     `json:"id"`
 	Root       string     `json:"root"`
+	Path       string     `json:"path,omitempty"`
 	Action     string     `json:"action"`
 	Status     string     `json:"status"`
 	Output     string     `json:"output,omitempty"`
 	Error      string     `json:"error,omitempty"`
+	Progress   int        `json:"progress"`
 	CreatedAt  time.Time  `json:"createdAt"`
 	FinishedAt *time.Time `json:"finishedAt,omitempty"`
 }
@@ -105,7 +107,7 @@ var goals = []goal{
 	{ID: "develop", Title: "开发机器人", Description: "创建一个可按需配置的 AlemonJS 开发项目。", Steps: []string{"环境检查", "项目名称", "开发语言", "代码规范", "版本管理", "本地运行", "包管理器", "开发能力包", "图片开发", "样式方案", "开发技能", "确认创建"}},
 	{ID: "desktop", Title: "安装桌面版", Description: "下载 AlemonDesk。", Steps: []string{"选择下载镜像", "下载桌面版"}, Mirrors: githubMirrors("alemondesk")},
 	{ID: "mobile", Title: "安装手机版", Description: "下载 AlemonApp Android 安装包。", Steps: []string{"下载 Android 安装包"}, DownloadURL: "https://download.alemonjs.com/application/alemonapp/app-universal-release.apk"},
-	{ID: "web", Title: "部署 Web 版", Description: "部署 AlemonGo。", Steps: []string{"选择部署方式", "环境检查", "快速启动"}, Mirrors: githubMirrors("alemongo")},
+	{ID: "web", Title: "部署 Web 版", Description: "部署 albs。", Steps: []string{"选择部署方式", "环境检查", "快速启动"}, Mirrors: githubMirrors("albs")},
 }
 
 func githubMirrors(repository string) []mirror {
@@ -573,11 +575,66 @@ func (s *server) sshHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) directoryHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
+	if r.Method != http.MethodGet && r.Method != http.MethodPost && r.Method != http.MethodDelete {
 		writeError(w, http.StatusMethodNotAllowed, "该操作暂不支持。")
 		return
 	}
 	roots := s.currentDirectoryRoots()
+	if r.Method != http.MethodGet {
+		var input struct {
+			Path string `json:"path"`
+			Name string `json:"name"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+			writeError(w, http.StatusBadRequest, "目录操作内容无法识别。")
+			return
+		}
+		path, err := managedDirectory(input.Path, roots)
+		if err != nil {
+			writeError(w, http.StatusForbidden, err.Error())
+			return
+		}
+		if r.Method == http.MethodPost {
+			name := strings.TrimSpace(input.Name)
+			if name == "" || name == "." || name == ".." || filepath.Base(name) != name {
+				writeError(w, http.StatusBadRequest, "文件夹名称无效。")
+				return
+			}
+			created := filepath.Join(path, name)
+			if err := os.Mkdir(created, 0755); err != nil {
+				if os.IsExist(err) {
+					writeError(w, http.StatusConflict, "同名文件夹已存在。")
+				} else {
+					writeError(w, http.StatusBadRequest, "无法新建文件夹："+err.Error())
+				}
+				return
+			}
+			writeJSON(w, http.StatusCreated, map[string]string{"path": created})
+			return
+		}
+		if input.Path == "" || filepath.Clean(path) == filepath.Clean(input.Path) && func() bool {
+			for _, root := range roots {
+				if filepath.Clean(path) == filepath.Clean(root) {
+					return true
+				}
+			}
+			return false
+		}() {
+			writeError(w, http.StatusBadRequest, "不能删除管理范围的根目录。")
+			return
+		}
+		info, err := os.Stat(path)
+		if err != nil || !info.IsDir() {
+			writeError(w, http.StatusBadRequest, "目标文件夹不存在。")
+			return
+		}
+		if err := os.RemoveAll(path); err != nil {
+			writeError(w, http.StatusBadRequest, "无法删除文件夹："+err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"path": path})
+		return
+	}
 	path, err := managedDirectory(r.URL.Query().Get("path"), roots)
 	if err != nil {
 		writeError(w, http.StatusForbidden, err.Error())
@@ -1938,12 +1995,56 @@ func (s *server) robotGitCloneHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, err.Error())
 		return
 	}
-	result, err := robot.CloneRepository(destination, input.Repository, input.Branch, input.Name, input.Mirror)
+	if err := robot.ValidateCloneRepository(input.Repository); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	target, err := robot.CloneDestination(destination, input.Repository, input.Name)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusCreated, result)
+	if target.Exists {
+		writeError(w, http.StatusConflict, "目标目录已存在。")
+		return
+	}
+	created := operationTask{ID: "clone-" + time.Now().Format("20060102150405.000000000"), Root: destination, Path: target.Path, Action: "git-clone", Status: "running", Output: "正在校验仓库与目标目录…", Progress: 10, CreatedAt: time.Now()}
+	s.addOperation(created)
+	go func() {
+		s.updateOperation(created.ID, 35, "正在连接远程仓库…", "", false)
+		s.updateOperation(created.ID, 60, "正在下载仓库文件…", "", false)
+		result, err := robot.CloneRepository(destination, input.Repository, input.Branch, input.Name, input.Mirror)
+		if err != nil {
+			s.updateOperation(created.ID, 100, result.Output, err.Error(), true)
+			return
+		}
+		s.updateOperation(created.ID, 100, result.Output, "", true)
+	}()
+	writeJSON(w, http.StatusAccepted, created)
+}
+
+func (s *server) updateOperation(id string, progress int, output, failure string, finished bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for index := range s.operations {
+		if s.operations[index].ID != id {
+			continue
+		}
+		s.operations[index].Progress = progress
+		if output != "" {
+			s.operations[index].Output = output
+		}
+		if finished {
+			now := time.Now()
+			s.operations[index].FinishedAt = &now
+			s.operations[index].Status = "completed"
+			if failure != "" {
+				s.operations[index].Status = "failed"
+				s.operations[index].Error = failure
+			}
+		}
+		return
+	}
 }
 
 func (s *server) robotGitCloneCheckHandler(w http.ResponseWriter, r *http.Request) {

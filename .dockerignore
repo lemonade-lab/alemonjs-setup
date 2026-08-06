@@ -4,3 +4,6 @@ dist
 frontend/node_modules
 frontend/.vite
 app
+workspace
+state
+ssh

@@ -20,7 +20,7 @@ AlemonJS Setup 同时支持 MCP 的两种标准传输：**stdio** 和 **Streamab
 
 | 字段 | 值 |
 | --- | --- |
-| 名称 | `alemonjs-setup` |
+| 名称 | `alemonx` |
 | 类型 | `STDIO` |
 | 启动命令 | `albs` |
 | 参数 | `mcp` |
@@ -38,7 +38,7 @@ MCP_TOKEN='生成的高强度随机值' albs --mcp-port 17391 mcp-http
 
 | 字段 | 值 |
 | --- | --- |
-| 名称 | `alemonjs-setup` |
+| 名称 | `alemonx` |
 | 类型 | `流式 HTTP` |
 | 地址 | `http://127.0.0.1:17391/mcp` |
 | 认证 | `Bearer <MCP_TOKEN>` |

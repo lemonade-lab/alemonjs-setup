@@ -708,3 +708,59 @@ body {
 [data-theme='dark'] .guide-shell .border-amber-200 {
   border-color: #854d0e !important;
 }
+
+/* First-run guidance: clarify the next action and make the current place in
+ * longer flows visible without relying on the sidebar alone. */
+.empty-workspace > div {
+  display: grid;
+  gap: 6px;
+}
+
+.empty-workspace > div > p {
+  color: #64748b;
+  font-size: 0.8rem;
+  margin: 0;
+}
+
+.empty-workspace > footer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: center;
+}
+
+.empty-workspace > footer .secondary-button {
+  gap: 6px;
+}
+
+.wizard-progress {
+  color: #64748b;
+  font-size: 0.75rem;
+  font-weight: 700;
+  left: 72px;
+  letter-spacing: 0.02em;
+  margin: 0;
+  position: absolute;
+  top: 22px;
+}
+
+.wizard-steps > button.done {
+  cursor: pointer;
+}
+
+.wizard-steps > button:focus-visible {
+  outline: 2px solid #14b8a6;
+  outline-offset: 2px;
+}
+
+[data-theme='dark'] .empty-workspace > div > p,
+[data-theme='dark'] .wizard-progress {
+  color: #a1a1aa;
+}
+
+@media (max-width: 720px) {
+  .wizard-progress {
+    left: 22px;
+    top: 14px;
+  }
+}

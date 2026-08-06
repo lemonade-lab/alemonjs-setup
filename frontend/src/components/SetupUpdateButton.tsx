@@ -31,7 +31,7 @@ export function SetupUpdateButton() {
   const [message, setMessage] = useState('')
   const [confirmRestart, setConfirmRestart] = useState(false)
   const uploadInputID = useId()
-  const { data: releaseData = [] } = useReleasesQuery('alemonjs-setup', {
+  const { data: releaseData = [] } = useReleasesQuery('alemonx', {
     skip: !open || mode !== 'manual'
   })
   const releases = releaseData as Release[]
