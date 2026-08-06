@@ -284,10 +284,37 @@ func serve(port string) {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
-	log.Printf("alemonjs-setup %s 已启动：http://localhost:%s", Version, port)
+	fmt.Print(startupMessage(Version, port))
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatal(err)
 	}
+}
+
+// startupMessage is deliberately written for someone opening albs for the
+// first time. The terminal should answer "what is this" and "what next"
+// before it exposes implementation details such as the listener address.
+func startupMessage(version, port string) string {
+	address := "http://127.0.0.1:" + port
+	return fmt.Sprintf(`
+
+  AlemonJS Setup v%s 已准备就绪
+  ───────────────────────────────────────
+  这是 AlemonJS 机器人的桌面管理台：用来添加项目、配置机器人、运行服务，
+  并完成插件、连接、构建与发布。
+
+  现在开始
+  1. 在浏览器打开：%s
+  2. 选择「管理」→ 添加已有机器人目录
+  3. 或选择「开发」→ 创建一个新的机器人项目
+
+  接下来你还可以
+  · 在「环境」检查 Node.js、Git 与包管理器
+  · 在「运行」启动开发、前台或持续运行模式
+  · 在「发布」打包并发布到 npm 或 Git Release
+
+  此服务仅监听本机地址；保持此窗口打开即可继续使用。
+
+`, version, address)
 }
 
 func serveMCPHTTP(port, token string, policy mcp.Policy) {
