@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -70,23 +71,32 @@ type developmentProcess struct {
 	Command *exec.Cmd
 }
 
+// webViewRuntime is separate from a robot's app/dev process. It hosts
+// alemonjs/desktop.js and exchanges plugin messages through stdin/stdout.
+type webViewRuntime struct {
+	command *exec.Cmd
+	stdin   io.WriteCloser
+	events  map[string][]json.RawMessage
+}
+
 type server struct {
-	version        string
-	assets         fs.FS
-	static         http.Handler
-	checker        *system.Checker
-	creator        *project.Creator
-	robots         robot.Manager
-	plugins        setupplugin.Registry
-	auth           *access.Manager
-	ai             *ai.Manager
-	mu             sync.RWMutex
-	tasks          []task
-	operations     []operationTask
-	development    map[string]developmentProcess
-	stopping       map[string]bool
-	requestID      atomic.Uint64
-	directoryRoots []string
+	version         string
+	assets          fs.FS
+	static          http.Handler
+	checker         *system.Checker
+	creator         *project.Creator
+	robots          robot.Manager
+	plugins         setupplugin.Registry
+	auth            *access.Manager
+	ai              *ai.Manager
+	mu              sync.RWMutex
+	tasks           []task
+	operations      []operationTask
+	development     map[string]developmentProcess
+	webviewRuntimes map[string]*webViewRuntime
+	stopping        map[string]bool
+	requestID       atomic.Uint64
+	directoryRoots  []string
 }
 
 var goals = []goal{
@@ -127,7 +137,7 @@ func NewServerWithAuth(version string, staticFiles fs.FS, identity *access.Manag
 	if err != nil {
 		panic(err)
 	}
-	s := &server{version: version, assets: assets, static: http.FileServer(http.FS(assets)), checker: system.NewChecker(), plugins: setupplugin.NewRegistry(), auth: identity, ai: aiManager, development: map[string]developmentProcess{}, stopping: map[string]bool{}, directoryRoots: managedDirectoryRoots()}
+	s := &server{version: version, assets: assets, static: http.FileServer(http.FS(assets)), checker: system.NewChecker(), plugins: setupplugin.NewRegistry(), auth: identity, ai: aiManager, development: map[string]developmentProcess{}, webviewRuntimes: map[string]*webViewRuntime{}, stopping: map[string]bool{}, directoryRoots: managedDirectoryRoots()}
 	if len(templateFiles) > 0 {
 		templates, err := fs.Sub(templateFiles[0], "templates")
 		if err != nil {
@@ -152,6 +162,7 @@ func NewServerWithAuth(version string, staticFiles fs.FS, identity *access.Manag
 	mux.HandleFunc("/api/v1/update/apply", s.applyUpdateHandler)
 	mux.HandleFunc("/api/v1/update/load", s.loadUpdateHandler)
 	mux.HandleFunc("/api/v1/ai/providers", s.aiProvidersHandler)
+	mux.HandleFunc("/api/v1/ai/models", s.aiModelsHandler)
 	mux.HandleFunc("/api/v1/ai/chat", s.aiChatHandler)
 	mux.HandleFunc("/api/v1/system/ssh", s.sshHandler)
 	mux.HandleFunc("/api/v1/directories", s.directoryHandler)
@@ -183,6 +194,8 @@ func NewServerWithAuth(version string, staticFiles fs.FS, identity *access.Manag
 	mux.HandleFunc("/api/v1/publish/npm/status", s.npmPublishStatusHandler)
 	mux.HandleFunc("/api/v1/publish/npm/pack", s.npmPackPreviewHandler)
 	mux.HandleFunc("/api/v1/publish/git/status", s.gitPublishStatusHandler)
+	mux.HandleFunc("/api/v1/publish/git/prepare", s.gitBuildPrepareHandler)
+	mux.HandleFunc("/api/v1/publish/git/publish", s.gitBuildPublishHandler)
 	mux.Handle("/", s.spa())
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.New()
@@ -318,6 +331,51 @@ func (s *server) gitPublishStatusHandler(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	writeJSON(w, http.StatusOK, status)
+}
+
+func (s *server) gitBuildPrepareHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "该操作暂不支持。")
+		return
+	}
+	var input struct {
+		Root   string `json:"root"`
+		Branch string `json:"branch"`
+		Commit string `json:"commit"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		writeError(w, http.StatusBadRequest, "请求内容无法识别。")
+		return
+	}
+	session, err := robot.PrepareGitBuild(input.Root, input.Branch, input.Commit)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, session)
+}
+
+func (s *server) gitBuildPublishHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "该操作暂不支持。")
+		return
+	}
+	var input struct {
+		SessionID string   `json:"sessionId"`
+		Version   string   `json:"version"`
+		Artifacts []string `json:"artifacts"`
+		Confirm   bool     `json:"confirm"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		writeError(w, http.StatusBadRequest, "请求内容无法识别。")
+		return
+	}
+	result, err := robot.PublishPreparedGitBuild(input.SessionID, input.Version, input.Artifacts, input.Confirm)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (s *server) catalogHandler(w http.ResponseWriter, r *http.Request) {
@@ -592,25 +650,42 @@ func directoryLocations(roots []string) []map[string]string {
 	home, _ := os.UserHomeDir()
 	items := make([]map[string]string, 0, len(roots))
 	for _, root := range roots {
-		name, kind := filepath.Base(root), "disk"
-		if filepath.Clean(root) == filepath.Clean(home) {
-			name, kind = "主目录", "home"
-		}
-		if filepath.Clean(root) == string(filepath.Separator) {
-			name = "系统磁盘"
-		}
-		if runtime.GOOS == "darwin" && strings.HasPrefix(filepath.Clean(root), "/Volumes/") {
-			kind = "volume"
-		}
-		if runtime.GOOS == "linux" && (strings.HasPrefix(root, "/media/") || strings.HasPrefix(root, "/run/media/")) {
-			kind = "volume"
-		}
-		if runtime.GOOS == "windows" {
-			kind = "volume"
-		}
+		name, kind := directoryLocation(root, home, runtime.GOOS)
 		items = append(items, map[string]string{"name": name, "path": root, "kind": kind})
 	}
 	return items
+}
+
+// directoryLocation gives filesystem roots a human-readable name. In
+// particular, filepath.Base(`C:\\`) on Windows can resolve to a separator,
+// which used to leave users with a meaningless “/” disk entry.
+func directoryLocation(root, home, goos string) (string, string) {
+	clean := filepath.Clean(root)
+	if clean == filepath.Clean(home) {
+		return "主目录", "home"
+	}
+	if goos == "windows" {
+		volume := filepath.VolumeName(root)
+		// Keep this testable on non-Windows hosts and robust for paths received
+		// from a Windows client in their native form.
+		if volume == "" && len(root) >= 2 && root[1] == ':' {
+			volume = root[:2]
+		}
+		if volume != "" {
+			return "本地磁盘（" + strings.ToUpper(volume) + "）", "volume"
+		}
+		return "本地磁盘", "volume"
+	}
+	if clean == string(filepath.Separator) {
+		return "系统磁盘", "disk"
+	}
+	if goos == "darwin" && strings.HasPrefix(clean, "/Volumes/") {
+		return filepath.Base(clean), "volume"
+	}
+	if goos == "linux" && (strings.HasPrefix(clean, "/media/") || strings.HasPrefix(clean, "/run/media/")) {
+		return filepath.Base(clean), "volume"
+	}
+	return filepath.Base(clean), "disk"
 }
 
 func (s *server) currentDirectoryRoots() []string {
@@ -712,6 +787,7 @@ func (s *server) aiChatHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	var input struct {
 		Provider string              `json:"provider"`
+		Model    string              `json:"model"`
 		Messages []map[string]string `json:"messages"`
 	}
 	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&input); err != nil || len(input.Messages) == 0 {
@@ -722,12 +798,25 @@ func (s *server) aiChatHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "一次对话最多保留 30 条消息。")
 		return
 	}
-	answer, err := s.ai.Chat(input.Provider, input.Messages)
+	answer, err := s.ai.Chat(input.Provider, input.Model, input.Messages)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"answer": answer})
+}
+
+func (s *server) aiModelsHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "该操作暂不支持。")
+		return
+	}
+	items, err := s.ai.Models(r.URL.Query().Get("provider"))
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"models": items})
 }
 
 // downloadUpdateHandler downloads the exact asset selected by the server's
@@ -1016,6 +1105,7 @@ func (s *server) robotTasksHandler(w http.ResponseWriter, r *http.Request) {
 	var input struct {
 		Root    string `json:"root"`
 		Action  string `json:"action"`
+		Value   string `json:"value"`
 		Message string `json:"message"`
 		Package string `json:"package"`
 		Version string `json:"version"`
@@ -1342,44 +1432,80 @@ func (s *server) robotWebViewHandler(w http.ResponseWriter, r *http.Request) {
 		s.proxyRobotWebViewAPI(w, r, string(rootBytes), parts[1], strings.TrimPrefix(requestPath, "api/"))
 		return
 	}
+	if requestPath == "message" {
+		s.robotWebViewMessageHandler(w, r, string(rootBytes), parts[1])
+		return
+	}
+	if requestPath == "events" {
+		s.robotWebViewEventsHandler(w, r, string(rootBytes), parts[1])
+		return
+	}
+	if requestPath == "bridge.js" {
+		entry, entryErr := s.robots.WebViewEntry(string(rootBytes), parts[1])
+		if entryErr != nil {
+			writeError(w, http.StatusNotFound, entryErr.Error())
+			return
+		}
+		w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
+		_, _ = io.WriteString(w, webViewBridge(entry))
+		return
+	}
 	file, err := s.robots.WebViewFile(string(rootBytes), parts[1], requestPath)
 	if err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
 	}
-	// WebViews are intentionally opened through the other loopback hostname
-	// (localhost <-> 127.0.0.1). That keeps their localStorage and cookies in a
-	// separate browser origin from the management UI. Plugin actions can only
-	// use the narrowly scoped WebView API proxy below.
+	// Each WebView is opened through a robot-specific *.localhost hostname.
+	// It remains loopback-only while keeping plugin storage and cookies separate
+	// from both the management UI and other robots. Plugin actions can only use
+	// the narrowly scoped WebView API proxy below.
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	// A robot plugin UI may talk only to its registered local bot API proxy.
 	// Do not permit the parent management origin in connect-src.
 	w.Header().Set("Content-Security-Policy", "default-src 'self' data: blob:; connect-src 'self' ws: wss:; img-src 'self' data: blob: https: http:; style-src 'self' 'unsafe-inline'; frame-ancestors http://localhost:* http://127.0.0.1:*; base-uri 'none'")
-	// WebView assets are static and path-guarded. Keep this header for modules
-	// and assets that a plugin may load from a sandboxed or alternate browser
-	// origin; it does not grant a setup command bridge.
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	// Vite's default production output commonly uses /assets/... absolute URLs.
-	// Inside a plugin mount that would otherwise point at setup's own assets.
-	// Keep ordinary external URLs untouched and only make local bundle paths
-	// relative to this plugin's registered WebView route.
+	// Vite's default production output commonly uses root-absolute local asset
+	// URLs. Inside a plugin mount those would otherwise point at setup's own
+	// assets, so make the common HTML, favicon and CSS bundle forms relative.
+	// Ordinary external URLs remain untouched.
 	if filepath.Ext(file) == ".html" {
 		data, readErr := os.ReadFile(file)
 		if readErr != nil {
 			writeError(w, http.StatusNotFound, "插件 Web 页面不存在。")
 			return
 		}
-		content := strings.NewReplacer(
-			`src="/assets/`, `src="assets/`,
-			`href="/assets/`, `href="assets/`,
-			`src='/assets/`, `src='assets/`,
-			`href='/assets/`, `href='assets/`,
-		).Replace(string(data))
+		content := rewriteWebViewHTML(string(data))
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_, _ = io.WriteString(w, content)
 		return
 	}
 	http.ServeFile(w, r, file)
+}
+
+// rewriteWebViewHTML keeps a plugin's common Vite assets inside its mounted
+// WebView route and injects only the restricted setup bridge.
+func rewriteWebViewHTML(content string) string {
+	content = strings.NewReplacer(
+		`src="/assets/`, `src="assets/`,
+		`href="/assets/`, `href="assets/`,
+		`src='/assets/`, `src='assets/`,
+		`href='/assets/`, `href='assets/`,
+		`href="/favicon.ico"`, `href="favicon.ico"`,
+		`href='/favicon.ico'`, `href='favicon.ico'`,
+		`url(/assets/`, `url(assets/`,
+		`url('/assets/`, `url('assets/`,
+		`url("/assets/`, `url("assets/`,
+	).Replace(content)
+	if strings.Contains(content, "</head>") {
+		return strings.Replace(content, "</head>", `<script src="bridge.js"></script></head>`, 1)
+	}
+	return `<script src="bridge.js"></script>` + content
+}
+
+// webViewBridge intentionally exposes a compatibility subset, never Wails or
+// setup process privileges. The package metadata is JSON-quoted to keep a
+// malformed manifest from becoming executable JavaScript.
+func webViewBridge(entry robot.WebViewEntry) string {
+	return `(function(){var listeners=[],lastAPIError='';function emit(value){listeners.slice().forEach(function(listener){try{listener(value)}catch(_){}})}function send(type,value){parent.postMessage({source:'albs-webview',type:type,value:value},'*')}function reportAPIError(status,message){var key=String(status||0)+'/'+String(message||'');if(lastAPIError===key)return;lastAPIError=key;send('api-error',{status:status||0,message:message||''});window.setTimeout(function(){lastAPIError=''},5000)}function responseError(response){response.clone().json().then(function(payload){reportAPIError(response.status,payload&&typeof payload.error==='string'?payload.error:'')}).catch(function(){reportAPIError(response.status,'')})}function isPluginAPI(input){try{var url=new URL(typeof input==='string'?input:input.url,location.href);return /\/api\//.test(url.pathname)}catch(_){return false}}var nativeFetch=window.fetch;window.fetch=function(input,init){return nativeFetch.apply(this,arguments).then(function(response){if(isPluginAPI(input)&&!response.ok)responseError(response);return response})};var NativeXHR=window.XMLHttpRequest;function TrackedXHR(){var xhr=new NativeXHR(),url='';var open=xhr.open;xhr.open=function(method,nextURL){url=nextURL;return open.apply(xhr,arguments)};xhr.addEventListener('loadend',function(){if(isPluginAPI(url)&&xhr.status>=400){var message='';try{var body=JSON.parse(xhr.responseText);message=typeof body.error==='string'?body.error:''}catch(_){}reportAPIError(xhr.status,message)}});return xhr}TrackedXHR.prototype=NativeXHR.prototype;window.XMLHttpRequest=TrackedXHR;function post(value){send('message',value);return nativeFetch('message',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({value:value})}).then(function(response){if(!response.ok)throw new Error('插件 desk 通信不可用')})}function pull(){nativeFetch('events').then(function(response){return response.ok?response.json():null}).then(function(payload){(payload&&payload.events||[]).forEach(emit)}).catch(function(){})}var api=Object.freeze({context:Object.freeze({package:` + strconv.Quote(entry.Package) + `,name:` + strconv.Quote(entry.Name) + `}),postMessage:post,onMessage:function(listener){if(typeof listener!=='function')return function(){};listeners.push(listener);return function(){listeners=listeners.filter(function(item){return item!==listener})}},request:function(path,options){if(typeof path!=='string'||!/^\.\/api\//.test(path))return Promise.reject(new Error('只允许请求插件 ./api/ 路径'));return window.fetch(path,options)}});window.__albsWebview=api;window.appDesktopAPI=Object.freeze({postMessage:api.postMessage,onMessage:api.onMessage,themeVariables:function(){return getComputedStyle(document.documentElement)},themeOn:function(listener){return api.onMessage(function(value){if(value&&value.type==='theme')listener(value.data)})}});window.addEventListener('message',function(event){var data=event.data;if(data&&data.source==='albs-parent'){emit(data.value)}});pull();window.setInterval(pull,800);send('ready',{package:api.context.package,name:api.context.name});})();`
 }
 
 // proxyRobotWebViewAPI connects a WebView's relative ./api/* requests to the
@@ -1421,6 +1547,176 @@ func (s *server) proxyRobotWebViewAPI(w http.ResponseWriter, r *http.Request, ro
 	w.WriteHeader(response.StatusCode)
 	_, _ = io.Copy(w, response.Body)
 }
+
+func (s *server) robotWebViewMessageHandler(w http.ResponseWriter, r *http.Request, root, id string) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "插件消息仅支持发送。")
+		return
+	}
+	entry, err := s.robots.WebViewEntry(root, id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	var input struct {
+		Value json.RawMessage `json:"value"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 256*1024)).Decode(&input); err != nil || len(input.Value) == 0 {
+		writeError(w, http.StatusBadRequest, "插件消息内容无效。")
+		return
+	}
+	runtime, err := s.ensureRobotWebViewRuntime(root)
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, err.Error())
+		return
+	}
+	payload, _ := json.Marshal(map[string]json.RawMessage{"name": json.RawMessage(strconv.Quote(entry.Package)), "value": input.Value})
+	message, _ := json.Marshal(map[string]any{"type": "webview-post-message", "data": string(payload), "__STDIN_JSON_DATA": true})
+	if _, err := runtime.stdin.Write(append(message, '\n')); err != nil {
+		writeError(w, http.StatusBadGateway, "插件 desk 进程无法接收消息。")
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]bool{"accepted": true})
+}
+
+// robotWebViewEventsHandler is deliberately a short polling endpoint. Unlike a
+// permanent SSE stream, it keeps hidden tabs from holding resources while the
+// browser still receives every queued message from its directory's desk IPC.
+func (s *server) robotWebViewEventsHandler(w http.ResponseWriter, r *http.Request, root, id string) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "插件消息仅支持读取。")
+		return
+	}
+	if _, err := s.robots.WebViewEntry(root, id); err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	s.mu.Lock()
+	runtime := s.webviewRuntimes[root]
+	events := []json.RawMessage(nil)
+	if runtime != nil {
+		events = append(events, runtime.events[id]...)
+		delete(runtime.events, id)
+	}
+	s.mu.Unlock()
+	writeJSON(w, http.StatusOK, map[string]any{"events": events})
+}
+
+func (s *server) ensureRobotWebViewRuntime(root string) (*webViewRuntime, error) {
+	s.mu.RLock()
+	runtime := s.webviewRuntimes[root]
+	s.mu.RUnlock()
+	if runtime != nil {
+		return runtime, nil
+	}
+	// The caller already resolved a registered WebView entry for this root.
+	// Convert only that validated root to an absolute process working directory.
+	project, err := filepath.Abs(root)
+	if err != nil {
+		return nil, err
+	}
+	scriptPath := filepath.Join(project, "alemonjs", "desktop.js")
+	if _, err := os.Stat(scriptPath); os.IsNotExist(err) {
+		if err := os.MkdirAll(filepath.Dir(scriptPath), 0755); err != nil {
+			return nil, err
+		}
+		if err := os.WriteFile(scriptPath, []byte(defaultWebViewDesktopScript), 0644); err != nil {
+			return nil, err
+		}
+	} else if err != nil {
+		return nil, err
+	}
+	node, err := exec.LookPath("node")
+	if err != nil {
+		return nil, fmt.Errorf("插件 WebView 通信需要 Node.js，请先在环境管理中安装")
+	}
+	command := exec.Command(node, scriptPath)
+	command.Dir = project
+	stdin, err := command.StdinPipe()
+	if err != nil {
+		return nil, err
+	}
+	stdout, err := command.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+	stderr, err := command.StderrPipe()
+	if err != nil {
+		return nil, err
+	}
+	if err := command.Start(); err != nil {
+		return nil, fmt.Errorf("无法启动插件 desk 进程：%w", err)
+	}
+	runtime = &webViewRuntime{command: command, stdin: stdin, events: map[string][]json.RawMessage{}}
+	s.mu.Lock()
+	if existing := s.webviewRuntimes[root]; existing != nil {
+		s.mu.Unlock()
+		_ = command.Process.Kill()
+		go func() { _ = command.Wait() }()
+		return existing, nil
+	}
+	s.webviewRuntimes[root] = runtime
+	s.mu.Unlock()
+	go s.watchRobotWebViewRuntime(root, runtime, stdout, stderr)
+	return runtime, nil
+}
+
+func (s *server) watchRobotWebViewRuntime(root string, runtime *webViewRuntime, stdout, stderr io.Reader) {
+	read := func(stream io.Reader) {
+		scanner := bufio.NewScanner(stream)
+		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+		for scanner.Scan() {
+			s.queueRobotWebViewEvent(root, scanner.Bytes())
+		}
+	}
+	go read(stderr)
+	read(stdout)
+	_ = runtime.command.Wait()
+	s.mu.Lock()
+	if s.webviewRuntimes[root] == runtime {
+		delete(s.webviewRuntimes, root)
+	}
+	s.mu.Unlock()
+}
+
+func (s *server) queueRobotWebViewEvent(root string, line []byte) {
+	var envelope struct {
+		Type string          `json:"type"`
+		Data json.RawMessage `json:"data"`
+	}
+	if json.Unmarshal(line, &envelope) != nil || !strings.HasPrefix(envelope.Type, "webview-") {
+		return
+	}
+	var target struct {
+		Name  string          `json:"name"`
+		Value json.RawMessage `json:"value"`
+	}
+	if json.Unmarshal(envelope.Data, &target) != nil || target.Name == "" {
+		return
+	}
+	entries, err := s.robots.WebViews(root)
+	if err != nil {
+		return
+	}
+	event, _ := json.Marshal(map[string]json.RawMessage{"type": json.RawMessage(strconv.Quote(strings.TrimPrefix(envelope.Type, "webview-on-"))), "data": target.Value})
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	runtime := s.webviewRuntimes[root]
+	if runtime == nil {
+		return
+	}
+	for _, entry := range entries {
+		if entry.Package == target.Name {
+			runtime.events[entry.ID] = append(runtime.events[entry.ID], event)
+		}
+	}
+}
+
+const defaultWebViewDesktopScript = `import { events } from '@alemonjs/process'
+const send = data => process.stdout.write(JSON.stringify({ type: data.type, data: data.data, from: 'nodejs', __STDIN_JSON_DATA: true }) + '\n')
+global.wsprocess = global.wsprocess || {}; global.wsprocess.send = send
+process.stdin.on('data', raw => { try { const data = JSON.parse(raw.toString().trim()); if (data?.__STDIN_JSON_DATA && data.type) events[data.type]?.(JSON.parse(data.data)) } catch {} })
+`
 
 func (s *server) robotManifestHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
@@ -1544,7 +1840,11 @@ func (s *server) robotGitInitHandler(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) robotGitHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
-		status, err := robot.GitWorkspace(r.URL.Query().Get("root"))
+		view := r.URL.Query().Get("view")
+		if view == "" {
+			view = "commit"
+		}
+		status, err := robot.GitWorkspaceView(r.URL.Query().Get("root"), view)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
@@ -1559,13 +1859,14 @@ func (s *server) robotGitHandler(w http.ResponseWriter, r *http.Request) {
 	var input struct {
 		Root    string `json:"root"`
 		Action  string `json:"action"`
+		Value   string `json:"value"`
 		Message string `json:"message"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 		writeError(w, http.StatusBadRequest, "Git 操作内容无法识别。")
 		return
 	}
-	result, err := robot.GitWorkspaceAction(input.Root, input.Action, input.Message)
+	result, err := robot.GitWorkspaceAction(input.Root, input.Action, input.Value, input.Message)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return

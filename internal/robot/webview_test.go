@@ -12,6 +12,8 @@ func TestWebViewsDiscoverCurrentRobotPluginsAndContainFiles(t *testing.T) {
 	writeWebViewFixture(t, filepath.Join(root, "packages", "local-web", "package.json"), `{"name":"local-web","description":"local","alemonjs":{"web":{"root":"dist"},"desktop":{"sidebars":[{"name":"本地页面"}]}}}`)
 	writeWebViewFixture(t, filepath.Join(root, "packages", "local-web", "dist", "index.html"), `<script src="/assets/app.js"></script>`)
 	writeWebViewFixture(t, filepath.Join(root, "packages", "local-web", "dist", "assets", "app.js"), `console.log('ok')`)
+	writeWebViewFixture(t, filepath.Join(root, "packages", "@alemonjs", "scoped-web", "package.json"), `{"name":"@alemonjs/scoped-web","alemonjs":{"web":{"root":"dist"},"desktop":{"sidebars":[{"name":"作用域页面"}]}}}`)
+	writeWebViewFixture(t, filepath.Join(root, "packages", "@alemonjs", "scoped-web", "dist", "index.html"), `ok`)
 	writeWebViewFixture(t, filepath.Join(root, "node_modules", "web-dep", "package.json"), `{"name":"web-dep","alemonjs":{"web":{"root":"dist"},"desktop":{"sidebars":[{"name":"依赖页面"}]}}}`)
 	writeWebViewFixture(t, filepath.Join(root, "node_modules", "web-dep", "dist", "index.html"), `ok`)
 
@@ -19,17 +21,23 @@ func TestWebViewsDiscoverCurrentRobotPluginsAndContainFiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("WebViews: %v", err)
 	}
-	if len(entries) != 2 {
-		t.Fatalf("entries = %d, want 2", len(entries))
+	if len(entries) != 3 {
+		t.Fatalf("entries = %d, want 3", len(entries))
 	}
-	var local WebViewEntry
+	var local, scoped WebViewEntry
 	for _, entry := range entries {
 		if entry.Package == "local-web" {
 			local = entry
 		}
+		if entry.Package == "@alemonjs/scoped-web" {
+			scoped = entry
+		}
 	}
 	if local.ID == "" || local.Name != "本地页面" {
 		t.Fatalf("unexpected local entry: %#v", local)
+	}
+	if scoped.ID == "" || scoped.Name != "作用域页面" {
+		t.Fatalf("unexpected scoped entry: %#v", scoped)
 	}
 	file, err := (Manager{}).WebViewFile(root, local.ID, "assets/app.js")
 	if err != nil || filepath.Base(file) != "app.js" {

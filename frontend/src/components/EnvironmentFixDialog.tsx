@@ -1,3 +1,5 @@
+import { ArrowUpRight, X } from 'lucide-react'
+
 type Check = { id: string; name: string; suggestion: string }
 
 type Props = { check: Check; onClose: () => void }
@@ -17,6 +19,5 @@ const links: Record<string, Array<{ label: string; note: string; href: string }>
 
 export function EnvironmentFixDialog({ check, onClose }: Props) {
   const options = links[check.id] ?? []
-  return <div className="environment-modal-backdrop" role="presentation" onMouseDown={onClose}><section className="environment-modal" role="dialog" aria-modal="true" aria-labelledby="environment-fix-title" onMouseDown={(event) => event.stopPropagation()}><button className="environment-modal-close icon-button" onClick={onClose} aria-label="关闭"><X /></button><h2 id="environment-fix-title">安装 {check.name}</h2><p>{check.suggestion || '请选择官方安装包，完成后返回环境面板重新检查。'}</p><div className="environment-options">{options.map((option) => <a href={option.href} target="_blank" rel="noreferrer" key={option.href}><span><strong>{option.label}</strong><small>{option.note}</small></span><ArrowUpRight /></a>)}</div><button className="primary-button" onClick={onClose}>完成</button></section></div>
+  return <div className="fixed inset-0 z-[200] flex items-center justify-center bg-slate-950/35 p-4" role="presentation" onMouseDown={onClose}><section className="relative w-full max-w-[440px] rounded-xl border border-slate-200 bg-white p-6 shadow-[0_24px_60px_rgb(15_23_42_/_0.24)]" role="dialog" aria-modal="true" aria-labelledby="environment-fix-title" onMouseDown={(event) => event.stopPropagation()}><button className="absolute right-3 top-3 inline-flex size-8 items-center justify-center rounded-md text-slate-500 transition hover:bg-slate-100 hover:text-slate-700 focus:outline-none focus:ring-2 focus:ring-brand-200" onClick={onClose} aria-label="关闭"><X className="size-4" /></button><h2 id="environment-fix-title" className="mr-9 text-base font-semibold text-ink-950">安装 {check.name}</h2><p className="mt-2 text-sm leading-6 text-slate-500">{check.suggestion || '请选择官方安装包，完成后返回环境面板重新检查。'}</p><div className="mt-5 grid gap-2">{options.map((option) => <a className="flex items-center justify-between gap-3 rounded-lg border border-slate-200 p-3 text-brand-700 transition hover:border-brand-200 hover:bg-brand-50" href={option.href} target="_blank" rel="noreferrer" key={option.href}><span className="grid min-w-0 gap-1"><strong className="text-sm font-semibold">{option.label}</strong><small className="text-xs leading-5 text-slate-500">{option.note}</small></span><ArrowUpRight className="size-4 shrink-0 text-slate-400" /></a>)}</div><footer className="mt-5 flex justify-end"><button className="primary-button" onClick={onClose}>完成</button></footer></section></div>
 }
-import { ArrowUpRight, X } from 'lucide-react'

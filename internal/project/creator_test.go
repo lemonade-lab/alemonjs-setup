@@ -63,6 +63,26 @@ func TestDevelopmentTemplatePackagesFollowSelections(t *testing.T) {
 	}
 }
 
+func TestPatchPackageDeclaresSelectedPackageManager(t *testing.T) {
+	root := t.TempDir()
+	if err := copyTemplate(os.DirFS("../../templates"), "bot", root); err != nil {
+		t.Fatal(err)
+	}
+	if err := patchPackage(root, Config{Name: "example", PackageManager: "pnpm", Language: "ts", ImageMode: "none", StyleMode: "css"}); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(root, "package.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pkg struct {
+		PackageManager string `json:"packageManager"`
+	}
+	if err := json.Unmarshal(data, &pkg); err != nil || pkg.PackageManager != "pnpm@9.15.0" {
+		t.Fatalf("package manager = %q, %v", pkg.PackageManager, err)
+	}
+}
+
 func TestCreateCommandReportsMissingEnvironmentClearly(t *testing.T) {
 	t.Setenv("PATH", "")
 	logs := []string{}

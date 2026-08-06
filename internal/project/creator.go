@@ -263,6 +263,12 @@ func patchPackage(root string, config Config) error {
 		return err
 	}
 	pkg["name"] = config.Name
+	// Persist the user's package-manager choice. Subsequent robot operations
+	// read package.json first, so a copied project behaves consistently even
+	// before a lock file exists.
+	if config.PackageManager != "" {
+		pkg["packageManager"] = map[string]string{"npm": "npm@10", "yarn": "yarn@1.22.22", "pnpm": "pnpm@9.15.0"}[config.PackageManager]
+	}
 	dependencies, _ := pkg["devDependencies"].(map[string]any)
 	if dependencies == nil {
 		dependencies = map[string]any{}

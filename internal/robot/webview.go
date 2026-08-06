@@ -170,6 +170,18 @@ func pluginManifestPaths(project string) []string {
 		for _, entry := range entries {
 			if entry.IsDir() {
 				paths = append(paths, filepath.Join(project, "packages", entry.Name(), "package.json"))
+				// Local packages may use the standard npm scope layout:
+				// packages/@scope/package. Keep the scan deliberately shallow so
+				// arbitrary nested directories never become WebView candidates.
+				if strings.HasPrefix(entry.Name(), "@") {
+					if scoped, readErr := os.ReadDir(filepath.Join(project, "packages", entry.Name())); readErr == nil {
+						for _, child := range scoped {
+							if child.IsDir() {
+								paths = append(paths, filepath.Join(project, "packages", entry.Name(), child.Name(), "package.json"))
+							}
+						}
+					}
+				}
 			}
 		}
 	}

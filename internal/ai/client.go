@@ -105,7 +105,7 @@ func (m *Manager) Save(id, baseURL, model, key string) error {
 	}
 	return os.WriteFile(m.path, append(raw, '\n'), 0600)
 }
-func (m *Manager) Chat(id string, messages []map[string]string) (string, error) {
+func (m *Manager) Chat(id, model string, messages []map[string]string) (string, error) {
 	m.mu.Lock()
 	value, err := m.load()
 	m.mu.Unlock()
@@ -126,10 +126,62 @@ func (m *Manager) Chat(id string, messages []map[string]string) (string, error) 
 	if saved.Model != "" {
 		base.Model = saved.Model
 	}
+	if strings.TrimSpace(model) != "" {
+		base.Model = strings.TrimSpace(model)
+	}
 	if id == "claude" {
 		return anthropic(base, saved.APIKey, messages)
 	}
 	return compatible(base, saved.APIKey, messages)
+}
+
+// Models reads the model list from an OpenAI-compatible endpoint. Anthropic
+// does not expose a public list endpoint, so its current stable choices are
+// returned locally.
+func (m *Manager) Models(id string) ([]string, error) {
+	m.mu.Lock()
+	value, err := m.load()
+	m.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	base, ok := defaults[id]
+	if !ok {
+		return nil, errors.New("不支持该 AI 服务")
+	}
+	saved := value.Providers[id]
+	if saved.APIKey == "" {
+		return nil, errors.New("请先配置 API Key")
+	}
+	if saved.BaseURL != "" {
+		base.BaseURL = saved.BaseURL
+	}
+	if id == "claude" || strings.Contains(base.BaseURL, "anthropic.com") {
+		return []string{"claude-sonnet-4-5", "claude-opus-4-5", "claude-haiku-4-5"}, nil
+	}
+	req, err := http.NewRequest(http.MethodGet, strings.TrimRight(base.BaseURL, "/")+"/models", nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+saved.APIKey)
+	var data struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := send(req, &data); err != nil {
+		return nil, err
+	}
+	models := make([]string, 0, len(data.Data))
+	for _, item := range data.Data {
+		if item.ID != "" {
+			models = append(models, item.ID)
+		}
+	}
+	if len(models) == 0 {
+		return nil, errors.New("该接口没有返回可用模型")
+	}
+	return models, nil
 }
 func compatible(p Provider, key string, messages []map[string]string) (string, error) {
 	body, _ := json.Marshal(map[string]any{"model": p.Model, "messages": messages, "stream": false})

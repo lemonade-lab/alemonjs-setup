@@ -1,5 +1,7 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 import { useDispatch, useSelector } from 'react-redux'
+import cn from 'classnames'
 import Markdown from 'markdown-to-jsx'
 import {
   Archive,
@@ -15,6 +17,8 @@ import {
   Folder,
   HardDrive,
   GitBranch,
+  Globe2,
+  KeyRound,
   Link,
   Network,
   Package,
@@ -29,6 +33,7 @@ import {
   X
 } from 'lucide-react'
 import { RobotConfigForm } from './RobotConfigForm'
+import { ThemeToggle } from './ThemeToggle'
 import { NpmrcConfigForm } from './NpmrcConfigForm'
 import { EnvConfigForm } from './EnvConfigForm'
 import { NpmPublishPanel } from './NpmPublishPanel'
@@ -68,12 +73,18 @@ import {
   useWritePackageConfigMutation,
   useWriteRobotFileMutation,
   type RuntimeOverview,
+  type RuntimePreflight,
   type RobotWebView,
   type SetupPlugin
 } from '../store/workspaceApi'
 import {
   addProjects,
   removeProject as removeWorkspaceProject,
+  clearActiveWebviewTab,
+  activateWebviewTab,
+  closeWebviewTab,
+  openWebviewTab,
+  pruneWebviewTabs,
   selectProject,
   setDeveloperMode,
   setDraft
@@ -139,6 +150,10 @@ const emptyGitCommits: Array<{
   shortSha: string
   subject: string
   createdAt: string
+}> = []
+const emptyGitBranches: Array<{
+  name: string
+  commits: typeof emptyGitCommits
 }> = []
 
 function setupPluginIcon(icon?: string) {
@@ -266,7 +281,7 @@ export function DirectoryPicker({
     )
   const home = data?.roots[0] ?? ''
   const favorites = [
-    { name: '主目录', path: home },
+    { name: 'home', path: home },
     ...['Desktop', 'Documents', 'Downloads', 'Pictures'].map(name => ({
       name,
       path: `${home}/${name}`
@@ -323,7 +338,11 @@ export function DirectoryPicker({
             <small>单击选择，双击打开</small>
           </div>
           <strong>
-            {data?.path?.split('/').filter(Boolean).pop() || '选择目录'}
+            {data?.path
+              ? /^[a-z]:[\\/]?$/i.test(data.path)
+                ? `本地磁盘（${data.path.slice(0, 2).toUpperCase()}）`
+                : data.path.split(/[\\/]/).filter(Boolean).pop() || '系统磁盘'
+              : '选择目录'}
           </strong>
           <label className="finder-search">
             <Search />
@@ -429,7 +448,6 @@ export function Dashboard({
   const [configEditor, setConfigEditor] = useState<'visual' | 'text'>('visual')
   const [buildMode, setBuildMode] = useState<'manifest' | 'npm' | 'git'>('git')
   const [releaseVersion, setReleaseVersion] = useState('')
-  const [gitConfirm, setGitConfirm] = useState(false)
   const [environmentOpen, setEnvironmentOpen] = useState(false)
   const [directoryPickerOpen, setDirectoryPickerOpen] = useState(false)
   const [gitCloneOpen, setGitCloneOpen] = useState(false)
@@ -439,7 +457,6 @@ export function Dashboard({
   const [invalidDirectory, setInvalidDirectory] = useState('')
   const [pendingBackpackRemoval, setPendingBackpackRemoval] = useState('')
   const [trackRuntimeTasks, setTrackRuntimeTasks] = useState(false)
-  const [activeWebViewID, setActiveWebViewID] = useState('')
   const [aiOpen, setAIOpen] = useState(false)
   const environmentChecked = useRef(false)
   const dispatch = useDispatch()
@@ -449,11 +466,15 @@ export function Dashboard({
   const activeProjectID = useSelector(
     (state: RootState) => state.workspace.activeProjectID
   )
+  const webviewTabs = useSelector((state: RootState) => state.workspace.webviewTabs)
+  const activeWebviewTabKey = useSelector((state: RootState) => state.workspace.activeWebviewTabKey)
   const developerMode = useSelector(
     (state: RootState) => state.workspace.developerMode
   )
   const activeProject = projects.find(item => item.id === activeProjectID)
   const root = activeProject?.path ?? ''
+  const activeWebviewTab = webviewTabs.find(item => item.key === activeWebviewTabKey)
+  const activeWebViewID = activeWebviewTab?.root === root ? activeWebviewTab.entryID : ''
   const draftKey = `${root}:${file}`
   const content = useSelector(
     (state: RootState) => state.workspace.drafts[draftKey] ?? ''
@@ -479,7 +500,7 @@ export function Dashboard({
     error: packagesError,
     refetch: refetchPackages
   } = useLocalPackagesQuery(root, { skip: !root || section !== 'backpack' })
-  const { data: robotWebViews = [] } = useRobotWebViewsQuery(root, {
+  const { data: robotWebViews = [], isLoading: webViewsLoading } = useRobotWebViewsQuery(root, {
     skip: !root
   })
   const {
@@ -532,6 +553,7 @@ export function Dashboard({
   useEffect(() => {
     if (root) void validateRobot(root)
   }, [root, validateRobot])
+  useEffect(() => { if (root && !webViewsLoading) dispatch(pruneWebviewTabs({ root, entryIDs: robotWebViews.map(item => item.id) })) }, [dispatch, robotWebViews, root, webViewsLoading])
   useEffect(() => {
     if (!root || section !== 'config') return
     void readRobotFile({ root, file: 'alemon.config.yaml' }, true)
@@ -782,7 +804,7 @@ export function Dashboard({
   // normal navigation must leave them first so the control card always works.
   function closeTemporaryContentPage() {
     setAIOpen(false)
-    setActiveWebViewID('')
+    dispatch(clearActiveWebviewTab())
   }
 
   function openSection(nextSection: Section) {
@@ -939,16 +961,18 @@ export function Dashboard({
           )}
           onRefresh={() => void refetchRuntime()}
           onOpenConsole={() => setConsoleOpen(true)}
-          onRun={(action, packageName) => {
-            void api('POST', {
+          onRun={(action, packageName) =>
+            api('POST', {
               root,
               action,
               ...(packageName ? { package: packageName } : {})
-            }).then(() => {
+            }).then(success => {
               void refetchRuntime()
+              return success
             })
-          }}
+          }
           onSaveLogin={saveRuntimeLogin}
+          onSavePackageConfig={savePackageConfig}
           developerMode={developerMode}
         />
       )}
@@ -1020,7 +1044,11 @@ export function Dashboard({
         {activeWebView ? (
           <RobotPluginWebView
             root={root}
-            entry={activeWebView}
+            entries={robotWebViews}
+            tabs={webviewTabs.filter(tab => tab.root === root).sort((left, right) => left.openedAt.localeCompare(right.openedAt))}
+            activeTabKey={activeWebviewTabKey}
+            onActivate={key => dispatch(activateWebviewTab(key))}
+            onClose={key => dispatch(closeWebviewTab(key))}
           />
         ) : (
           <>
@@ -1046,22 +1074,8 @@ export function Dashboard({
                     root={root}
                     busy={busy}
                     version={releaseVersion}
-                    confirmed={gitConfirm}
-                    onVersionChange={value => {
-                      setReleaseVersion(value)
-                      setGitConfirm(false)
-                    }}
-                    onConfirm={() => setGitConfirm(value => !value)}
+                    onVersionChange={setReleaseVersion}
                     onInitialize={initializeProjectGit}
-                    onRun={sourceCommit =>
-                      api('POST', {
-                        root,
-                        action: 'git-release',
-                        version: releaseVersion,
-                        message: sourceCommit,
-                        confirm: 'true'
-                      })
-                    }
                   />
                 )}
                 {output && (
@@ -1105,10 +1119,10 @@ export function Dashboard({
     <>
       <main className="guide-shell">
         <section className="guide-window dashboard-window">
-          <header className="guide-bar dashboard-toolbar">
-            <div className="workspace-title">
+          <header className="flex min-h-[52px] min-w-0 items-center justify-between gap-3 border-b border-slate-200 bg-white/90 px-4">
+            <div className="flex min-w-0 flex-1 items-center gap-2">
               <a
-                className="workspace-name"
+                className="truncate text-[0.84rem] font-extrabold tracking-[-0.01em] text-ink-950 no-underline transition hover:text-brand-600"
                 href="https://alemonjs.com/"
                 target="_blank"
                 rel="noreferrer"
@@ -1116,14 +1130,15 @@ export function Dashboard({
                 ALEMONJS
               </a>
               <SetupUpdateButton />
+              <ThemeToggle />
             </div>
-            <div className="header-global-actions">
+            <div className="ml-auto flex min-w-0 items-center gap-2">
               <SSHControl />
               <AuthControl />
               {developerMode && <McpControl />}
               <OperationTasksButton root={root} />
               <button
-                className={`developer-mode-toggle ${developerMode ? 'active' : ''}`}
+                className={cn('inline-flex min-h-8 items-center gap-1.5 rounded-md border px-2 text-xs font-semibold transition', developerMode ? 'border-slate-400 bg-slate-100 text-slate-900' : 'border-slate-200 bg-white text-slate-500 hover:bg-slate-50')}
                 onClick={() => dispatch(setDeveloperMode(!developerMode))}
                 aria-pressed={developerMode}
                 title={
@@ -1136,7 +1151,7 @@ export function Dashboard({
                 <span>开发</span>
               </button>
               <button
-                className={`environment-control ${environmentWarning ? 'warning' : ''}`}
+                className={cn('inline-flex min-h-8 items-center gap-1.5 rounded-md border px-2 text-xs font-semibold transition disabled:cursor-wait disabled:opacity-60', environmentWarning ? 'border-amber-300 bg-amber-50 text-amber-800' : 'border-slate-200 bg-slate-50 text-slate-700')}
                 onClick={() => {
                   setEnvironmentOpen(true)
                   onCheck()
@@ -1149,7 +1164,7 @@ export function Dashboard({
                 <strong>{checking ? '检查中' : environmentReady}</strong>
               </button>
               <button
-                className="guide-trigger"
+                className="inline-flex size-8 items-center justify-center rounded-md border border-slate-200 bg-white text-sm font-semibold text-slate-500 transition hover:bg-slate-50 hover:text-slate-900"
                 onClick={onOpenGuide}
                 aria-label="打开引导"
                 title="打开引导"
@@ -1219,11 +1234,13 @@ export function Dashboard({
               onClone={() => setGitCloneOpen(true)}
               onSelect={id => {
                 dispatch(selectProject(id))
-                closeTemporaryContentPage()
+                // Keep each robot's most recently used WebView active when
+                // the user returns to it. AI remains local to the previous
+                // robot and must never follow the directory switch.
+                setAIOpen(false)
                 setSystemFeature(null)
                 setPage('robot')
                 setSection('config')
-                setActiveWebViewID('')
                 setOutput('')
               }}
               onRemove={removeProject}
@@ -1246,13 +1263,14 @@ export function Dashboard({
                   onOpenAI={openAI}
                   onOpenWebView={id => {
                     closeTemporaryContentPage()
-                    setActiveWebViewID(id)
+                    const entry = robotWebViews.find(item => item.id === id)
+                    if (!entry || !root) return
+                    dispatch(openWebviewTab({ key: `${root}\u0000${id}`, root, entryID: id, package: entry.package, title: entry.name }))
                   }}
                   onPage={selectPage}
                   onSection={openSection}
                   onBuildMode={mode => {
                     setBuildMode(mode)
-                    setGitConfirm(false)
                     setOutput('')
                   }}
                   onCatalog={title => {
@@ -1315,55 +1333,55 @@ function ProjectRail({
 }) {
   const activePlugins = setupPlugins.filter(item => item.enabled)
   return (
-    <aside className="project-rail">
-      <section className="feature-catalog" aria-label="系统功能目录">
-        <header>
+    <aside className="project-rail flex min-h-0 min-w-0 flex-col border-r border-slate-200 bg-slate-50">
+      <section className="border-b border-slate-200 p-3" aria-label="系统功能目录">
+        <header className="mb-2 px-2 text-[11px] font-semibold text-slate-400">
           <small>系统</small>
         </header>
         <nav>
           {coreFeatureCatalog.map(item => (
             <button
-              className={feature === item.id ? 'active' : ''}
+              className={cn('flex min-h-9 w-full items-center gap-2 rounded-md px-2.5 text-left text-xs font-semibold transition', feature === item.id ? 'bg-slate-200 text-slate-950' : 'text-slate-600 hover:bg-slate-100')}
               key={item.id}
               onClick={() => onFeature(item.id)}
             >
-              <i>{item.icon}</i>
-              <span>{item.label}</span>
-              {item.status && <small>{item.status}</small>}
+              <i className="inline-flex size-4 items-center justify-center not-italic">{item.icon}</i>
+              <span className="min-w-0 flex-1 truncate">{item.label}</span>
+              {item.status && <small className="text-[10px] text-slate-400">{item.status}</small>}
             </button>
           ))}
         </nav>
         {activePlugins.length > 0 && (
           <>
-            <span className="setup-plugin-divider" />
-            <nav>
+            <span className="my-3 block border-t border-slate-200" />
+            <nav className="grid gap-1">
               {activePlugins.map(item => (
                 <button
-                  className={feature === `setup:${item.id}` ? 'active' : ''}
+                  className={cn('flex min-h-9 w-full items-center gap-2 rounded-md px-2.5 text-left text-xs font-semibold transition', feature === `setup:${item.id}` ? 'bg-slate-200 text-slate-950' : 'text-slate-600 hover:bg-slate-100')}
                   key={item.id}
                   onClick={() => onFeature(`setup:${item.id}`)}
                 >
-                  <i>{setupPluginIcon(item.navigation.icon)}</i>
-                  <span>{item.navigation.label || item.name}</span>
-                  <small>已加载</small>
+                  <i className="inline-flex size-4 items-center justify-center not-italic">{setupPluginIcon(item.navigation.icon)}</i>
+                  <span className="min-w-0 flex-1 truncate">{item.navigation.label || item.name}</span>
+                  <small className="text-[10px] text-slate-400">已加载</small>
                 </button>
               ))}
             </nav>
           </>
         )}
       </section>
-      <section className="project-directory">
-        <header>
-          <div>
+      <section className="flex min-h-0 flex-1 flex-col">
+        <header className="flex min-h-14 items-center justify-between gap-2 border-b border-slate-200 px-3">
+          <div className="flex items-center gap-2 text-sm font-semibold text-slate-800">
             <strong>机器人目录</strong>
-            <span>{projects.length}</span>
+            <span className="rounded-full bg-slate-200 px-1.5 py-0.5 text-[10px] text-slate-500">{projects.length}</span>
           </div>
-          <div className="project-directory-actions">
-            <button onClick={onClone} aria-label="从 Git 克隆机器人" title="从 Git 克隆机器人"><GitBranch /></button>
-            <button onClick={onAdd} aria-label="添加本地机器人目录" title="添加本地机器人目录"><Plus /></button>
+          <div className="flex items-center gap-1.5">
+            <button className="icon-button size-8 p-0" onClick={onClone} aria-label="从 Git 克隆机器人" title="从 Git 克隆机器人"><GitBranch className="size-4" /></button>
+            <button className="icon-button size-8 p-0" onClick={onAdd} aria-label="添加本地机器人目录" title="添加本地机器人目录"><Plus className="size-4" /></button>
           </div>
         </header>
-        <div className="project-list">
+        <div className="grid content-start gap-1.5 overflow-auto p-2">
           {projects.map(project => (
             <ProjectItem
               active={project.id === activeID}
@@ -1373,7 +1391,7 @@ function ProjectRail({
               onRemove={onRemove}
             />
           ))}
-          {!projects.length && <p>添加目录开始管理</p>}
+          {!projects.length && <p className="px-2 py-4 text-center text-xs text-slate-400">添加目录开始管理</p>}
         </div>
       </section>
     </aside>
@@ -1399,6 +1417,9 @@ function GitCloneDialog({
   const [branch, setBranch] = useState('')
   const [name, setName] = useState('')
   const [mirror, setMirror] = useState('official')
+  const [connection, setConnection] = useState<'ssh' | 'https'>('https')
+  const [sshKeys, setSSHKeys] = useState<Array<{ name: string }>>([])
+  const [sshLoading, setSSHLoading] = useState(false)
   const [target, setTarget] = useState<{ path: string; exists: boolean } | null>(null)
   const [targetError, setTargetError] = useState('')
   useEffect(() => {
@@ -1407,9 +1428,32 @@ function GitCloneDialog({
       setBranch('')
       setName('')
       setMirror('official')
+      setConnection('https')
+      setSSHKeys([])
       setTarget(null)
       setTargetError('')
     }
+  }, [open])
+  useEffect(() => {
+    if (!open) return
+    let active = true
+    setSSHLoading(true)
+    void fetch('/api/v1/system/ssh')
+      .then(async response => {
+        const data = await response.json() as { keys?: Array<{ name: string }>; error?: string }
+        if (!response.ok) throw new Error(data.error || '无法读取 SSH 状态。')
+        return data.keys ?? []
+      })
+      .then(keys => {
+        if (!active) return
+        setSSHKeys(keys)
+        if (keys.length) setConnection('ssh')
+      })
+      .catch(() => {
+        if (active) setSSHKeys([])
+      })
+      .finally(() => { if (active) setSSHLoading(false) })
+    return () => { active = false }
   }, [open])
   useEffect(() => {
     if (!open || !destination || !repository.trim() || !name.trim()) { setTarget(null); setTargetError(''); return }
@@ -1423,14 +1467,27 @@ function GitCloneDialog({
     return () => { controller.abort(); window.clearTimeout(timer) }
   }, [destination, name, open, repository])
   if (!open) return null
-  return <div className="directory-picker-backdrop"><section className="git-dialog" role="dialog" aria-label="从 Git 克隆机器人">
-    <header><div><strong>从 Git 添加机器人</strong><span>下载完成后会自动识别并加入机器人目录。</span></div><button className="icon-button" onClick={onClose} aria-label="关闭"><X /></button></header>
-    <div className="git-dialog-form">
-      <label>仓库地址<input autoFocus value={repository} onChange={event => { const value = event.target.value; setRepository(value); const derived = value.trim().replace(/\/$/, '').split('/').pop()?.replace(/\.git$/, '') ?? ''; setName(derived) }} placeholder="https://github.com/组织/机器人仓库.git" /></label>
-      <label>分支或版本（可选）<input value={branch} onChange={event => setBranch(event.target.value)} placeholder="留空使用仓库默认分支" /></label>
-      <label>下载镜像<select value={mirror} onChange={event => setMirror(event.target.value)}><option value="official">Git 官方（推荐）</option><option value="gh-proxy">GitHub 加速 · gh-proxy</option><option value="ghproxy-net">GitHub 加速 · ghproxy.net</option></select></label>
-      <label>存放位置<button type="button" className="directory-choice" onClick={onChooseDestination}>{gitDestinationLabel(destination)}</button><small>{destination ? '会自动以仓库名创建新目录。' : '请选择一个已有文件夹作为下载位置。'}</small></label>
-      <label>最终目录名<input value={name} onChange={event => setName(event.target.value)} placeholder="默认使用仓库名" />{target?.exists ? <small className="git-target-error">目标已存在：{target.path}</small> : target?.path ? <small className="git-target-ready">将下载到：{target.path}</small> : targetError ? <small className="git-target-error">{targetError}</small> : null}</label>
+  return <div className="directory-picker-backdrop"><section className="git-dialog git-clone-dialog" role="dialog" aria-label="从 Git 克隆机器人">
+    <header><div><strong>添加 Git 仓库</strong><span>下载完成后会自动加入机器人目录。</span></div><button className="icon-button" onClick={onClose} aria-label="关闭"><X /></button></header>
+    <div className="git-dialog-form git-clone-form">
+      <section className="git-clone-access" aria-label="仓库连接方式">
+        <header><strong>连接方式</strong><small>{sshLoading ? '正在检查 SSH…' : sshKeys.length ? `已检测到 SSH 密钥：${sshKeys[0].name}` : '未配置 SSH 密钥'}</small></header>
+        <div>
+          <button type="button" className={connection === 'ssh' ? 'active' : ''} onClick={() => setConnection('ssh')}><KeyRound />SSH{sshKeys.length ? '（推荐）' : ''}</button>
+          <button type="button" className={connection === 'https' ? 'active' : ''} onClick={() => setConnection('https')}><Globe2 />HTTPS</button>
+        </div>
+        <p>{connection === 'ssh' ? sshKeys.length ? '推荐 SSH：私有仓库需先将此公钥添加到代码平台。' : '未配置 SSH 密钥；请在顶部 SSH 管理中生成并添加公钥，或改用 HTTPS。' : 'HTTPS 可直接使用；访问私有仓库时，需要在代码平台完成在线授权。'}</p>
+      </section>
+      <section className="git-clone-section">
+        <header><strong>仓库信息</strong><small>粘贴仓库的克隆地址。</small></header>
+        <label>仓库地址<input autoFocus value={repository} onChange={event => { const value = event.target.value; setRepository(value); const derived = value.trim().replace(/\/$/, '').split('/').pop()?.replace(/\.git$/, '') ?? ''; setName(derived) }} placeholder={connection === 'ssh' ? 'git@github.com:组织/机器人仓库.git' : 'https://github.com/组织/机器人仓库.git'} /><small>{connection === 'ssh' ? 'SSH 地址通常以 git@ 开头。' : 'HTTPS 地址通常以 https:// 开头。'}</small></label>
+        <div className="git-clone-fields"><label>分支（可选）<input value={branch} onChange={event => setBranch(event.target.value)} placeholder="默认分支" /></label><label>下载来源<select value={mirror} onChange={event => setMirror(event.target.value)}><option value="official">Git 官方（推荐）</option><option value="gh-proxy">GitHub 加速 · gh-proxy</option><option value="ghproxy-net">GitHub 加速 · ghproxy.net</option></select></label></div>
+      </section>
+      <section className="git-clone-section git-clone-destination">
+        <header><strong>保存位置</strong><small>会在所选文件夹中创建一个新目录。</small></header>
+        <label>所在文件夹<button type="button" className="directory-choice" onClick={onChooseDestination}>{gitDestinationLabel(destination)}</button></label>
+        <label>新目录名称<input value={name} onChange={event => setName(event.target.value)} placeholder="默认使用仓库名" />{target?.exists ? <small className="git-target-error">目标已存在：{target.path}</small> : target?.path ? <small className="git-target-ready">将下载到：{target.path}</small> : targetError ? <small className="git-target-error">{targetError}</small> : null}</label>
+      </section>
     </div>
     <footer><button className="secondary-button" onClick={onClose}>取消</button><button className="primary-button" disabled={busy || !repository.trim() || !destination || !name.trim() || !target || target.exists || Boolean(targetError)} onClick={() => void onConfirm(repository.trim(), branch.trim(), name.trim(), mirror)}>{busy ? '正在下载…' : '克隆并添加'}</button></footer>
   </section></div>
@@ -1467,24 +1524,24 @@ function ProjectItem({
   const invalid = data?.valid === false
   return (
     <article
-      className={`${active ? 'active ' : ''}${invalid ? 'invalid' : ''}`}
+      className={cn('relative rounded-lg border p-2 transition', active ? 'border-slate-300 bg-white shadow-sm' : 'border-transparent hover:border-slate-200 hover:bg-white/70', invalid ? 'border-amber-300 bg-amber-50' : '')}
     >
-      <button className="project-select" onClick={() => onSelect(project.id)}>
-        <strong>
+      <button className="grid w-full gap-1 pr-6 text-left" onClick={() => onSelect(project.id)}>
+        <strong className="flex min-w-0 items-center gap-1.5 truncate text-xs font-semibold text-slate-800">
           {project.name}
-          {invalid && <em>目录不可用</em>}
+          {invalid && <em className="not-italic text-[10px] font-semibold text-amber-700">目录不可用</em>}
         </strong>
-        <small title={project.path}>
+        <small className="block truncate text-[11px] text-slate-400" title={project.path}>
           {invalid ? data.error || project.path : project.path}
         </small>
       </button>
       <button
-        className="project-remove"
+        className="absolute right-2 top-2 inline-flex size-6 items-center justify-center rounded text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"
         onClick={() => onRemove(project.id)}
         aria-label={`移除 ${project.name}`}
         title="移除目录"
       >
-        <X />
+        <X className="size-3.5" />
       </button>
     </article>
   )
@@ -2854,17 +2911,17 @@ function CurrentProjectConfigPanel({
   // for ordinary robots that do not expose project-specific settings.
   if (loading)
     return (
-      <section className="project-config-panel">
+      <section className="project-config-panel rounded-xl border border-slate-200 bg-white p-4 text-sm text-slate-500">
         <p>正在识别当前项目的扩展配置…</p>
       </section>
     )
   if (!config?.fields.length) return null
   return (
-    <section className="project-config-panel">
-      <header>
-        <div>
-          <strong>项目扩展配置</strong>
-          <span>
+    <section className="project-config-panel grid gap-4 rounded-xl border border-slate-200 bg-white p-4">
+      <header className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 pb-3">
+        <div className="grid gap-1">
+          <strong className="text-sm font-semibold text-slate-800">项目扩展配置</strong>
+          <span className="text-xs text-slate-500">
             {config.package} · 保存至 alemon.config.yaml 的 {config.namespace}{' '}
             区域
           </span>
@@ -2877,13 +2934,13 @@ function CurrentProjectConfigPanel({
           保存
         </button>
       </header>
-      <div className="package-config-fields">
+      <div className="grid gap-3 sm:grid-cols-2">
         {config.fields.map(field => (
-          <label key={field.name}>
+          <label className="grid gap-1 text-xs font-semibold text-slate-600" key={field.name}>
             {field.description || field.name}
-            {field.required && <em>必填</em>}
+            {field.required && <em className="not-italic text-amber-700">必填</em>}
             {field.type === 'boolean' || field.type === 'bool' ? (
-              <select
+                <select className="h-9 rounded-md border border-slate-300 bg-white px-2.5 text-sm font-normal text-slate-800 outline-none focus:border-brand-600 focus:ring-2 focus:ring-brand-100"
                 value={values[field.name] ?? ''}
                 onChange={event =>
                   setValues({ ...values, [field.name]: event.target.value })
@@ -2894,7 +2951,7 @@ function CurrentProjectConfigPanel({
                 <option value="false">关闭</option>
               </select>
             ) : (
-              <input
+                <input className="h-9 rounded-md border border-slate-300 bg-white px-2.5 text-sm font-normal text-slate-800 outline-none focus:border-brand-600 focus:ring-2 focus:ring-brand-100"
                 value={values[field.name] ?? ''}
                 type={
                   field.type === 'number' || field.type === 'integer'
@@ -2953,6 +3010,7 @@ function RuntimePanel({
   onOpenConsole,
   onRun,
   onSaveLogin,
+  onSavePackageConfig,
   developerMode
 }: {
   overview?: RuntimeOverview
@@ -2963,8 +3021,9 @@ function RuntimePanel({
   foregroundRunning: boolean
   onRefresh: () => void
   onOpenConsole: () => void
-  onRun: (action: string, packageName?: string) => void
+  onRun: (action: string, packageName?: string) => Promise<boolean>
   onSaveLogin: (login: string, packageName?: string) => Promise<boolean>
+  onSavePackageConfig: (packageName: string, values: Record<string, string>) => Promise<boolean>
   developerMode: boolean
 }) {
   type PendingAction = { label: string; note: string; execute: () => void }
@@ -2972,7 +3031,7 @@ function RuntimePanel({
     action: string
     label: string
     note: string
-    summary: string[]
+    preflight: RuntimePreflight
   }
   const [customLogin, setCustomLogin] = useState('')
   const [customPackage, setCustomPackage] = useState('')
@@ -2982,9 +3041,15 @@ function RuntimePanel({
   const [loadPackageConfig] = useLazyPackageConfigQuery()
   const [loadRuntimePreflight] = useLazyRobotRuntimePreflightQuery()
   const [loginChoice, setLoginChoice] = useState<LoginChoice | null>(null)
+  const [connectionConfig, setConnectionConfig] = useState<{
+    package: string
+    fields: Array<{ name: string; type: string; required: boolean; description: string }>
+    values: Record<string, string>
+  } | null>(null)
+  const [connectionValues, setConnectionValues] = useState<Record<string, string>>({})
+  const [loginDialogError, setLoginDialogError] = useState('')
+  const [loginDialogBusy, setLoginDialogBusy] = useState(false)
   const [pm2LogsOpen, setPM2LogsOpen] = useState(false)
-  const loginControlRef = useRef<HTMLElement>(null)
-  const loginInputRef = useRef<HTMLInputElement>(null)
   const persistentReady = overview?.pm2Configured && overview.hasStartScript
   const knownPlatform = (overview?.platforms ?? []).find(
     item => item.id === selectedPlatform
@@ -2996,72 +3061,49 @@ function RuntimePanel({
     pending?.execute()
     setPending(null)
   }
-  const askLogin = async (login: string) => {
-    if (knownPlatform && packageTarget) {
-      try {
-        const config = await loadPackageConfig({
-          root,
-          package: packageTarget
-        }).unwrap()
-        const missing = config.fields
-          .filter(field => field.required && !config.values[field.name]?.trim())
-          .map(field => field.description || field.name)
-        if (missing.length) {
-          setValidationMessage(
-            `“${knownPlatform.label}”还缺少必填配置：${missing.join('、')}。请先在连接页的“配置”中填写后再保存。`
-          )
-          return
-        }
-      } catch (reason) {
-        const message = operationErrorMessage(
-          reason,
-          '无法读取该连接包的配置声明；请先确认它已安装。'
-        )
-        // alemonjs.config is optional. A connection without it has no
-        // declarative required fields, so it may proceed directly to login.
-        if (!message.includes('没有声明 alemonjs.config')) {
-          setValidationMessage(message)
-          return
-        }
-      }
-    }
-    ask('保存', `会将登录连接设为“${login}”，写入 alemon.config.yaml。`, () => {
-      void onSaveLogin(login, packageTarget)
-    })
-  }
   const askStart = async (action: string, label: string, note: string) => {
     try {
       const preflight = await loadRuntimePreflight(root, true).unwrap()
-      if (!preflight.login) {
-        setLoginChoice({ action, label, note, summary: preflight.summary })
-        return
-      }
-      if (preflight.missing.length) {
-        setValidationMessage(
-          `运行前检查未通过：${preflight.missing.join('、')}。${preflight.dependenciesComplete === false ? '请先在“运行”中执行“重载依赖”。' : '请先在机器人 → 连接中填写必填配置后再启动。'}`
-        )
-        return
-      }
-      ask(
-        label,
-        `${note}\n\n本次启动配置：\n${preflight.summary.join('\n')}`,
-        () => onRun(action)
-      )
+      const platform = (overview?.platforms ?? []).find(item => item.id === preflight.login)
+      setCustomLogin(preflight.login)
+      setSelectedPlatform(platform?.id ?? '')
+      setCustomPackage(platform?.package ?? '')
+      setConnectionConfig(null)
+      setConnectionValues({})
+      if (platform?.installed && platform.package) void loadConnectionConfig(platform.package)
+      setLoginDialogError('')
+      setLoginChoice({ action, label, note, preflight })
     } catch (reason) {
       setValidationMessage(
         operationErrorMessage(reason, '无法完成运行前检查。')
       )
     }
   }
-  const returnToLogin = () => {
+  const closeLoginDialog = () => {
     setLoginChoice(null)
-    window.requestAnimationFrame(() => {
-      loginControlRef.current?.scrollIntoView({
-        behavior: 'smooth',
-        block: 'center'
-      })
-      loginInputRef.current?.focus()
-    })
+    setLoginDialogError('')
+  }
+  const loadConnectionConfig = async (packageName: string) => {
+    if (!packageName) {
+      setConnectionConfig(null)
+      setConnectionValues({})
+      return
+    }
+    try {
+      const config = await loadPackageConfig({ root, package: packageName }).unwrap()
+      setConnectionConfig(config)
+      setConnectionValues(config.values)
+    } catch (reason) {
+      const message = operationErrorMessage(reason, '无法读取连接包配置。')
+      // A config declaration is optional; it is valid to continue without a
+      // form when the installed package declares no alemonjs.config fields.
+      if (message.includes('没有声明 alemonjs.config')) {
+        setConnectionConfig({ package: packageName, fields: [], values: {} })
+        setConnectionValues({})
+        return
+      }
+      setLoginDialogError(message)
+    }
   }
   const choosePlatform = (id: string) => {
     setSelectedPlatform(id)
@@ -3069,26 +3111,90 @@ function RuntimePanel({
     if (platform) {
       setCustomLogin(platform.id)
       setCustomPackage(platform.package)
+      void loadConnectionConfig(platform.package)
+    }
+  }
+  const saveLoginFromDialog = async () => {
+    const login = customLogin.trim()
+    if (!login) {
+      setLoginDialogError('请选择或填写登录连接，也可以选择无 login 启动。')
+      return
+    }
+    const missing = (connectionConfig?.fields ?? [])
+      .filter(field => field.required && !connectionValues[field.name]?.trim())
+      .map(field => field.description || field.name)
+    if (missing.length) {
+      setLoginDialogError(`请填写必填项：${missing.join('、')}`)
+      return
+    }
+    setLoginDialogBusy(true)
+    try {
+      if (packageTarget && connectionConfig?.fields.length) {
+        if (!(await onSavePackageConfig(packageTarget, connectionValues))) return
+      }
+      if (!(await onSaveLogin(login, packageTarget))) return
+      const preflight = await loadRuntimePreflight(root, true).unwrap()
+      setLoginChoice(current => current ? { ...current, preflight } : current)
+      setLoginDialogError('登录连接已保存。请确认下方启动配置后继续。')
+    } catch (reason) {
+      setLoginDialogError(operationErrorMessage(reason, '登录连接未保存。'))
+    } finally {
+      setLoginDialogBusy(false)
+    }
+  }
+  const installSelectedConnection = async () => {
+    if (!packageTarget) return
+    setLoginDialogBusy(true)
+    try {
+      if (await onRun('install-connection', packageTarget)) {
+        await loadConnectionConfig(packageTarget)
+        setLoginDialogError('连接包已安装。请填写下方配置后保存登录连接。')
+      }
+    } finally {
+      setLoginDialogBusy(false)
+    }
+  }
+  const continueStartFromDialog = async (withoutLogin = false) => {
+    if (!loginChoice) return
+    const preflight = loginChoice.preflight
+    if (!withoutLogin && !preflight.login) {
+      setLoginDialogError('请先保存登录连接，或明确选择“无 login 启动”。')
+      return
+    }
+    if (!withoutLogin && preflight.missing.length) {
+      setLoginDialogError(`启动前仍缺少：${preflight.missing.join('、')}。请在此弹窗完成连接配置后再启动。`)
+      return
+    }
+    // This dialog is the final confirmation point.  Keeping the action here
+    // avoids making people re-confirm the exact same startup choice in a
+    // second, disconnected dialog.
+    setLoginDialogBusy(true)
+    try {
+      if (await onRun(loginChoice.action)) closeLoginDialog()
+    } catch (reason) {
+      setLoginDialogError(operationErrorMessage(reason, '启动失败，请查看操作记录。'))
+    } finally {
+      setLoginDialogBusy(false)
     }
   }
   return (
-    <section className="robot-overview runtime-overview">
-      <header>
-        <div>
-          <p>运行</p>
-          <h1>{overview?.name || '正在读取项目…'}</h1>
-          <small>
+    <section className="runtime-overview grid max-w-[760px] gap-4">
+      <header className="flex items-start justify-between gap-4 border-b border-slate-200 pb-4">
+        <div className="grid min-w-0 gap-1">
+          <p className="m-0 text-xs font-semibold text-slate-500">运行</p>
+          <h1 className="m-0 truncate text-xl font-semibold tracking-tight text-ink-950">{overview?.name || '正在读取项目…'}</h1>
+          <small className="text-xs text-slate-500">
             {overview
               ? `${overview.version || '未设置版本'} · ${overview.packageManager} · ${overview.hasDevScript ? '已配置开发命令' : '未配置 dev 命令'}`
               : '读取包信息、平台包与运行状态。'}
           </small>
         </div>
         <button
-          className="secondary-button"
+          className="icon-button size-9 shrink-0 p-0"
           disabled={loading}
           onClick={onRefresh}
         >
-          <RefreshCw />
+          <RefreshCw className="size-4" />
         </button>
       </header>
       <ConfirmDialog
@@ -3109,51 +3215,44 @@ function RuntimePanel({
         onCancel={() => setValidationMessage('')}
         onConfirm={() => setValidationMessage('')}
       />
-      <ConfirmDialog
-        open={Boolean(loginChoice)}
-        title="未配置登录连接"
-        subtitle="当前 alemon.config.yaml 中没有 login。"
-        message="是否以无 login 模式启动？无登录模式不会连接任何平台。"
-        confirmLabel="继续"
-        cancelLabel="返回"
-        busy={busy}
-        onCancel={returnToLogin}
-        onConfirm={() => {
-          if (!loginChoice) return
-          const choice = loginChoice
-          setLoginChoice(null)
-          ask(
-            choice.label,
-            `${choice.note}\n\n本次启动配置：\n${choice.summary.join('\n')}`,
-            () => onRun(choice.action)
-          )
-        }}
-      />
-      <section className="runtime-command-list">
-        <section className="runtime-operation-card runtime-session-card">
-          <header>
-            <div>
-              <strong>本机运行</strong>
-              <span>适合调试。停止后，机器人就会下线。</span>
+      {loginChoice && createPortal(
+        <div className="fixed inset-0 z-[96] flex items-center justify-center bg-slate-950/25 p-6" role="presentation">
+          <section className="grid max-h-[min(720px,calc(100vh-48px))] w-full max-w-2xl grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden rounded-xl border border-slate-200 bg-white shadow-[0_20px_58px_rgb(15_23_42/0.22)]" role="dialog" aria-modal="true" aria-label="启动前登录连接">
+            <header className="flex items-center justify-between border-b border-slate-200 px-5 py-4"><div><strong className="text-sm text-ink-950">启动前登录连接</strong><p className="mt-1 text-xs text-slate-500">当前选择：{loginChoice.preflight.login || '未配置 login'}。可直接在这里完成连接配置。</p></div><button className="icon-button" onClick={closeLoginDialog} aria-label="关闭"><X /></button></header>
+            <div className="grid min-h-0 gap-4 overflow-auto p-5">
+              {loginDialogError && <p className="m-0 rounded-md border border-orange-200 bg-orange-50 px-3 py-2 text-xs leading-5 text-orange-800">{loginDialogError}</p>}
+              <section className="rounded-lg border border-slate-200"><header className="border-b border-slate-200 bg-slate-50 px-3 py-2"><strong className="text-xs text-slate-700">选择登录平台</strong></header><div className="grid gap-3 p-3 sm:grid-cols-3"><label className="grid gap-1 text-xs font-semibold text-slate-600">已识别平台<select value={selectedPlatform} onChange={event => choosePlatform(event.target.value)}><option value="">不选择，直接输入</option>{(overview?.platforms ?? []).map(item => <option key={item.id} value={item.id}>{item.label}{item.installed ? ' · 已安装' : ' · 需安装'}</option>)}</select></label><label className="grid gap-1 text-xs font-semibold text-slate-600">登录连接<input value={customLogin} onChange={event => { setSelectedPlatform(''); setCustomLogin(event.target.value) }} placeholder="如 onebot" /></label><label className="grid gap-1 text-xs font-semibold text-slate-600">连接包（可选）<input value={customPackage} onChange={event => { setSelectedPlatform(''); setCustomPackage(event.target.value); setConnectionConfig(null) }} placeholder="如 @alemonjs/onebot" /></label></div>{packageTarget && (!knownPlatform || !knownPlatform.installed) && <footer className="flex items-center justify-between border-t border-slate-200 bg-slate-50 px-3 py-2"><small className="text-xs text-slate-500">{packageTarget} 尚未安装；安装后才能读取它的连接配置。</small><button className="secondary-button" disabled={loginDialogBusy || busy} onClick={() => void installSelectedConnection()}>安装连接包</button></footer>}</section>
+              {connectionConfig?.fields.length ? <section className="rounded-lg border border-slate-200"><header className="border-b border-slate-200 bg-slate-50 px-3 py-2"><strong className="text-xs text-slate-700">连接配置</strong><small className="ml-2 text-[11px] text-slate-400">保存到 alemon.config.yaml</small></header><div className="grid gap-3 p-3 sm:grid-cols-2">{connectionConfig.fields.map(field => <label key={field.name} className="grid gap-1 text-xs font-semibold text-slate-600">{field.description || field.name}{field.required && <em className="not-italic text-orange-700">必填</em>}{field.type === 'boolean' || field.type === 'bool' ? <select value={connectionValues[field.name] ?? ''} onChange={event => setConnectionValues({ ...connectionValues, [field.name]: event.target.value })}><option value="">不设置</option><option value="true">开启</option><option value="false">关闭</option></select> : <input type={field.type === 'number' || field.type === 'integer' ? 'number' : 'text'} value={connectionValues[field.name] ?? ''} onChange={event => setConnectionValues({ ...connectionValues, [field.name]: event.target.value })} placeholder={field.name} />}</label>)}</div></section> : packageTarget && knownPlatform?.installed ? <p className="m-0 text-xs text-slate-500">该连接包没有声明可填写的 alemonjs.config，保存 login 后即可启动。</p> : null}
+              <section className="rounded-lg border border-slate-200 bg-slate-50 p-3"><strong className="text-xs text-slate-700">本次启动检查</strong><ul className="mt-2 grid gap-1 pl-4 text-xs text-slate-500">{loginChoice.preflight.summary.map(item => <li key={item}>{item}</li>)}</ul></section>
+            </div>
+            <footer className="flex flex-wrap items-center justify-end gap-2 border-t border-slate-200 px-5 py-3"><button className="text-button" disabled={loginDialogBusy || busy} onClick={() => void continueStartFromDialog(true)}>无 login 启动</button><button className="secondary-button" disabled={loginDialogBusy || busy || !customLogin.trim()} onClick={() => void saveLoginFromDialog()}>保存登录连接</button><button className="primary-button" disabled={loginDialogBusy || busy} onClick={() => void continueStartFromDialog(false)}>确认启动</button></footer>
+          </section>
+        </div>, document.body)}
+      <section className="grid gap-3">
+        <section className="overflow-hidden rounded-xl border border-slate-200 bg-white">
+          <header className="flex items-center justify-between gap-3 border-b border-slate-200 px-4 py-3">
+            <div className="grid gap-1">
+              <strong className="text-sm font-semibold text-slate-800">本机运行</strong>
+              <span className="text-xs text-slate-500">适合调试。停止后，机器人就会下线。</span>
             </div>
             <button className="secondary-button" onClick={onOpenConsole}>
               日志
             </button>
           </header>
-          <div className="runtime-operation-rows">
-            <section className="overview-actions">
+          <div className="divide-y divide-slate-200">
+            <section className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
               <div>
-                <strong>依赖</strong>
-                <span>运行前会自动检查；有问题时可重新安装。</span>
+                <strong className="block text-sm font-semibold text-slate-700">依赖</strong>
+                <span className="block text-xs text-slate-500">运行前会自动检查；有问题时可重新安装。</span>
               </div>
               <button className="text-button" disabled={busy} onClick={() => onRun('dependency-status')}>检查</button>
               <button className="secondary-button" disabled={busy} onClick={() => ask('重新安装依赖', '会根据 package.json 重新安装当前机器人的全部依赖。', () => onRun('install'))}>重新安装</button>
             </section>
             {developerMode && (
-              <section className="overview-actions">
+              <section className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
                 <div>
-                  <strong>开发运行</strong>
-                  <span>
+                  <strong className="block text-sm font-semibold text-slate-700">开发运行</strong>
+                  <span className="block text-xs text-slate-500">
                     {developmentRunning
                       ? '正在运行，可随时停止。'
                       : foregroundRunning
@@ -3179,10 +3278,10 @@ function RuntimePanel({
                 )}
               </section>
             )}
-            <section className="overview-actions">
+            <section className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
               <div>
-                <strong>前台运行</strong>
-                <span>
+                <strong className="block text-sm font-semibold text-slate-700">前台运行</strong>
+                <span className="block text-xs text-slate-500">
                   {overview?.hasAppScript
                     ? foregroundRunning
                       ? '正在运行，可随时停止。'
@@ -3209,11 +3308,11 @@ function RuntimePanel({
             </section>
           </div>
         </section>
-        <section className="runtime-operation-card runtime-persistent-card">
-          <header>
-            <div>
-              <strong>后台运行</strong>
-              <span>{persistentReady ? '适合长期在线；关闭本窗口后仍会继续运行。' : '还未准备好，修复后可长期在线。'}</span>
+        <section className="overflow-hidden rounded-xl border border-slate-200 bg-white">
+          <header className="flex items-center justify-between gap-3 border-b border-slate-200 px-4 py-3">
+            <div className="grid gap-1">
+              <strong className="text-sm font-semibold text-slate-800">后台运行</strong>
+              <span className="text-xs text-slate-500">{persistentReady ? '适合长期在线；关闭本窗口后仍会继续运行。' : '还未准备好，修复后可长期在线。'}</span>
             </div>
             <button
               className="primary-button"
@@ -3232,7 +3331,7 @@ function RuntimePanel({
               启动服务
             </button>
           </header>
-          <div className="runtime-operation-rows runtime-persistent-actions">
+          <div className="flex flex-wrap items-center gap-2 px-4 py-3">
             <button
               className="secondary-button"
               disabled={busy || !overview?.pm2Configured}
@@ -3297,148 +3396,84 @@ function RuntimePanel({
         root={root}
         onClose={() => setPM2LogsOpen(false)}
       />
-      <section className="runtime-platforms">
-        <header>
-          <div>
-            <strong>登录连接</strong>
-          </div>
-        </header>
-        <section className="runtime-login-control" ref={loginControlRef}>
-          <div className="runtime-login-fields">
-            <label>
-              已识别平台
-              <select
-                value={selectedPlatform}
-                onChange={event => choosePlatform(event.target.value)}
-              >
-                <option value="">不选择，直接输入</option>
-                {(overview?.platforms ?? []).map(item => (
-                  <option key={item.id} value={item.id}>
-                    {item.label}
-                    {item.installed ? ' · 已安装' : ' · 需安装'}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label>
-              登录连接
-              <input
-                ref={loginInputRef}
-                value={customLogin}
-                onChange={event => {
-                  setSelectedPlatform('')
-                  setCustomLogin(event.target.value)
-                }}
-                placeholder="可自由输入，如 my-platform"
-              />
-            </label>
-            <label>
-              npm 包（可选）
-              <input
-                value={customPackage}
-                onChange={event => {
-                  setSelectedPlatform('')
-                  setCustomPackage(event.target.value)
-                }}
-                placeholder="可自由输入，如 @scope/platform"
-              />
-            </label>
-          </div>
-          <footer>
-            <small>
-              {knownPlatform
-                ? knownPlatform.installed
-                  ? `${knownPlatform.label} 已安装${knownPlatform.version ? ` · v${knownPlatform.version}` : ''}`
-                  : `${knownPlatform.label} 尚未安装，安装后才能设为登录连接。`
-                : '下拉选项会自动填入；也可直接输入任意平台。'}
-            </small>
-            <div>
-              {packageTarget &&
-                (!knownPlatform || !knownPlatform.installed) && (
-                  <button
-                    className="secondary-button"
-                    disabled={busy}
-                    onClick={() =>
-                      ask(
-                        '安装平台包',
-                        `会通过 yarn 在当前项目安装 ${packageTarget}。`,
-                        () => onRun('install-connection', packageTarget)
-                      )
-                    }
-                  >
-                    未安装，Yarn 安装
-                  </button>
-                )}
-              <button
-                className="primary-button"
-                disabled={
-                  busy ||
-                  !customLogin.trim() ||
-                  Boolean(knownPlatform && !knownPlatform.installed)
-                }
-                onClick={() => askLogin(customLogin.trim())}
-              >
-                保存
-              </button>
-            </div>
-          </footer>
-        </section>
-      </section>
     </section>
   )
 }
 function RobotPluginWebView({
   root,
-  entry,
+  entries,
+  tabs,
+  activeTabKey,
+  onActivate,
+  onClose,
 }: {
   root: string
-  entry: RobotWebView
+  entries: RobotWebView[]
+  tabs: Array<{ key: string; entryID: string; title: string; package: string }>
+  activeTabKey: string
+  onActivate: (key: string) => void
+  onClose: (key: string) => void
 }) {
-  const [reloadKey, setReloadKey] = useState(0)
-  const [loading, setLoading] = useState(true)
-  const rootToken = btoa(String.fromCharCode(...new TextEncoder().encode(root)))
-    .replace(/\+/g, '-')
-    .replace(/\//g, '_')
-    .replace(/=/g, '')
-  // Keep plugin pages on the other loopback hostname. It is the same local
-  // server, but a different browser origin: installed plugin code cannot read
-  // the management session or its localStorage.
-  const pluginHost = window.location.hostname === 'localhost' ? '127.0.0.1' : 'localhost'
-  const source = `${window.location.protocol}//${pluginHost}${window.location.port ? `:${window.location.port}` : ''}/api/v1/robot/webview/${rootToken}/${entry.id}/`
+  const active = tabs.find(tab => tab.key === activeTabKey)
   return (
     <section className="workspace-content robot-plugin-webview">
       <header>
         <div>
-          <span>{entry.package}</span>
+          <div className="robot-plugin-webview-tabs">{tabs.map(tab => <button className={tab.key === activeTabKey ? 'active' : ''} key={tab.key} onClick={() => onActivate(tab.key)} title={tab.package}>{tab.title}<span onClick={event => { event.stopPropagation(); onClose(tab.key) }}>×</span></button>)}</div>
         </div>
         <div className="robot-plugin-webview-actions">
-          <strong>{entry.name}</strong>
-          <button
-            className="icon-button"
-            onClick={() => {
-              setLoading(true)
-              setReloadKey(current => current + 1)
-            }}
-            aria-label="重新加载插件页面"
-            title="重新加载"
-          >
-            <RefreshCw />
-          </button>
+          <strong>{active?.title}</strong>
         </div>
       </header>
-      <div className="robot-plugin-webview-frame">
-        {loading && <span>正在加载 {entry.name}…</span>}
-        <iframe
-          key={reloadKey}
-          src={source}
-          title={`${entry.name} 插件页面`}
-          sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-downloads"
-          referrerPolicy="no-referrer"
-          onLoad={() => setLoading(false)}
-        />
-      </div>
+      <div className="robot-plugin-webview-frame">{tabs.map(tab => { const entry = entries.find(item => item.id === tab.entryID); return entry ? <PluginWebViewFrame key={tab.key} root={root} entry={entry} active={tab.key === activeTabKey} /> : null })}</div>
     </section>
   )
+}
+
+function PluginWebViewFrame({ root, entry, active }: { root: string; entry: RobotWebView; active: boolean }) {
+  const [reloadKey, setReloadKey] = useState(0)
+  const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState('')
+  const [apiError, setApiError] = useState('')
+  const frameRef = useRef<HTMLIFrameElement>(null)
+  const loadedRef = useRef(false)
+  const apiErrorRef = useRef('')
+  const rootToken = btoa(String.fromCharCode(...new TextEncoder().encode(root))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '')
+  const pluginHost = `r-${rootToken.slice(0, 20).toLowerCase()}.localhost`
+  const source = `${window.location.protocol}//${pluginHost}${window.location.port ? `:${window.location.port}` : ''}/api/v1/robot/webview/${rootToken}/${entry.id}/`
+  useEffect(() => {
+    const origin = new URL(source).origin
+    const forward = (event: MessageEvent) => {
+      if (event.origin !== origin || event.source !== frameRef.current?.contentWindow) return
+      const message = event.data as { source?: string; type?: string; value?: { status?: number; message?: string } }
+      if (message?.source !== 'albs-webview') return
+      if (message.type === 'ready') {
+        frameRef.current?.contentWindow?.postMessage({ source: 'albs-parent', value: { type: 'theme', data: document.documentElement.dataset.theme ?? 'light' } }, origin)
+        return
+      }
+      if (message.type === 'api-error') {
+        const status = message.value?.status
+        const next = message.value?.message || (status === 502 || status === 503
+          ? '机器人 API 未连接：请在“运行”中启动机器人后重试。'
+          : `插件接口请求失败${status ? `（${status}）` : ''}。`)
+        if (apiErrorRef.current !== next) {
+          apiErrorRef.current = next
+          setApiError(next)
+        }
+      }
+    }
+    window.addEventListener('message', forward)
+    return () => window.removeEventListener('message', forward)
+  }, [source, reloadKey])
+  useEffect(() => { loadedRef.current = false; apiErrorRef.current = ''; setLoading(true); setLoadError(''); setApiError(''); const timer = window.setTimeout(() => { if (!loadedRef.current) { setLoading(false); setLoadError('页面加载超时。请确认插件正在正常安装，并检查插件的 Web 页面是否完整。') } }, 15_000); return () => window.clearTimeout(timer) }, [source, reloadKey])
+  const reload = () => { setReloadKey(value => value + 1) }
+  return <div className={`robot-plugin-webview-instance ${active ? 'active' : ''}`}>
+    {loading && active && <span>正在加载 {entry.name}…</span>}
+    {apiError && active && <div className="robot-plugin-webview-api-error" role="status"><span>{apiError}</span><button className="icon-button" onClick={() => { apiErrorRef.current = ''; setApiError('') }} aria-label="关闭接口错误提示" title="关闭"><X /></button></div>}
+    {loadError && active && <div className="robot-plugin-webview-error"><strong>无法打开插件页面</strong><p>{loadError}</p><button className="secondary-button" onClick={reload}><RefreshCw />重新加载</button></div>}
+    <button className="icon-button robot-plugin-webview-reload" onClick={reload} aria-label="重新加载插件页面" title="重新加载"><RefreshCw /></button>
+    <iframe ref={frameRef} key={reloadKey} src={source} title={`${entry.name} 插件页面`} sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-downloads" referrerPolicy="no-referrer" onLoad={() => { loadedRef.current = true; setLoading(false); setLoadError('') }} onError={() => { loadedRef.current = true; setLoading(false); setLoadError('浏览器无法载入此插件页面。请重新加载，或确认插件的 dist 文件已完整安装。') }} />
+  </div>
 }
 
 function ControlCard({
@@ -3529,83 +3564,83 @@ function ControlCard({
     onCatalog(id)
   }
   return (
-    <aside className="control-dock" aria-label="目录操作">
-      <section className="control-card">
-        <header>
-          <div>
-            <span>当前机器人</span>
-            <strong>{project?.name ?? '未选择目录'}</strong>
+    <aside className="control-dock flex min-h-0 flex-col gap-3" aria-label="目录操作">
+      <section className="control-card overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+        <header className="flex items-center justify-between gap-3 border-b border-slate-200 px-3.5 py-3">
+          <div className="grid min-w-0 gap-1">
+            <span className="text-[11px] font-medium text-slate-400">当前机器人</span>
+            <strong className="truncate text-sm font-semibold text-slate-800">{project?.name ?? '未选择目录'}</strong>
           </div>
           <button
-            className="control-git"
+            className="inline-flex size-8 shrink-0 items-center justify-center rounded-md border border-brand-200 bg-brand-50 text-brand-700 transition hover:bg-brand-100"
             onClick={onGit}
             aria-label={`管理 ${project?.name ?? '当前机器人'} 的 Git`}
             title="Git 管理"
           >
-            <GitBranch />
+            <GitBranch className="size-4" />
           </button>
         </header>
-        <div className="control-list">
+        <div className="grid gap-1 p-2">
           {directoryActions
             .filter(item => developerMode || item.id !== 'build')
             .map(item => (
               <button
-                className={activePrimary === item.id ? 'active' : ''}
+                className={cn('flex min-h-9 items-center gap-2 rounded-md px-2.5 text-left text-sm font-semibold transition', activePrimary === item.id ? 'bg-brand-50 text-brand-700' : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900')}
                 onClick={() => selectPrimary(item)}
                 key={item.id}
               >
-                <i>{item.icon}</i>
-                <span>{item.label}</span>
-                <ChevronRight />
+                <i className="inline-flex size-4 items-center justify-center not-italic">{item.icon}</i>
+                <span className="min-w-0 flex-1">{item.label}</span>
+                <ChevronRight className="size-4 text-slate-400" />
               </button>
             ))}
         </div>
         {subitems.length > 0 && (
           <>
-            <span className="control-divider" />
-            <div className="control-sublist">
+            <span className="mx-2 block border-t border-slate-200" />
+            <div className="grid gap-1 p-2 pt-1">
               {subitems.map(item => (
                 <button
-                  className={activeSecondary === item.id ? 'active' : ''}
+                  className={cn('flex min-h-8 items-center justify-between rounded-md px-2.5 text-xs font-semibold transition', activeSecondary === item.id ? 'bg-brand-50 text-brand-700' : 'text-slate-500 hover:bg-slate-50 hover:text-slate-800')}
                   onClick={() => selectSecondary(item.id)}
                   key={item.id}
                 >
                   {item.label}
-                  <ChevronRight />
+                  <ChevronRight className="size-3.5 text-slate-400" />
                 </button>
               ))}
             </div>
           </>
         )}
         {project && (
-          <footer title={project.path}>
+          <footer className="flex gap-2 border-t border-slate-200 px-3 py-2" title={project.path}>
             <button
-              className="icon-button"
+              className="icon-button size-8 p-0"
               onClick={onOpenConsole}
               aria-label="查看运行终端"
               title="查看运行终端"
             >
-              <Terminal />
+              <Terminal className="size-4" />
             </button>
-            <button className="icon-button" onClick={onOpenAI} aria-label="打开编程对话" title="编程对话"><Bot /></button>
+            <button className="icon-button size-8 p-0" onClick={onOpenAI} aria-label="打开编程对话" title="编程对话"><Bot className="size-4" /></button>
           </footer>
         )}
       </section>
       {webViews.length > 0 && (
         <section
-          className="robot-webview-shortcuts"
+          className="grid gap-2"
           aria-label="机器人插件 Web 页面"
         >
           {webViews.map(item => (
             <button
-              className={item.id === activeWebViewID ? 'active' : ''}
+              className={cn('flex min-h-10 items-center gap-2 rounded-lg border px-3 text-left text-xs font-semibold transition', item.id === activeWebViewID ? 'border-brand-200 bg-brand-50 text-brand-700' : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50')}
               key={item.id}
               onClick={() => onOpenWebView(item.id)}
               title={item.description || item.package}
             >
-              <Package />
-              <span>{item.name}</span>
-              <ChevronRight />
+              <Package className="size-4" />
+              <span className="min-w-0 flex-1 truncate">{item.name}</span>
+              <ChevronRight className="size-4 text-slate-400" />
             </button>
           ))}
         </section>
@@ -3705,14 +3740,14 @@ function EditorMode({
   onText: () => void
 }) {
   return (
-    <div className="editor-mode" aria-label="配置编辑模式">
+    <div className="inline-flex rounded-md bg-slate-100 p-1" aria-label="配置编辑模式">
       <button
-        className={active === 'visual' ? 'active' : ''}
+        className={cn('rounded px-3 py-1.5 text-xs font-semibold transition', active === 'visual' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-800')}
         onClick={onVisual}
       >
         表单
       </button>
-      <button className={active === 'text' ? 'active' : ''} onClick={onText}>
+      <button className={cn('rounded px-3 py-1.5 text-xs font-semibold transition', active === 'text' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-800')} onClick={onText}>
         文本
       </button>
     </div>
@@ -3734,14 +3769,14 @@ function FileEditor({
   onSave: () => void
 }) {
   return (
-    <section className="file-editor">
-      <header>
+    <section className="file-editor grid gap-3">
+      <header className="flex items-center justify-between gap-3">
         {toolbar}
         <button className="primary-button" disabled={busy} onClick={onSave}>
           保存
         </button>
       </header>
-      <textarea
+      <textarea className="min-h-[420px] w-full resize-y rounded-lg border border-slate-300 bg-white p-3 font-mono text-xs leading-5 text-slate-800 outline-none focus:border-brand-600 focus:ring-2 focus:ring-brand-100"
         value={content}
         onChange={event => onChange(event.target.value)}
         placeholder={placeholder}
@@ -3808,6 +3843,11 @@ function GitReleasePanel({
     packageName?: string
     packageVersion?: string
     packageManager?: string
+    repository?: string
+    branch?: string
+    remoteBranch?: string
+    remoteReachable?: boolean
+    remoteAdvice?: string
     suggestedVersion?: string
     tags?: string[]
     commits?: string[]
@@ -3979,7 +4019,7 @@ function GitReleasePanel({
               )}
             </section>
           )}
-          <section className="release-records">
+          <section className="release-records" hidden>
             <details className="release-history">
               <summary>
                 release commits <small>{commits.length} 条</small>
@@ -4036,25 +4076,19 @@ function GitReleasePanelNext({
   root,
   busy,
   version,
-  confirmed,
   onVersionChange,
-  onConfirm,
-  onInitialize,
-  onRun
+  onInitialize
 }: {
   root: string
   busy: boolean
   version: string
-  confirmed: boolean
   onVersionChange: (value: string) => void
-  onConfirm: () => void
   onInitialize: (values: {
     authorName: string
     authorEmail: string
     repository: string
     message: string
   }) => Promise<boolean>
-  onRun: (sourceCommit: string) => void
 }) {
   type SourceCommit = {
     sha: string
@@ -4062,25 +4096,31 @@ function GitReleasePanelNext({
     subject: string
     createdAt: string
   }
-  type ReleaseMapping = {
-    version: string
-    sourceBranch: string
-    sourceCommit: string
-    releaseCommit: string
-  }
   type GitStatus = {
     packageName?: string
     packageVersion?: string
     packageManager?: string
+    repository?: string
+    branch?: string
+    remoteBranch?: string
+    remoteReachable?: boolean
+    remoteAdvice?: string
     suggestedVersion?: string
-    tags?: string[]
-    commits?: string[]
     sourceCommits?: SourceCommit[]
-    releaseMappings?: ReleaseMapping[]
+    sourceBranches?: Array<{ name: string; commits: SourceCommit[] }>
     gitReady?: boolean
     checks?: string[]
     issues?: string[]
   }
+  type BuildSession = {
+    sessionId: string
+    branch: string
+    commit: string
+    target: string
+    files: string[]
+    logs: string
+  }
+  type PublishResult = { output?: string; path?: string }
   const {
     data,
     isFetching: loading,
@@ -4090,6 +4130,13 @@ function GitReleasePanelNext({
   const [initializing, setInitializing] = useState(false)
   const [gitInitOpen, setGitInitOpen] = useState(false)
   const [sourceCommit, setSourceCommit] = useState('')
+  const [sourceBranch, setSourceBranch] = useState('')
+  const [phase, setPhase] = useState<'source' | 'building' | 'artifacts' | 'confirm' | 'published'>('source')
+  const [session, setSession] = useState<BuildSession | null>(null)
+  const [artifacts, setArtifacts] = useState<string[]>([])
+  const [expandedArtifacts, setExpandedArtifacts] = useState<string[]>([])
+  const [requestError, setRequestError] = useState('')
+  const [result, setResult] = useState<PublishResult | null>(null)
   const [gitInit, setGitInit] = useState({
     authorName: '',
     authorEmail: '',
@@ -4099,11 +4146,15 @@ function GitReleasePanelNext({
   const status = error
     ? { issues: ['无法读取 Git 发布状态。'] }
     : (data as GitStatus | undefined)
-  const commits = status?.sourceCommits ?? emptyGitCommits
+  const branches = status?.sourceBranches ?? emptyGitBranches
+  const selectedBranch = branches.find(item => item.name === sourceBranch) ?? branches.find(item => item.name === status?.branch) ?? branches[0]
+  const targetReleaseBranch = selectedBranch?.name === status?.remoteBranch ? 'release' : `${(selectedBranch?.name || 'source').replace(/[\s/]+/g, '-')}-release`
+  const commits = selectedBranch?.commits ?? status?.sourceCommits ?? emptyGitCommits
   useEffect(() => {
+    if (!branches.some(item => item.name === sourceBranch)) setSourceBranch(status?.branch || branches[0]?.name || '')
     if (!commits.some(item => item.sha === sourceCommit))
       setSourceCommit(commits[0]?.sha ?? '')
-  }, [commits, sourceCommit])
+  }, [branches, commits, sourceBranch, sourceCommit, status?.branch])
   const issues = status?.issues ?? []
   const blockingIssues = issues
   const ready = !loading && blockingIssues.length === 0 && !!sourceCommit
@@ -4119,8 +4170,87 @@ function GitReleasePanelNext({
     }
   }
   const refresh = () => {
-    if (confirmed) onConfirm()
+    setPhase('source')
+    setSession(null)
+    setArtifacts([])
+    setRequestError('')
+    setResult(null)
     void refetch()
+  }
+  const post = async <T,>(url: string, body: object): Promise<T> => {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    })
+    const payload = await response.json().catch(() => ({})) as T & { error?: string }
+    if (!response.ok) throw new Error(payload.error || '请求失败，请稍后重试。')
+    return payload
+  }
+  const prepareBuild = async () => {
+    if (!selectedBranch?.name || !sourceCommit) return
+    setPhase('building')
+    setRequestError('')
+    setResult(null)
+    try {
+      const next = await post<BuildSession>('/api/v1/publish/git/prepare', { root, branch: selectedBranch.name, commit: sourceCommit })
+      setSession(next)
+      setArtifacts(['lib', 'dist', 'README.md'].filter(item => next.files.includes(item)))
+      setPhase('artifacts')
+    } catch (err) {
+      setRequestError(err instanceof Error ? err.message : '构建失败，请重新构建。')
+      setPhase('source')
+    }
+  }
+  const publish = async () => {
+    if (!session || !artifacts.length) return
+    setRequestError('')
+    try {
+      const next = await post<PublishResult>('/api/v1/publish/git/publish', { sessionId: session.sessionId, version, artifacts, confirm: true })
+      setResult(next)
+      setPhase('published')
+    } catch (err) {
+      setRequestError(err instanceof Error ? err.message : '发布失败，请检查日志后重试。')
+    }
+  }
+  const artifactIndex = useMemo(() => {
+    const files = session?.files ?? []
+    const directories = new Set<string>()
+    const children = new Map<string, string[]>()
+    for (const path of files) {
+      const pieces = path.split('/')
+      for (let index = 1; index < pieces.length; index += 1) {
+        const parent = pieces.slice(0, index).join('/')
+        const child = pieces.slice(0, index + 1).join('/')
+        directories.add(parent)
+        const current = children.get(parent) ?? []
+        if (!current.includes(child)) children.set(parent, [...current, child])
+      }
+    }
+    const leaves = files.filter(path => !directories.has(path))
+    const descendants = new Map<string, string[]>()
+    for (const leaf of leaves) {
+      descendants.set(leaf, [leaf])
+      const pieces = leaf.split('/')
+      for (let index = 1; index < pieces.length; index += 1) {
+        const parent = pieces.slice(0, index).join('/')
+        descendants.set(parent, [...(descendants.get(parent) ?? []), leaf])
+      }
+    }
+    return { directories, children, descendants, top: files.filter(path => !path.includes('/')) }
+  }, [session])
+  const selectedArtifacts = useMemo(() => new Set(artifacts), [artifacts])
+  const descendantFiles = (item: string) => artifactIndex.descendants.get(item) ?? []
+  const isDirectory = (item: string) => artifactIndex.directories.has(item)
+  const artifactSelected = (item: string) => {
+    const leaves = descendantFiles(item)
+    return leaves.length > 0 && leaves.every(leaf => {
+      const parts = leaf.split('/')
+      return parts.some((_, index) => selectedArtifacts.has(parts.slice(0, index + 1).join('/')))
+    })
+  }
+  const toggleArtifact = (item: string) => {
+    setArtifacts(current => current.includes(item) ? current.filter(value => value !== item) : [...current, item])
   }
   return (
     <section className="git-release-panel">
@@ -4131,6 +4261,7 @@ function GitReleasePanelNext({
             : 'GIT 发布'}
         </span>
         <div className="release-toolbar-actions">
+          {(phase === 'artifacts' || phase === 'confirm') && <button className="secondary-button" onClick={() => setPhase(phase === 'confirm' ? 'artifacts' : 'source')}>上一步</button>}
           <button
             className="secondary-button"
             onClick={refresh}
@@ -4140,10 +4271,15 @@ function GitReleasePanelNext({
           </button>
           <button
             className="primary-button release-button"
-            disabled={busy || !ready}
-            onClick={confirmed ? () => onRun(sourceCommit) : onConfirm}
+            disabled={busy || loading || phase === 'building' || (phase === 'source' && !ready) || (phase === 'artifacts' && !artifacts.length)}
+            onClick={() => {
+              if (phase === 'source') void prepareBuild()
+              else if (phase === 'artifacts') setPhase('confirm')
+              else if (phase === 'confirm') void publish()
+              else if (phase === 'published') refresh()
+            }}
           >
-            {busy ? '打包中…' : confirmed ? '确认打包' : '准备打包'}
+            {busy || phase === 'building' ? '构建中…' : phase === 'source' ? '开始构建' : phase === 'artifacts' ? '继续确认' : phase === 'confirm' ? '确认发布' : '重新开始'}
           </button>
         </div>
       </header>
@@ -4151,29 +4287,25 @@ function GitReleasePanelNext({
         <p className="publish-state">正在读取所选目录的 Git 状态…</p>
       ) : (
         <>
-          <section className="release-source-card">
+          {phase === 'source' && <section className="release-source-card">
             <div>
               <strong>1. 选择源码提交</strong>
               <p>只会构建这次已提交的代码，不会包含你还没提交的本地修改。</p>
             </div>
-            <label>
+            <label className="release-field">
               源码分支{' '}
-              <input
-                value={
-                  (status as GitStatus & { branch?: string })?.branch || 'main'
-                }
-                readOnly
-              />
+              <select value={selectedBranch?.name || ''} disabled={phase !== 'source'} onChange={event => setSourceBranch(event.target.value)}>{branches.map(item => <option key={item.name} value={item.name}>{item.name}</option>)}</select>
             </label>
-            <label>
+            <label className="release-field">
+              发布目标{' '}
+              <input value={targetReleaseBranch} readOnly />
+            </label>
+            <label className="release-field release-commit-field">
               提交{' '}
               <select
                 value={sourceCommit}
-                onChange={event => {
-                  setSourceCommit(event.target.value)
-                  if (confirmed) onConfirm()
-                }}
-                disabled={!commits.length}
+                onChange={event => setSourceCommit(event.target.value)}
+                disabled={!commits.length || phase !== 'source'}
               >
                 {commits.length ? (
                   commits.map(item => (
@@ -4186,28 +4318,33 @@ function GitReleasePanelNext({
                 )}
               </select>
             </label>
-          </section>
-          <section className="release-source-card compact">
+          </section>}
+          {phase === 'confirm' && <section className="release-source-card compact">
             <div>
               <strong>2. 设置发布版本</strong>
-              <p>会创建不可覆盖的 Git Tag，并同步到 release 分支。</p>
+              <p>发布时会创建不可覆盖的 Git Tag，并推送到 {session?.target || targetReleaseBranch}。</p>
             </div>
             <label>
               版本{' '}
               <input
                 value={version || status?.suggestedVersion || ''}
-                onChange={event => {
-                  onVersionChange(event.target.value)
-                  if (confirmed) onConfirm()
-                }}
+                onChange={event => onVersionChange(event.target.value)}
                 placeholder="v0.0.1"
               />
             </label>
-          </section>
-          <p className={`release-status ${ready ? 'ready' : 'blocked'}`}>
-            {ready ? '✓ 可以从所选提交开始打包' : '！ 发布前需要处理以下问题'}
-          </p>
-          {blockingIssues.length > 0 && (
+          </section>}
+          {phase === 'building' && <section className="release-source-card"><div><strong>正在构建</strong><p>正在隔离目录中安装依赖并执行 build。完成前不能选择产物。</p></div></section>}
+          {session && phase === 'artifacts' && (
+            <section className="release-source-card release-artifact-card">
+              <div><strong>3. 选择最终产物</strong><p>以下是本次构建实际生成的可发布文件。默认全选；依赖、隐藏文件和 package.json 不会显示。</p></div>
+              <div className="release-artifacts">{artifactIndex.top.map(item => <div className="release-artifact-tree" key={item}><label className={artifactSelected(item) ? 'selected' : ''}><input type="checkbox" checked={artifactSelected(item)} onChange={() => toggleArtifact(item)} />{isDirectory(item) && <button type="button" className="artifact-expand" onClick={() => setExpandedArtifacts(current => current.includes(item) ? current.filter(value => value !== item) : [...current, item])}><ChevronRight className={expandedArtifacts.includes(item) ? 'expanded' : ''} /></button>}<span>{item}</span></label>{expandedArtifacts.includes(item) && (artifactIndex.children.get(item) ?? []).map(child => <label className={`artifact-child ${artifactSelected(child) ? 'selected' : ''}`} key={child}><input type="checkbox" checked={artifactSelected(child)} onChange={() => toggleArtifact(child)} /><span>{child.slice(item.length + 1)}</span></label>)}</div>)}</div>
+              <p className="release-artifact-count">已选择 {artifacts.length} 项，将发布到 <code>{session.target}</code>。</p>
+            </section>
+          )}
+          {phase === 'source' && <p className={`release-status ${ready ? 'ready' : 'blocked'}`}>
+            {ready ? '✓ 可以从所选提交开始构建' : '！ 发布前需要处理以下问题'}
+          </p>}
+          {phase === 'source' && blockingIssues.length > 0 && (
             <section className="release-blockers">
               <ul>
                 {blockingIssues.map(item => (
@@ -4217,59 +4354,16 @@ function GitReleasePanelNext({
               {needsInitialize && (
                 <button className="primary-button" disabled={busy || initializing} onClick={() => setGitInitOpen(true)}>填写 Git 信息并初始化</button>
               )}
+              {status?.repository && <p className="release-remote-hint">远程仓库：<code>{status.repository}</code>{status.remoteAdvice ? ` · ${status.remoteAdvice}` : ''}</p>}
             </section>
           )}
-          {confirmed && (
+          {phase === 'confirm' && session && (
             <p className="release-confirmation">
-              即将从{' '}
-              <code>
-                {commits.find(item => item.sha === sourceCommit)?.shortSha}
-              </code>{' '}
-              构建；确认后会安装依赖、构建、写入源码映射并推送 release。
+              即将把 {artifacts.length} 项构建产物发布到 <code>{session.target}</code>，并创建标签 <code>{version || status?.suggestedVersion}</code>。
             </p>
           )}
-          <section className="release-records">
-            <details className="release-history">
-              <summary>
-                源码映射{' '}
-                <small>{status?.releaseMappings?.length ?? 0} 条</small>
-              </summary>
-              <div>
-                {status?.releaseMappings?.length ? (
-                  <ol>
-                    {status.releaseMappings.map(item => (
-                      <li key={item.releaseCommit}>
-                        <code>{item.version}</code> ←{' '}
-                        <code>
-                          {item.sourceBranch}@{item.sourceCommit.slice(0, 8)}
-                        </code>
-                      </li>
-                    ))}
-                  </ol>
-                ) : (
-                  <p className="release-history-empty">
-                    后续每次 GIT 发布都会在 release 中记录源码分支与 commit。
-                  </p>
-                )}
-              </div>
-            </details>
-            <details className="release-history">
-              <summary>
-                Tags <small>{status?.tags?.length ?? 0} 个</small>
-              </summary>
-              <div>
-                {status?.tags?.length ? (
-                  <div className="release-tags">
-                    {status.tags.map(item => (
-                      <code key={item}>{item}</code>
-                    ))}
-                  </div>
-                ) : (
-                  <p className="release-history-empty">尚未创建发布 Tag。</p>
-                )}
-              </div>
-            </details>
-          </section>
+          {requestError && <p className="release-status blocked">！ {requestError}</p>}
+          {phase === 'published' && result?.output && <pre className="release-result">{result.output}</pre>}
         </>
       )}
       <GitInitializeDialog open={gitInitOpen} values={gitInit} busy={busy || initializing} onClose={() => setGitInitOpen(false)} onChange={setGitInit} onConfirm={async () => { await submitInitialize(); setGitInitOpen(false) }} />

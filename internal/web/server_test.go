@@ -5,14 +5,46 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"testing/fstest"
 
 	"alemonjs-setup/internal/access"
+	"alemonjs-setup/internal/robot"
 )
 
 func newTestServer() http.Handler {
 	return NewServer("test", fstest.MapFS{"dist/index.html": &fstest.MapFile{Data: []byte("<!doctype html>")}})
+}
+
+func TestWebViewHTMLRewriteAndRestrictedBridge(t *testing.T) {
+	html := rewriteWebViewHTML(`<!doctype html><head><link href="/favicon.ico"><link href="/assets/app.css"></head><body><script src="/assets/app.js"></script></body>`)
+	for _, expected := range []string{`href="favicon.ico"`, `href="assets/app.css"`, `src="assets/app.js"`, `<script src="bridge.js"></script></head>`} {
+		if !strings.Contains(html, expected) {
+			t.Fatalf("rewritten HTML misses %q: %s", expected, html)
+		}
+	}
+	bridge := webViewBridge(robot.WebViewEntry{Package: `plugin"name`, Name: "页面"})
+	for _, expected := range []string{`window.__albsWebview`, `./api/`, `plugin\"name`, `window.appDesktopAPI`, `'message'`, `'events'`, `'api-error'`, `response.clone().json()`} {
+		if !strings.Contains(bridge, expected) {
+			t.Fatalf("bridge misses %q", expected)
+		}
+	}
+	if strings.Contains(bridge, "WailsInvoke") || strings.Contains(bridge, "Shell") {
+		t.Fatalf("bridge must not expose desktop privileges: %s", bridge)
+	}
+	for _, expected := range []string{"@alemonjs/process", "events[data.type]", "process.stdin.on"} {
+		if !strings.Contains(defaultWebViewDesktopScript, expected) {
+			t.Fatalf("desktop script misses %q", expected)
+		}
+	}
+}
+
+func TestDirectoryLocationNamesWindowsDrives(t *testing.T) {
+	name, kind := directoryLocation(`C:\\`, `C:\\Users\\tester`, "windows")
+	if name != "本地磁盘（C:）" || kind != "volume" {
+		t.Fatalf("Windows root label = (%q, %q), want local C drive", name, kind)
+	}
 }
 
 func TestHealth(t *testing.T) {

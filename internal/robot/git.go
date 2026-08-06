@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -16,24 +17,28 @@ var gitVersionPattern = regexp.MustCompile(`^v\d+\.\d+\.\d+$`)
 // publishing the built Node package to the project's release branch, not
 // building alemonjs-setup itself.
 type GitStatus struct {
-	Root               string           `json:"root,omitempty"`
-	Repository         string           `json:"repository,omitempty"`
-	Branch             string           `json:"branch,omitempty"`
-	PackageName        string           `json:"packageName,omitempty"`
-	PackageVersion     string           `json:"packageVersion,omitempty"`
-	PackageManager     string           `json:"packageManager,omitempty"`
-	GitHubActionsURL   string           `json:"gitHubActionsUrl,omitempty"`
-	WorkflowConfigured bool             `json:"workflowConfigured"`
-	GitReady           bool             `json:"gitReady"`
-	ReleaseBranch      bool             `json:"releaseBranch"`
-	LatestVersion      string           `json:"latestVersion,omitempty"`
-	SuggestedVersion   string           `json:"suggestedVersion,omitempty"`
-	Tags               []string         `json:"tags"`
-	Commits            []string         `json:"commits"`
-	SourceCommits      []GitCommit      `json:"sourceCommits"`
-	ReleaseMappings    []ReleaseMapping `json:"releaseMappings"`
-	Checks             []string         `json:"checks"`
-	Issues             []string         `json:"issues"`
+	Root               string            `json:"root,omitempty"`
+	Repository         string            `json:"repository,omitempty"`
+	Branch             string            `json:"branch,omitempty"`
+	RemoteBranch       string            `json:"remoteBranch,omitempty"`
+	RemoteReachable    bool              `json:"remoteReachable"`
+	RemoteAdvice       string            `json:"remoteAdvice,omitempty"`
+	PackageName        string            `json:"packageName,omitempty"`
+	PackageVersion     string            `json:"packageVersion,omitempty"`
+	PackageManager     string            `json:"packageManager,omitempty"`
+	GitHubActionsURL   string            `json:"gitHubActionsUrl,omitempty"`
+	WorkflowConfigured bool              `json:"workflowConfigured"`
+	GitReady           bool              `json:"gitReady"`
+	ReleaseBranch      bool              `json:"releaseBranch"`
+	LatestVersion      string            `json:"latestVersion,omitempty"`
+	SuggestedVersion   string            `json:"suggestedVersion,omitempty"`
+	Tags               []string          `json:"tags"`
+	Commits            []string          `json:"commits"`
+	SourceCommits      []GitCommit       `json:"sourceCommits"`
+	SourceBranches     []GitSourceBranch `json:"sourceBranches"`
+	ReleaseMappings    []ReleaseMapping  `json:"releaseMappings"`
+	Checks             []string          `json:"checks"`
+	Issues             []string          `json:"issues"`
 }
 
 // GitCommit is a source revision the user can deliberately package.  Releases
@@ -44,6 +49,11 @@ type GitCommit struct {
 	ShortSHA  string `json:"shortSha"`
 	Subject   string `json:"subject"`
 	CreatedAt string `json:"createdAt"`
+}
+
+type GitSourceBranch struct {
+	Name    string      `json:"name"`
+	Commits []GitCommit `json:"commits"`
 }
 
 // ReleaseMapping is stored inside every release commit as .albs-release.json.
@@ -107,49 +117,150 @@ func GitReleaseStatus(root string) (GitStatus, error) {
 		status.Checks = append(status.Checks, "已发现 GitHub 工作流")
 	}
 	status.Branch, _ = gitRun(path, "branch", "--show-current")
-	if status.Branch != "main" {
-		status.Issues = append(status.Issues, "当前分支是 "+status.Branch+"，请切换到 main。")
-	} else {
-		status.Checks = append(status.Checks, "当前处于 main 分支")
-	}
 	// GitPublish creates detached worktrees from the selected commit.  The
 	// caller's working tree is intentionally never read, cleaned, or switched,
 	// so local edits (including generated lib files) must not block a release.
 	status.Checks = append(status.Checks, "将从所选提交独立构建")
 	if status.Repository != "" {
-		if _, err := gitRun(path, "fetch", "origin", "main", "--tags"); err != nil {
-			status.Issues = append(status.Issues, "无法读取远程 main 与版本标签。")
-		} else if head, _ := gitRun(path, "rev-parse", "HEAD"); func() bool {
-			remote, err := gitRun(path, "rev-parse", "origin/main")
-			return err == nil && head == remote
-		}() {
-			status.Checks = append(status.Checks, "main 已与远程同步")
-		} else {
-			status.Issues = append(status.Issues, "本地 main 与 origin/main 不同步。")
-		}
-		if _, err := gitRun(path, "ls-remote", "--exit-code", "--heads", "origin", "release"); err == nil {
-			status.ReleaseBranch = true
-			status.Checks = append(status.Checks, "已找到 release 分支")
-			// Release history belongs to the release branch, not the current
-			// development branch. Fetching only this ref keeps the status view
-			// accurate without changing the user's worktree.
-			if _, err := gitRun(path, "fetch", "origin", "release"); err == nil {
-				status.Commits = gitLines(path, "log", "origin/release", "--oneline", "-8")
-				status.ReleaseMappings = releaseMappings(path, "origin/release")
-			}
-		}
+		inspectRemoteRelease(path, &status)
 	}
+	status.SourceBranches = sourceBranches(path)
 	status.SourceCommits = sourceCommits(path)
 	if len(status.SourceCommits) == 0 && status.GitReady {
 		status.Issues = append(status.Issues, "当前分支还没有可选择的提交。")
 	}
-	status.Tags = gitLines(path, "tag", "--list", "v*", "--sort=-v:refname")
-	status.LatestVersion = latestGitVersion(path)
+	if len(status.Tags) == 0 {
+		status.Tags = gitLines(path, "tag", "--list", "v*", "--sort=-v:refname")
+	}
+	status.LatestVersion = latestGitVersionFromTags(status.Tags)
 	status.SuggestedVersion = "v0.0.1"
 	if status.LatestVersion != "" {
 		status.SuggestedVersion = "v" + nextPatch(strings.TrimPrefix(status.LatestVersion, "v"))
 	}
 	return status, nil
+}
+
+func sourceBranches(root string) []GitSourceBranch {
+	items := []GitSourceBranch{}
+	for _, name := range gitLines(root, "for-each-ref", "--format=%(refname:short)", "refs/heads") {
+		commits := sourceCommitsAt(root, name)
+		if len(commits) > 0 {
+			items = append(items, GitSourceBranch{Name: name, Commits: commits})
+		}
+	}
+	return items
+}
+
+// inspectRemoteRelease reads the remote without updating local refs.  Status
+// checks must not be able to fail merely because a local tracking ref is
+// locked, stale, or absent.
+func inspectRemoteRelease(path string, status *GitStatus) {
+	output, err := gitRun(path, "ls-remote", "--symref", "origin", "HEAD", "refs/heads/main", "refs/heads/master", "refs/heads/release", "refs/tags/v*")
+	if err != nil {
+		status.RemoteAdvice = remoteAdvice(output)
+		status.Issues = append(status.Issues, status.RemoteAdvice)
+		return
+	}
+	status.RemoteReachable = true
+	status.Checks = append(status.Checks, "已读取远程分支与版本标签")
+	remoteHeads, remoteTags, defaultBranch := parseRemoteRefs(output)
+	if defaultBranch == "" {
+		// Some Git servers omit the symbolic HEAD response.  Prefer the common
+		// defaults, then use the current branch when it is advertised remotely.
+		for _, candidate := range []string{"main", "master", status.Branch} {
+			if candidate != "" && remoteHeads[candidate] != "" {
+				defaultBranch = candidate
+				break
+			}
+		}
+	}
+	status.RemoteBranch = defaultBranch
+	status.Tags = remoteTags
+	if defaultBranch == "" {
+		status.Issues = append(status.Issues, "远程仓库尚未设置默认分支；请先推送一个分支，并在仓库设置中设为默认分支。")
+		return
+	}
+	if status.Branch == "" {
+		status.Issues = append(status.Issues, "当前处于分离提交状态；请切换到远程默认分支 "+defaultBranch+"。")
+	} else if status.Branch != defaultBranch {
+		status.Checks = append(status.Checks, "当前分支 "+status.Branch+" 将发布到独立的 "+releaseBranchName(status.Branch, defaultBranch))
+	} else {
+		status.Checks = append(status.Checks, "当前处于远程默认分支 "+defaultBranch)
+		if head, err := gitRun(path, "rev-parse", "HEAD"); err == nil && head == remoteHeads[defaultBranch] {
+			status.Checks = append(status.Checks, defaultBranch+" 已与远程同步")
+		} else {
+			status.Issues = append(status.Issues, "本地 "+defaultBranch+" 与远程不同步；请先在 Git 管理中拉取或推送。")
+		}
+	}
+	if remoteHeads["release"] != "" {
+		status.ReleaseBranch = true
+		status.Checks = append(status.Checks, "已找到远程 release 分支")
+	}
+}
+
+func parseRemoteRefs(output string) (map[string]string, []string, string) {
+	heads, tags, defaultBranch := map[string]string{}, []string{}, ""
+	for _, line := range strings.Split(output, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		if fields[0] == "ref:" && fields[len(fields)-1] == "HEAD" {
+			defaultBranch = strings.TrimPrefix(fields[1], "refs/heads/")
+			continue
+		}
+		ref := fields[1]
+		if strings.HasPrefix(ref, "refs/heads/") {
+			heads[strings.TrimPrefix(ref, "refs/heads/")] = fields[0]
+		}
+		if strings.HasPrefix(ref, "refs/tags/") {
+			tag := strings.TrimPrefix(ref, "refs/tags/")
+			if gitVersionPattern.MatchString(tag) {
+				tags = append(tags, tag)
+			}
+		}
+	}
+	return heads, sortGitVersions(tags), defaultBranch
+}
+
+func sortGitVersions(tags []string) []string {
+	sort.Slice(tags, func(left, right int) bool { return compareGitVersion(tags[left], tags[right]) > 0 })
+	return tags
+}
+
+func compareGitVersion(left, right string) int {
+	var l1, l2, l3, r1, r2, r3 int
+	if _, err := fmt.Sscanf(strings.TrimPrefix(left, "v"), "%d.%d.%d", &l1, &l2, &l3); err != nil {
+		return 0
+	}
+	if _, err := fmt.Sscanf(strings.TrimPrefix(right, "v"), "%d.%d.%d", &r1, &r2, &r3); err != nil {
+		return 0
+	}
+	for _, pair := range [][2]int{{l1, r1}, {l2, r2}, {l3, r3}} {
+		if pair[0] < pair[1] {
+			return -1
+		}
+		if pair[0] > pair[1] {
+			return 1
+		}
+	}
+	return 0
+}
+
+func remoteAdvice(output string) string {
+	message := strings.ToLower(output)
+	switch {
+	case strings.Contains(message, "permission denied (publickey)"):
+		return "无法通过 SSH 认证到 origin；请检查 SSH Key、ssh-agent 与仓库写入权限。"
+	case strings.Contains(message, "authentication failed"), strings.Contains(message, "could not read username"), strings.Contains(message, "terminal prompts disabled"):
+		return "origin 需要登录或访问令牌；请在 Git 管理中更新远程地址或完成 GitHub 登录。"
+	case strings.Contains(message, "repository not found"):
+		return "origin 仓库不存在，或当前账号没有访问权限；请检查远程地址与仓库权限。"
+	case strings.Contains(message, "could not resolve host"), strings.Contains(message, "network is unreachable"), strings.Contains(message, "connection timed out"):
+		return "无法连接远程仓库；请检查网络、代理或 DNS 后重新检查。"
+	default:
+		return "无法读取 origin 远程仓库；请在 Git 管理中检查远程地址和访问权限后重试。"
+	}
 }
 
 // InitializeGit creates an independent repository in the selected project.
@@ -215,6 +326,10 @@ func sameWorkspacePath(left, right string) bool {
 // or switches the user's current worktree and never overwrites a remote branch
 // or tag.
 func GitPublish(root, version, sourceCommit string, confirmed bool) (Result, error) {
+	return GitPublishWithOptions(root, version, "", sourceCommit, nil, confirmed)
+}
+
+func GitPublishWithOptions(root, version, sourceBranch, sourceCommit string, artifacts []string, confirmed bool) (Result, error) {
 	path, err := workspacePath(root)
 	if err != nil {
 		return Result{}, err
@@ -226,6 +341,15 @@ func GitPublish(root, version, sourceCommit string, confirmed bool) (Result, err
 	if len(status.Issues) > 0 {
 		return Result{}, errors.New("发布前检查未通过：" + strings.Join(status.Issues, "；"))
 	}
+	if sourceBranch == "" {
+		sourceBranch = status.Branch
+	}
+	if !validGitRef(sourceBranch) {
+		return Result{}, errors.New("请选择有效的源码分支")
+	}
+	if _, err := gitRun(path, "show-ref", "--verify", "--quiet", "refs/heads/"+sourceBranch); err != nil {
+		return Result{}, errors.New("所选源码分支不存在，请刷新后重试")
+	}
 	if !regexp.MustCompile(`^[0-9a-fA-F]{7,64}$`).MatchString(sourceCommit) {
 		return Result{}, errors.New("请选择一个已提交的源码版本")
 	}
@@ -233,8 +357,8 @@ func GitPublish(root, version, sourceCommit string, confirmed bool) (Result, err
 	if err != nil {
 		return Result{}, errors.New("所选源码提交不存在，请刷新后重新选择")
 	}
-	if _, err := gitRun(path, "merge-base", "--is-ancestor", sourceCommit, "HEAD"); err != nil {
-		return Result{}, errors.New("所选提交不属于当前源码分支，请刷新后重新选择")
+	if _, err := gitRun(path, "merge-base", "--is-ancestor", sourceCommit, "refs/heads/"+sourceBranch); err != nil {
+		return Result{}, errors.New("所选提交不属于所选源码分支，请刷新后重新选择")
 	}
 	if version == "" {
 		version = status.SuggestedVersion
@@ -266,13 +390,13 @@ func GitPublish(root, version, sourceCommit string, confirmed bool) (Result, err
 	output, err = runPackageManager(sourceWorktree, "install")
 	logs = append(logs, output)
 	if err != nil {
-		return Result{Path: path, Output: strings.Join(logs, "\n")}, fmt.Errorf("安装构建依赖失败：%w", err)
+		return Result{Path: path, Output: strings.Join(logs, "\n")}, buildDependencyError("安装构建依赖失败", strings.Join(logs, "\n"))
 	}
 	logs = append(logs, "开始构建 "+status.PackageName)
 	output, err = runPackageManager(sourceWorktree, "run", "build")
 	logs = append(logs, output)
 	if err != nil {
-		return Result{Path: path, Output: strings.Join(logs, "\n")}, fmt.Errorf("构建失败：%w", err)
+		return Result{Path: path, Output: strings.Join(logs, "\n")}, buildDependencyError("构建失败", strings.Join(logs, "\n"))
 	}
 	if _, err := os.Stat(filepath.Join(sourceWorktree, "lib")); err != nil {
 		return Result{Path: path, Output: strings.Join(logs, "\n")}, errors.New("构建结束后仍未找到 lib 目录，无法创建 Git 发布包")
@@ -299,10 +423,10 @@ func GitPublish(root, version, sourceCommit string, confirmed bool) (Result, err
 	if output, err = gitRun(worktree, "clean", "-fdx"); err != nil {
 		return Result{}, fmt.Errorf("无法清理临时发布目录：%w", err)
 	}
-	if err := copyReleaseFiles(sourceWorktree, worktree, strings.TrimPrefix(version, "v")); err != nil {
+	if err := copyReleaseFiles(sourceWorktree, worktree, strings.TrimPrefix(version, "v"), artifacts); err != nil {
 		return Result{}, err
 	}
-	mapping := ReleaseMapping{Version: version, SourceBranch: status.Branch, SourceCommit: sourceCommit}
+	mapping := ReleaseMapping{Version: version, SourceBranch: sourceBranch, SourceCommit: sourceCommit}
 	mappingData, err := json.MarshalIndent(mapping, "", "  ")
 	if err != nil {
 		return Result{}, err
@@ -313,12 +437,13 @@ func GitPublish(root, version, sourceCommit string, confirmed bool) (Result, err
 	if _, err := gitRun(worktree, "add", "-A"); err != nil {
 		return Result{}, err
 	}
-	commitMessage := "release: " + version + " (" + status.Branch + "@" + shortGitSHA(sourceCommit) + ")"
+	targetBranch := releaseBranchName(sourceBranch, status.RemoteBranch)
+	commitMessage := "release: " + version + " (" + sourceBranch + "@" + shortGitSHA(sourceCommit) + ")"
 	if output, err = gitRun(worktree, "commit", "-m", commitMessage); err != nil {
 		return Result{}, fmt.Errorf("无法创建 release 提交（请先配置 Git 用户名和邮箱）：%w", err)
 	}
-	if output, err = gitRun(worktree, "push", "origin", "HEAD:refs/heads/release"); err != nil {
-		return Result{Path: path, Output: strings.Join(append(logs, output), "\n")}, fmt.Errorf("release 分支推送失败：%w", err)
+	if output, err = gitRun(worktree, "push", "origin", "HEAD:refs/heads/"+targetBranch); err != nil {
+		return Result{Path: path, Output: strings.Join(append(logs, output), "\n")}, fmt.Errorf("%s 分支推送失败：%w", targetBranch, err)
 	}
 	if output, err = gitRun(worktree, "tag", "-a", version, "-m", "Release "+version+"\n\nSource: "+status.Branch+"@"+sourceCommit); err != nil {
 		return Result{}, fmt.Errorf("无法创建标签：%w", err)
@@ -327,7 +452,7 @@ func GitPublish(root, version, sourceCommit string, confirmed bool) (Result, err
 		_, _ = gitRun(worktree, "tag", "-d", version)
 		return Result{Path: path, Output: strings.Join(append(logs, output), "\n")}, fmt.Errorf("标签推送失败：%w", err)
 	}
-	return Result{Path: path, Output: strings.Join(append(logs, "已发布 "+version+"：release 分支、标签及源码映射已推送（"+status.Branch+"@"+shortGitSHA(sourceCommit)+"）。"), "\n")}, nil
+	return Result{Path: path, Output: strings.Join(append(logs, "已发布 "+version+"："+targetBranch+" 分支、标签及源码映射已推送（"+sourceBranch+"@"+shortGitSHA(sourceCommit)+"）。"), "\n")}, nil
 }
 
 func shortGitSHA(value string) string {
@@ -337,8 +462,9 @@ func shortGitSHA(value string) string {
 	return value
 }
 
-func sourceCommits(root string) []GitCommit {
-	output, err := gitRun(root, "log", "HEAD", "--format=%H%x1f%h%x1f%s%x1f%cs", "-20")
+func sourceCommits(root string) []GitCommit { return sourceCommitsAt(root, "HEAD") }
+func sourceCommitsAt(root, ref string) []GitCommit {
+	output, err := gitRun(root, "log", ref, "--format=%H%x1f%h%x1f%s%x1f%cs", "-20")
 	if err != nil || output == "" {
 		return []GitCommit{}
 	}
@@ -370,12 +496,20 @@ func releaseMappings(root, ref string) []ReleaseMapping {
 	return mappings
 }
 
-func copyReleaseFiles(source, destination, version string) error {
-	for _, name := range []string{"lib", "README.md", ".puppeteerrc.cjs"} {
+func copyReleaseFiles(source, destination, version string, artifacts []string) error {
+	if len(artifacts) == 0 {
+		artifacts = []string{"dist"}
+	}
+	for _, name := range artifacts {
+		if !validReleaseArtifact(name) {
+			return errors.New("发布产物路径无效：" + name)
+		}
 		if _, err := os.Stat(filepath.Join(source, name)); err == nil {
 			if err := copyPath(filepath.Join(source, name), filepath.Join(destination, name)); err != nil {
 				return err
 			}
+		} else {
+			return fmt.Errorf("构建后未找到所选发布产物：%s", name)
 		}
 	}
 	pkg, err := readPackage(source)
@@ -392,6 +526,16 @@ func copyReleaseFiles(source, destination, version string) error {
 	}
 	return os.WriteFile(filepath.Join(destination, "package.json"), append(data, '\n'), 0644)
 }
+
+func validReleaseArtifact(value string) bool {
+	return value != "" && !filepath.IsAbs(value) && !strings.Contains(value, "..") && filepath.Clean(value) == value
+}
+func releaseBranchName(source, defaultBranch string) string {
+	if source == defaultBranch {
+		return "release"
+	}
+	return strings.ReplaceAll(strings.ReplaceAll(source, "/", "-"), " ", "-") + "-release"
+}
 func copyPath(source, destination string) error {
 	info, err := os.Stat(source)
 	if err != nil {
@@ -400,6 +544,9 @@ func copyPath(source, destination string) error {
 	if !info.IsDir() {
 		data, err := os.ReadFile(source)
 		if err != nil {
+			return err
+		}
+		if err := os.MkdirAll(filepath.Dir(destination), 0755); err != nil {
 			return err
 		}
 		return os.WriteFile(destination, data, info.Mode())
@@ -430,6 +577,15 @@ func readPackage(root string) (map[string]any, error) {
 	return pkg, err
 }
 func projectPackageManager(root string) string {
+	var manifest struct {
+		PackageManager string `json:"packageManager"`
+	}
+	if data, err := os.ReadFile(filepath.Join(root, "package.json")); err == nil && json.Unmarshal(data, &manifest) == nil {
+		manager := strings.ToLower(strings.Split(strings.TrimSpace(manifest.PackageManager), "@")[0])
+		if manager == "npm" || manager == "yarn" || manager == "pnpm" {
+			return manager
+		}
+	}
 	if _, err := os.Stat(filepath.Join(root, "yarn.lock")); err == nil {
 		return "yarn"
 	}
@@ -482,7 +638,11 @@ func latestGitVersion(root string) string {
 	if err != nil {
 		return ""
 	}
-	for _, value := range strings.Split(tags, "\n") {
+	return latestGitVersionFromTags(strings.Split(tags, "\n"))
+}
+
+func latestGitVersionFromTags(tags []string) string {
+	for _, value := range tags {
 		if gitVersionPattern.MatchString(value) {
 			return value
 		}

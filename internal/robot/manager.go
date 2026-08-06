@@ -728,6 +728,17 @@ func (m Manager) Run(root, action, message, packageName, version, tag, token str
 		}
 		// message carries the source commit selected in the Git publishing card.
 		// Keeping it on the existing task payload also preserves privileged runs.
+		var request struct {
+			Branch    string   `json:"branch"`
+			Commit    string   `json:"commit"`
+			Artifacts []string `json:"artifacts"`
+		}
+		if json.Unmarshal([]byte(message), &request) == nil && request.Commit != "" {
+			if len(request.Artifacts) == 0 {
+				return Result{}, errors.New("请至少选择一个最终发布产物")
+			}
+			return GitPublishWithOptions(root, version, request.Branch, request.Commit, request.Artifacts, confirmed)
+		}
 		return GitPublish(root, version, message, confirmed)
 	}
 	if err := project(root); err != nil {
@@ -756,13 +767,7 @@ func (m Manager) Run(root, action, message, packageName, version, tag, token str
 		} else {
 			checks = append(checks, "未发现 node_modules，需要安装依赖。")
 		}
-		if _, err := os.Stat(filepath.Join(root, "yarn.lock")); err == nil {
-			checks = append(checks, "检测到 yarn.lock，将使用 Yarn 管理依赖。")
-		} else if _, err := os.Stat(filepath.Join(root, "package-lock.json")); err == nil {
-			checks = append(checks, "检测到 package-lock.json，将使用 npm 管理依赖。")
-		} else {
-			checks = append(checks, "未检测到锁定文件，安装时会根据 package.json 生成依赖状态。")
-		}
+		checks = append(checks, "依赖将按 package.json 中声明的 "+strings.ToUpper(manager)+" 管理。")
 		return Result{Path: root, Output: strings.Join(checks, "\n")}, nil
 	case "install":
 		name, args = manager, []string{"install"}
@@ -782,7 +787,7 @@ func (m Manager) Run(root, action, message, packageName, version, tag, token str
 		if !regexp.MustCompile(`^\d+\.\d+\.\d+$`).MatchString(version) {
 			return Result{}, errors.New("版本号应为 1.2.3")
 		}
-		name, args = "npm", []string{"version", version, "--no-git-tag-version"}
+		name, args = manager, packageVersionArgs(manager, version)
 	case "dev":
 		if err := fixLegacyLvyScript(root); err != nil {
 			return Result{}, err
@@ -1087,7 +1092,7 @@ func run(root, name string, args ...string) (string, error) {
 	return runWithEnv(root, nil, name, args...)
 }
 
-// PackageManagerCommand keeps a robot usable when its lock file requests a
+// PackageManagerCommand keeps a robot usable when package.json requests a
 // package manager that is not globally installed. npx uses the npm bundled
 // with Node.js and needs no administrator write permission.
 func PackageManagerCommand(root string, args ...string) (*exec.Cmd, string) {
@@ -1120,9 +1125,23 @@ func runPackageManager(root string, args ...string) (string, error) {
 	return runNamedPackageManager(root, projectPackageManager(root), args...)
 }
 
+func packageVersionArgs(manager, version string) []string {
+	if manager == "yarn" {
+		return []string{"version", "--new-version", version, "--no-git-tag-version"}
+	}
+	return []string{"version", version, "--no-git-tag-version"}
+}
+
 func runNamedPackageManager(root, manager string, args ...string) (string, error) {
 	command, notice := packageManagerCommand(root, manager, args...)
-	output, err := run(root, command.Path, command.Args[1:]...)
+	values := packageManagerEnvironment(root)
+	if filepath.Base(command.Path) == "npx" {
+		// npm reads project .npmrc before it launches temporary Yarn/PNPM.
+		// Settings owned by another package manager (for example node-linker)
+		// are harmless, and must not bury the actual operation result.
+		values["NPM_CONFIG_LOGLEVEL"] = "error"
+	}
+	output, err := runWithEnv(root, values, command.Path, command.Args[1:]...)
 	if notice != "" {
 		if output != "" {
 			output = notice + "\n" + output
@@ -1133,12 +1152,91 @@ func runNamedPackageManager(root, manager string, args ...string) (string, error
 	return output, err
 }
 
+// packageManagerEnvironment makes GUI-launched setup processes honour the
+// user's Node version manager. On macOS a process launched before nvm is
+// loaded often keeps Homebrew's non-LTS Node in PATH, while the terminal has
+// the intended LTS version. Prefer .nvmrc, then nvm's default alias.
+func packageManagerEnvironment(root string) map[string]string {
+	values := map[string]string{}
+	if bin := preferredNVMNodeBin(root); bin != "" {
+		values["PATH"] = bin + string(os.PathListSeparator) + os.Getenv("PATH")
+	}
+	return values
+}
+
+func preferredNVMNodeBin(root string) string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	wanted := ""
+	if data, err := os.ReadFile(filepath.Join(root, ".nvmrc")); err == nil {
+		wanted = strings.TrimPrefix(strings.TrimSpace(string(data)), "v")
+	}
+	if wanted == "" {
+		if data, err := os.ReadFile(filepath.Join(home, ".nvm", "alias", "default")); err == nil {
+			wanted = strings.TrimPrefix(strings.TrimSpace(string(data)), "v")
+		}
+	}
+	if wanted == "" || strings.ContainsAny(wanted, "/ ") {
+		return ""
+	}
+	versions, err := os.ReadDir(filepath.Join(home, ".nvm", "versions", "node"))
+	if err != nil {
+		return ""
+	}
+	candidates := []string{}
+	for _, entry := range versions {
+		name := strings.TrimPrefix(entry.Name(), "v")
+		if entry.IsDir() && nodeVersionMatches(name, wanted) {
+			if info, err := os.Stat(filepath.Join(home, ".nvm", "versions", "node", entry.Name(), "bin", "node")); err == nil && !info.IsDir() {
+				candidates = append(candidates, entry.Name())
+			}
+		}
+	}
+	if len(candidates) == 0 {
+		return ""
+	}
+	sort.Slice(candidates, func(i, j int) bool { return nodeVersionGreater(candidates[i], candidates[j]) })
+	return filepath.Join(home, ".nvm", "versions", "node", candidates[0], "bin")
+}
+
+func nodeVersionMatches(version, wanted string) bool {
+	version, wanted = strings.TrimPrefix(version, "v"), strings.TrimPrefix(wanted, "v")
+	if version == wanted {
+		return true
+	}
+	return regexp.MustCompile(`^\d+$`).MatchString(wanted) && strings.HasPrefix(version, wanted+".")
+}
+
+func nodeVersionGreater(left, right string) bool {
+	var l1, l2, l3, r1, r2, r3 int
+	_, _ = fmt.Sscanf(strings.TrimPrefix(left, "v"), "%d.%d.%d", &l1, &l2, &l3)
+	_, _ = fmt.Sscanf(strings.TrimPrefix(right, "v"), "%d.%d.%d", &r1, &r2, &r3)
+	for _, pair := range [][2]int{{l1, r1}, {l2, r2}, {l3, r3}} {
+		if pair[0] != pair[1] {
+			return pair[0] > pair[1]
+		}
+	}
+	return false
+}
+
 func runWithEnv(root string, values map[string]string, name string, args ...string) (string, error) {
 	cmd := exec.Command(name, args...)
 	cmd.Dir = root
 	cmd.Env = os.Environ()
 	for key, value := range values {
-		cmd.Env = append(cmd.Env, key+"="+value)
+		prefix := key + "="
+		for index := len(cmd.Env) - 1; index >= 0; index-- {
+			if strings.HasPrefix(cmd.Env[index], prefix) {
+				cmd.Env[index] = prefix + value
+				prefix = ""
+				break
+			}
+		}
+		if prefix != "" {
+			cmd.Env = append(cmd.Env, prefix+value)
+		}
 	}
 	output, err := cmd.CombinedOutput()
 	text := strings.TrimSpace(string(output))

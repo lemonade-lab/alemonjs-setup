@@ -114,6 +114,46 @@ func TestPackageManagerCommandFallsBackToNPXWithoutGlobalYarn(t *testing.T) {
 	}
 }
 
+func TestConnectionPackagesFollowPackageJSONManagerAndWorkspace(t *testing.T) {
+	cases := []struct {
+		name, manifest, manager string
+		args                    []string
+	}{
+		{"yarn workspace", `{"packageManager":"yarn@1.22.22","workspaces":["packages/*"]}`, "yarn", []string{"add", "@alemonjs/onebot", "-W"}},
+		{"pnpm workspace", `{"packageManager":"pnpm@9","workspaces":["packages/*"]}`, "pnpm", []string{"add", "@alemonjs/onebot", "-w"}},
+		{"npm workspace", `{"packageManager":"npm@10","workspaces":["packages/*"]}`, "npm", []string{"add", "@alemonjs/onebot"}},
+		{"plain project", `{"packageManager":"yarn@1.22.22"}`, "yarn", []string{"add", "@alemonjs/onebot"}},
+	}
+	for _, item := range cases {
+		t.Run(item.name, func(t *testing.T) {
+			root := t.TempDir()
+			if err := os.WriteFile(filepath.Join(root, "package.json"), []byte(item.manifest), 0644); err != nil {
+				t.Fatal(err)
+			}
+			manager, args, err := connectionPackageCommand(root, "add", "@alemonjs/onebot")
+			if err != nil || manager != item.manager || !reflect.DeepEqual(args, item.args) {
+				t.Fatalf("command = %q %#v %v, want %q %#v", manager, args, err, item.manager, item.args)
+			}
+		})
+	}
+}
+
+func TestPackageJSONManagerWinsOverLockFiles(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "package.json"), []byte(`{"packageManager":"pnpm@9.15.0"}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "yarn.lock"), []byte("# stale lock\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if got := projectPackageManager(root); got != "pnpm" {
+		t.Fatalf("project package manager = %q, want pnpm", got)
+	}
+	if got, want := packageVersionArgs("yarn", "1.2.3"), []string{"version", "--new-version", "1.2.3", "--no-git-tag-version"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("yarn version args = %#v", got)
+	}
+}
+
 func TestRunReportsMissingNodeEnvironmentWithoutRawExecError(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("PATH", "")

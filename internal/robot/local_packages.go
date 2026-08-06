@@ -76,7 +76,11 @@ func installLocalPackage(root, source string) (Result, error) {
 // unpacked into packages/: Yarn owns node_modules and package.json so the
 // selected adapter can participate in the robot runtime.
 func installConnectionPackage(root, source string) (Result, error) {
-	output, err := runNamedPackageManager(root, "yarn", "add", source)
+	manager, args, err := connectionPackageCommand(root, "add", source)
+	if err != nil {
+		return Result{}, err
+	}
+	output, err := runNamedPackageManager(root, manager, args...)
 	if err != nil {
 		return Result{Path: root, Output: output}, fmt.Errorf("安装连接包失败：%w", err)
 	}
@@ -84,11 +88,43 @@ func installConnectionPackage(root, source string) (Result, error) {
 }
 
 func removeConnectionPackage(root, source string) (Result, error) {
-	output, err := runNamedPackageManager(root, "yarn", "remove", source)
+	manager, args, err := connectionPackageCommand(root, "remove", source)
+	if err != nil {
+		return Result{}, err
+	}
+	output, err := runNamedPackageManager(root, manager, args...)
 	if err != nil {
 		return Result{Path: root, Output: output}, fmt.Errorf("卸载连接包失败：%w", err)
 	}
 	return Result{Path: root, Output: "已移除连接依赖 " + source + "。\n" + output}, nil
+}
+
+// connectionPackageCommand follows the project itself: package.json's
+// packageManager wins, and lock files are only the compatibility fallback in
+// projectPackageManager. A workspace root needs an explicit flag for Yarn and
+// PNPM; npm already installs into the root manifest by default.
+func connectionPackageCommand(root, action, source string) (string, []string, error) {
+	data, err := os.ReadFile(filepath.Join(root, "package.json"))
+	if err != nil {
+		return "", nil, fmt.Errorf("无法读取 package.json：%w", err)
+	}
+	var manifest struct {
+		Workspaces json.RawMessage `json:"workspaces"`
+	}
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		return "", nil, errors.New("package.json 格式无法识别")
+	}
+	manager := projectPackageManager(root)
+	args := []string{action, source}
+	if len(manifest.Workspaces) > 0 && string(manifest.Workspaces) != "null" {
+		switch manager {
+		case "yarn":
+			args = append(args, "-W")
+		case "pnpm":
+			args = append(args, "-w")
+		}
+	}
+	return manager, args, nil
 }
 
 func ensurePackagesWorkspace(root string) error {

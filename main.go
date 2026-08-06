@@ -33,6 +33,7 @@ var templateFiles embed.FS
 var Version = "dev"
 
 func main() {
+	defer robot.CleanupGitBuildSessions()
 	if len(os.Args) == 4 && os.Args[1] == "--privileged-create" {
 		privilegedCreate(os.Args[2], os.Args[3])
 		return
@@ -299,8 +300,7 @@ func startupMessage(version, port string) string {
 
   AlemonJS Setup v%s 已准备就绪
   ───────────────────────────────────────
-  这是 AlemonJS 机器人的桌面管理台：用来添加项目、配置机器人、运行服务，
-  并完成插件、连接、构建与发布。
+  机器人工作台：
 
   现在开始
   1. 在浏览器打开：%s
@@ -311,9 +311,7 @@ func startupMessage(version, port string) string {
   · 在「环境」检查 Node.js、Git 与包管理器
   · 在「运行」启动开发、前台或持续运行模式
   · 在「发布」打包并发布到 npm 或 Git Release
-
-  此服务仅监听本机地址；保持此窗口打开即可继续使用。
-
+  
 `, version, address)
 }
 
