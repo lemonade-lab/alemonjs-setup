@@ -302,7 +302,7 @@ func startupMessage(version, host, port string) string {
 	address := "http://" + addressHost + ":" + port
 	return fmt.Sprintf(`
 
-  AlemonJS Setup v%s 已准备就绪
+  ALemonX v%s 已准备就绪
   ───────────────────────────────────────
   机器人工作台：
 

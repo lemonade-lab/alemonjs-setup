@@ -125,7 +125,7 @@ func (c *Creator) Create(config Config) (Result, error) {
 
 	if config.InitializeGit {
 		log("正在初始化 Git 存档…")
-		for _, command := range [][]string{{"init"}, {"config", "user.name", "AlemonJS Setup"}, {"config", "user.email", "setup@alemonjs.local"}, {"add", "."}, {"commit", "-m", "chore: initialize alemonjs project"}} {
+		for _, command := range [][]string{{"init"}, {"config", "user.name", "ALemonX"}, {"config", "user.email", "setup@alemonjs.local"}, {"add", "."}, {"commit", "-m", "chore: initialize alemonjs project"}} {
 			if err := run(path, &result.Logs, "git", command...); err != nil {
 				return result, fmt.Errorf("初始化 Git 失败：%w", err)
 			}

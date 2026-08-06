@@ -1,4 +1,4 @@
-# Docker 部署 AlemonJS Setup
+# Docker 部署 ALemonX
 
 本文面向一个统一产品的两个部署场景：本地工作台用于开发和调试机器人；线上工作台用于运行、维护线上机器人。它们使用同一镜像和界面，但各自拥有独立、持久化的工作目录。
 
@@ -116,7 +116,7 @@ server {
 nginx -t && systemctl reload nginx
 ```
 
-务必同时保留 AlemonJS Setup 自身的身份认证；Nginx 的 HTTPS 只负责传输安全，不替代工作台登录保护。
+务必同时保留 ALemonX 自身的身份认证；Nginx 的 HTTPS 只负责传输安全，不替代工作台登录保护。
 
 ## 6. 更新、备份与恢复
 

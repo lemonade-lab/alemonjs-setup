@@ -1,4 +1,4 @@
-# AlemonJS Setup WebView 规范
+# ALemonX WebView 规范
 
 Setup 会把当前机器人的插件页面嵌入后台。WebView 是插件自己的前端，不是 Setup 的管理页面，也不会获得系统命令、文件系统或 Setup 登录态。
 

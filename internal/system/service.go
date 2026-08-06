@@ -38,7 +38,7 @@ func ServiceStatus() (string, error) {
 		}
 		return "后台服务运行中。", nil
 	case "windows":
-		output, err := exec.Command("schtasks", "/Query", "/TN", "AlemonJS Setup", "/FO", "LIST").CombinedOutput()
+		output, err := exec.Command("schtasks", "/Query", "/TN", "ALemonX", "/FO", "LIST").CombinedOutput()
 		if err != nil {
 			return "未安装后台服务。运行 alx install 进行安装。", nil
 		}
@@ -70,7 +70,7 @@ func StartService() (string, error) {
 		}
 		return "后台服务已启动。", nil
 	case "windows":
-		if output, err := exec.Command("schtasks", "/Run", "/TN", "AlemonJS Setup").CombinedOutput(); err != nil {
+		if output, err := exec.Command("schtasks", "/Run", "/TN", "ALemonX").CombinedOutput(); err != nil {
 			return "", fmt.Errorf("启动后台服务失败：%s", strings.TrimSpace(string(output)))
 		}
 		return "后台服务已启动。", nil
@@ -93,7 +93,7 @@ func StopService() (string, error) {
 		}
 		return "后台服务已停止；登录启动配置仍然保留。", nil
 	case "windows":
-		if output, err := exec.Command("schtasks", "/End", "/TN", "AlemonJS Setup").CombinedOutput(); err != nil {
+		if output, err := exec.Command("schtasks", "/End", "/TN", "ALemonX").CombinedOutput(); err != nil {
 			return "", fmt.Errorf("停止后台服务失败：%s", strings.TrimSpace(string(output)))
 		}
 		return "后台服务已停止；登录启动配置仍然保留。", nil
@@ -132,7 +132,7 @@ func UninstallService() (string, error) {
 		}
 		_ = exec.Command("systemctl", "--user", "daemon-reload").Run()
 	case "windows":
-		_ = exec.Command("schtasks", "/Delete", "/TN", "AlemonJS Setup", "/F").Run()
+		_ = exec.Command("schtasks", "/Delete", "/TN", "ALemonX", "/F").Run()
 	default:
 		return "", fmt.Errorf("暂不支持在 %s 上管理后台服务", runtime.GOOS)
 	}
@@ -293,7 +293,7 @@ func installSystemdUserService(executable, port string) (string, error) {
 		return "", err
 	}
 	path := filepath.Join(directory, "alx.service")
-	content := fmt.Sprintf("[Unit]\nDescription=AlemonJS Setup\n[Service]\nExecStart=%s serve --port %s\nRestart=on-failure\n[Install]\nWantedBy=default.target\n", shellQuote(executable), port)
+	content := fmt.Sprintf("[Unit]\nDescription=ALemonX\n[Service]\nExecStart=%s serve --port %s\nRestart=on-failure\n[Install]\nWantedBy=default.target\n", shellQuote(executable), port)
 	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
 		return "", err
 	}
@@ -308,10 +308,10 @@ func installSystemdUserService(executable, port string) (string, error) {
 
 func installScheduledTask(executable, port string) (string, error) {
 	command := `"` + executable + `" serve --port ` + port
-	if output, err := exec.Command("schtasks", "/Create", "/TN", "AlemonJS Setup", "/SC", "ONLOGON", "/TR", command, "/F").CombinedOutput(); err != nil {
+	if output, err := exec.Command("schtasks", "/Create", "/TN", "ALemonX", "/SC", "ONLOGON", "/TR", command, "/F").CombinedOutput(); err != nil {
 		return "", fmt.Errorf("注册计划任务失败：%s", strings.TrimSpace(string(output)))
 	}
-	if output, err := exec.Command("schtasks", "/Run", "/TN", "AlemonJS Setup").CombinedOutput(); err != nil {
+	if output, err := exec.Command("schtasks", "/Run", "/TN", "ALemonX").CombinedOutput(); err != nil {
 		return "", fmt.Errorf("启动后台服务失败：%s", strings.TrimSpace(string(output)))
 	}
 	return "已注册登录启动任务，访问地址：http://127.0.0.1:" + port, nil

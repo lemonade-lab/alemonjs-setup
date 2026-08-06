@@ -130,7 +130,7 @@ export function SetupUpdateButton() {
               <span className="grid gap-0.5">
                 <strong className="text-sm text-ink-950">应用更新</strong>
                 <small className="text-[11px] text-slate-400">
-                  保持 AlemonJS Setup 为最新版本
+                  保持 ALemonX 为最新版本
                 </small>
               </span>
             </div>

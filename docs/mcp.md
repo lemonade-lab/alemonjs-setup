@@ -1,6 +1,6 @@
-# AlemonJS Setup MCP 控制面
+# ALemonX MCP 控制面
 
-AlemonJS Setup 同时支持 MCP 的两种标准传输：**stdio** 和 **Streamable HTTP**。两者均使用 JSON-RPC 2.0，向 Codex、豆包等本机 AI 客户端开放同一组受限的 Setup 控制工具。
+ALemonX 同时支持 MCP 的两种标准传输：**stdio** 和 **Streamable HTTP**。两者均使用 JSON-RPC 2.0，向 Codex、豆包等本机 AI 客户端开放同一组受限的 Setup 控制工具。
 
 ## 客户端兼容性与验证范围
 

@@ -218,7 +218,7 @@ func tools() []map[string]any {
 		tool("alemonjs_project_status", "项目状态", "读取本机 AlemonJS/Node.js 机器人项目的依赖和包管理器状态，不修改文件。", objectSchema(map[string]any{"root": stringSchema("机器人项目的绝对路径，目录必须含 package.json。")}, "root"), true, false),
 		tool("alemonjs_check_environment", "检查环境", "检查 Setup 中指定目标所需的本机运行环境，不修改系统。", objectSchema(map[string]any{"goalId": map[string]any{"type": "string", "enum": []string{"install", "develop", "desktop", "mobile", "web", "build"}, "description": "Setup 目标 ID。"}, "variant": stringSchema("web 可为 clean/docker；build 可为 npm/git。")}, "goalId"), true, false),
 		toolExternal("alemonjs_list_releases", "列出版本", "从官方 GitHub 仓库读取支持应用的发布版本。", objectSchema(map[string]any{"app": map[string]any{"type": "string", "enum": []string{"alemondesk", "alemonapp", "alx", "alemonx"}, "description": "应用 ID。"}}, "app")),
-		toolExternal("alemonjs_check_setup_update", "检查 Setup 更新", "检查当前 AlemonJS Setup 是否有官方更新。", objectSchema(map[string]any{})),
+		toolExternal("alemonjs_check_setup_update", "检查 Setup 更新", "检查当前 ALemonX 是否有官方更新。", objectSchema(map[string]any{})),
 		toolExternal("alemonjs_list_catalog", "读取生态目录", "读取官方 AlemonJS 应用或环境连接目录。", objectSchema(map[string]any{"kind": map[string]any{"type": "string", "enum": []string{"apps", "environment"}, "description": "目录类型。"}}, "kind")),
 		toolExternal("alemonjs_get_catalog_document", "读取生态文档", "读取官方生态目录中的 GitHub/Gitee 文档；不接受任意网络地址。", objectSchema(map[string]any{"source": stringSchema("官方目录条目的 URL。")}, "source")),
 		toolExternal("alemonjs_get_catalog_package_config", "读取生态配置", "读取官方生态目录中包声明的 AlemonJS 配置字段。", objectSchema(map[string]any{"source": stringSchema("官方目录条目的 URL。")}, "source")),
@@ -240,7 +240,7 @@ func tools() []map[string]any {
 		tool("alemonjs_list_project_tasks", "列出项目操作", "列出当前 MCP 会话创建的项目操作任务。", objectSchema(map[string]any{"root": stringSchema("可选。仅返回该机器人项目的操作任务。")}), true, false),
 		tool("alemonjs_list_setup_plugins", "列出 Setup 插件", "列出当前电脑可用的声明式 Setup 插件及其操作，不执行插件代码。", objectSchema(map[string]any{}), true, false),
 		tool("alemonjs_run_setup_plugin", "运行 Setup 插件", "运行一个已声明的 Setup 插件操作。此操作始终需要用户明确确认；插件自身也可声明额外确认。", objectSchema(map[string]any{"pluginId": stringSchema("Setup 插件 ID。"), "actionId": stringSchema("插件声明的操作 ID。"), "values": map[string]any{"type": "object", "additionalProperties": map[string]any{"type": "string"}, "description": "按插件动作字段声明提供的值。"}, "confirm": boolSchema("用户已经确认运行该系统插件操作时为 true。")}, "pluginId", "actionId", "confirm"), false, true),
-		tool("alemonjs_create_project", "创建项目", "使用内置模板创建 AlemonJS 项目，并安装依赖。会写入磁盘、联网下载依赖，必须在用户明确确认后调用。", objectSchema(map[string]any{"config": map[string]any{"type": "object", "description": "与 AlemonJS Setup 创建向导相同的项目配置。"}, "confirm": boolSchema("用户已经确认创建项目时为 true。")}, "config", "confirm"), false, true),
+		tool("alemonjs_create_project", "创建项目", "使用内置模板创建 AlemonJS 项目，并安装依赖。会写入磁盘、联网下载依赖，必须在用户明确确认后调用。", objectSchema(map[string]any{"config": map[string]any{"type": "object", "description": "与 ALemonX 创建向导相同的项目配置。"}, "confirm": boolSchema("用户已经确认创建项目时为 true。")}, "config", "confirm"), false, true),
 	}
 }
 

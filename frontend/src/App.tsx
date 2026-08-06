@@ -1136,7 +1136,7 @@ function FlowView({
         <div className="wizard-content">
           {!goal || step === 0 ? (
             <div className="guide-question">
-              <p className="question-kicker">AlemonJS Setup</p>
+              <p className="question-kicker">ALemonX</p>
               <h1>你现在想做什么？</h1>
               <p className="question-lead">
                 从一个目标开始，剩下的步骤交给引导。
@@ -1340,7 +1340,7 @@ function LegacyDashboard({
         <div className="brand dark">
           <span>λ</span>
           <div>
-            <strong>AlemonJS Setup</strong>
+            <strong>ALemonX</strong>
             <small>后台中心</small>
           </div>
         </div>
