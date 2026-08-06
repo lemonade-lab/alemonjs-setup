@@ -16,7 +16,7 @@ import (
 	"strings"
 )
 
-const manifestName = "alx.setup.json"
+const manifestName = "alx.json"
 const maxManifestSize = 64 * 1024
 
 var validID = regexp.MustCompile(`^[a-z][a-z0-9-]{1,63}$`)

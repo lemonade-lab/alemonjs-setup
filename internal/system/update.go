@@ -467,7 +467,7 @@ func updateBundledPluginExecutors(source, executableDirectory string) (int, erro
 			continue
 		}
 		pluginDirectory := filepath.Join(executableDirectory, "plugins", parts[1])
-		manifest, manifestErr := os.Lstat(filepath.Join(pluginDirectory, "alx.setup.json"))
+		manifest, manifestErr := os.Lstat(filepath.Join(pluginDirectory, "alx.json"))
 		if manifestErr != nil || !manifest.Mode().IsRegular() || manifest.Mode()&os.ModeSymlink != 0 {
 			continue
 		}

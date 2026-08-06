@@ -55,7 +55,7 @@ jobs:
           mkdir -p "bundle/plugins/network-firewall/dist" release
           CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build -trimpath -ldflags "-s -w -X main.Version=${GITHUB_REF_NAME}" -o "bundle/${{ matrix.binary }}" .
           CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build -trimpath -ldflags "-s -w" -o "bundle/plugins/network-firewall/dist/${{ matrix.plugin_binary }}" ./plugins/network-firewall/runner
-          cp plugins/network-firewall/alx.setup.json "bundle/plugins/network-firewall/"
+          cp plugins/network-firewall/alx.json "bundle/plugins/network-firewall/"
           (cd bundle && zip -r "../release/${{ matrix.bundle }}" .)
           (cd release && sha256sum "${{ matrix.bundle }}" > "${{ matrix.bundle }}.sha256")
       - uses: actions/upload-artifact@v4
