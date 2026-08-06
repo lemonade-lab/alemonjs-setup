@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -19,15 +20,60 @@ type CloneTarget struct {
 }
 
 func cloneRepositoryURL(repository string) (*url.URL, string, error) {
-	parsed, err := url.Parse(strings.TrimSpace(repository))
-	if err != nil || parsed.Scheme != "https" || (parsed.Host != "github.com" && parsed.Host != "gitee.com") {
-		return nil, "", errors.New("请填写 GitHub 或 Gitee 的 HTTPS 仓库地址")
+	value := strings.TrimSpace(repository)
+	if match := regexp.MustCompile(`^git@(github\.com|gitee\.com):([^/]+)/([^/]+?)(?:\.git)?$`).FindStringSubmatch(value); len(match) == 4 {
+		name := strings.TrimSuffix(match[3], ".git")
+		return &url.URL{Scheme: "ssh", Host: match[1], Path: "/" + match[2] + "/" + name}, name, nil
+	}
+	parsed, err := url.Parse(value)
+	if err != nil || (parsed.Scheme != "https" && parsed.Scheme != "ssh") || (parsed.Host != "github.com" && parsed.Host != "gitee.com") {
+		return nil, "", errors.New("请填写完整的 GitHub 或 Gitee 仓库地址")
 	}
 	parts := strings.Split(strings.Trim(strings.TrimSuffix(parsed.Path, ".git"), "/"), "/")
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
 		return nil, "", errors.New("仓库地址应为 https://github.com/组织/仓库")
 	}
 	return parsed, parts[1], nil
+}
+
+// CloneBranches silently reads remote heads for a completed repository URL.
+// It is read-only and does not create any local directory.
+func CloneBranches(repository string) ([]string, string, error) {
+	parsed, _, err := cloneRepositoryURL(repository)
+	if err != nil {
+		return nil, "", err
+	}
+	remote := strings.TrimSpace(repository)
+	if parsed.Scheme == "ssh" && strings.HasPrefix(remote, "git@") {
+		// Keep the scp-style SSH URL exactly as entered.
+	} else if parsed.Scheme == "ssh" {
+		remote = parsed.String()
+	}
+	output, err := run(os.TempDir(), "git", "ls-remote", "--heads", remote)
+	if err != nil {
+		return nil, "", fmt.Errorf("无法读取远程分支：%w", err)
+	}
+	branches, defaultBranch := []string{}, ""
+	for _, line := range strings.Split(output, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 2 && strings.HasPrefix(fields[1], "refs/heads/") {
+			branches = append(branches, strings.TrimPrefix(fields[1], "refs/heads/"))
+		}
+	}
+	sort.Strings(branches)
+	if head, err := run(os.TempDir(), "git", "ls-remote", "--symref", remote, "HEAD"); err == nil {
+		for _, line := range strings.Split(head, "\n") {
+			fields := strings.Fields(line)
+			if len(fields) >= 2 && fields[0] == "ref:" && fields[len(fields)-1] == "HEAD" {
+				defaultBranch = strings.TrimPrefix(fields[1], "refs/heads/")
+				break
+			}
+		}
+	}
+	if defaultBranch == "" && len(branches) > 0 {
+		defaultBranch = branches[0]
+	}
+	return branches, defaultBranch, nil
 }
 
 func CloneDestination(destination, repository, name string) (CloneTarget, error) {
@@ -69,7 +115,10 @@ func CloneRepository(destination, repository, branch, name, mirror string) (Resu
 	if target.Exists {
 		return Result{}, fmt.Errorf("目标目录 %s 已存在", filepath.Base(target.Path))
 	}
-	remote := parsed.String()
+	remote := strings.TrimSpace(repository)
+	if parsed.Scheme == "https" {
+		remote = parsed.String()
+	}
 	switch mirror {
 	case "", "official":
 	case "gh-proxy":

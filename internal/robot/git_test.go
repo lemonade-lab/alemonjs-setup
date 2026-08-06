@@ -133,4 +133,24 @@ func TestGitWorkspaceListsFetchedRemoteBranches(t *testing.T) {
 	if !found {
 		t.Fatalf("remote branches = %#v", status.RemoteBranches)
 	}
+	if _, err := gitRun(root, "branch", "-D", "feature/remote"); err != nil {
+		t.Fatal(err)
+	}
+	// Git publishing uses the same fetched refs, but presents their short
+	// branch name in the source selector rather than an origin/ prefix.
+	sources := sourceBranches(root)
+	found = false
+	for _, branch := range sources {
+		if branch.Name == "feature/remote" && len(branch.Commits) > 0 {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("publish source branches = %#v", sources)
+	}
+	ref, err := sourceBranchRef(root, "feature/remote")
+	if err != nil || ref != "refs/remotes/origin/feature/remote" {
+		t.Fatalf("remote source ref = %q, %v", ref, err)
+	}
 }

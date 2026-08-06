@@ -23,7 +23,7 @@ jobs:
       - run: corepack enable
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.21.x'
+          go-version: '1.23.x'
       - run: yarn install --frozen-lockfile --non-interactive
         working-directory: frontend
       - run: yarn lint && yarn build
@@ -51,7 +51,7 @@ jobs:
       - run: corepack enable
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.21.x'
+          go-version: '1.23.x'
       - run: yarn install --frozen-lockfile --non-interactive && yarn build
         working-directory: frontend
       - run: |

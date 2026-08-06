@@ -215,3 +215,52 @@ func TestRuntimeDependenciesDetectsMissingDirectPackage(t *testing.T) {
 		t.Fatalf("missing dependencies = %#v", missing)
 	}
 }
+
+func TestRuntimePreflightDoesNotTreatInstalledConnectionWithoutConfigAsMissing(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "package.json"), []byte(`{"dependencies":{"@alemonjs/onebot":"1.0.0"}}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "alemon.config.yaml"), []byte("login: onebot\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	packageFile := filepath.Join(root, "node_modules", "@alemonjs", "onebot", "package.json")
+	if err := os.MkdirAll(filepath.Dir(packageFile), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(packageFile, []byte(`{"name":"@alemonjs/onebot","version":"1.0.0"}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	preflight, err := (Manager{}).RuntimePreflight(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(preflight.Missing) != 0 {
+		t.Fatalf("installed connection should not be missing: %#v", preflight.Missing)
+	}
+	if !reflect.DeepEqual(preflight.Summary, []string{"项目依赖：完整", "登录连接：onebot", "连接包 @alemonjs/onebot：已安装，无额外配置"}) {
+		t.Fatalf("unexpected preflight summary: %#v", preflight.Summary)
+	}
+}
+
+func TestReadAlemonUpgradePlanOnlySelectsFrameworkDependencies(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "package.json"), []byte(`{
+  "dependencies": {"alemonjs": "1", "@alemonjs/onebot": "1", "koa": "1"},
+  "devDependencies": {"@alemonjs/testing": "1", "typescript": "1"},
+  "workspaces": ["packages/*"]
+}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := readAlemonUpgradePlan(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(plan.Dependencies, []string{"@alemonjs/onebot", "alemonjs"}) {
+		t.Fatalf("dependencies = %#v", plan.Dependencies)
+	}
+	if !reflect.DeepEqual(plan.DevDependencies, []string{"@alemonjs/testing"}) || !plan.Workspace {
+		t.Fatalf("plan = %#v", plan)
+	}
+}

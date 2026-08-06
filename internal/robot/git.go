@@ -142,13 +142,52 @@ func GitReleaseStatus(root string) (GitStatus, error) {
 
 func sourceBranches(root string) []GitSourceBranch {
 	items := []GitSourceBranch{}
+	seen := map[string]bool{}
 	for _, name := range gitLines(root, "for-each-ref", "--format=%(refname:short)", "refs/heads") {
 		commits := sourceCommitsAt(root, name)
 		if len(commits) > 0 {
 			items = append(items, GitSourceBranch{Name: name, Commits: commits})
+			seen[name] = true
+		}
+	}
+	for _, ref := range gitLines(root, "for-each-ref", "--format=%(refname:short)", "refs/remotes/origin") {
+		name := strings.TrimPrefix(ref, "origin/")
+		if name == "HEAD" || name == "" || seen[name] {
+			continue
+		}
+		commits := sourceCommitsAt(root, ref)
+		if len(commits) > 0 {
+			items = append(items, GitSourceBranch{Name: name, Commits: commits})
+			seen[name] = true
 		}
 	}
 	return items
+}
+
+func sourceBranchRef(root, branch string) (string, error) {
+	if _, err := gitRun(root, "show-ref", "--verify", "--quiet", "refs/heads/"+branch); err == nil {
+		return "refs/heads/" + branch, nil
+	}
+	if _, err := gitRun(root, "show-ref", "--verify", "--quiet", "refs/remotes/origin/"+branch); err == nil {
+		return "refs/remotes/origin/" + branch, nil
+	}
+	return "", errors.New("所选源码分支不存在")
+}
+
+// RefreshGitSourceBranches updates origin tracking refs only. It never
+// switches the caller's branch or merges code into the working directory.
+func RefreshGitSourceBranches(root string) (GitStatus, error) {
+	path, err := workspacePath(root)
+	if err != nil {
+		return GitStatus{}, err
+	}
+	if _, err := gitRun(path, "remote", "get-url", "origin"); err != nil {
+		return GitStatus{}, errors.New("未找到 origin 远程仓库")
+	}
+	if output, err := gitRun(path, "fetch", "--prune", "origin"); err != nil {
+		return GitStatus{}, fmt.Errorf("无法刷新远程分支：%s", output)
+	}
+	return GitReleaseStatus(path)
 }
 
 // inspectRemoteRelease reads the remote without updating local refs.  Status

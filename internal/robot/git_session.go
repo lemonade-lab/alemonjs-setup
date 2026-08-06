@@ -20,11 +20,16 @@ type GitBuildSession struct {
 	Files     []string  `json:"files"`
 	Logs      string    `json:"logs"`
 	CreatedAt time.Time `json:"createdAt"`
+	ExpiresAt time.Time `json:"expiresAt"`
 }
 type gitBuildState struct {
 	GitBuildSession
-	root     string
-	worktree string
+	root           string
+	worktree       string
+	publishing     bool
+	branchPushed   bool
+	releaseCommit  string
+	releaseVersion string
 }
 
 var gitBuildSessions = struct {
@@ -50,14 +55,15 @@ func PrepareGitBuild(root, branch, commit string) (GitBuildSession, error) {
 	if !validGitRef(branch) {
 		return GitBuildSession{}, errors.New("请选择有效的源码分支")
 	}
-	if _, err = gitRun(path, "show-ref", "--verify", "--quiet", "refs/heads/"+branch); err != nil {
-		return GitBuildSession{}, errors.New("所选源码分支不存在")
+	branchRef, err := sourceBranchRef(path, branch)
+	if err != nil {
+		return GitBuildSession{}, err
 	}
 	commit, err = gitRun(path, "rev-parse", "--verify", commit+"^{commit}")
 	if err != nil {
 		return GitBuildSession{}, errors.New("所选提交不存在")
 	}
-	if _, err = gitRun(path, "merge-base", "--is-ancestor", commit, "refs/heads/"+branch); err != nil {
+	if _, err = gitRun(path, "merge-base", "--is-ancestor", commit, branchRef); err != nil {
 		return GitBuildSession{}, errors.New("所选提交不属于源码分支")
 	}
 	worktree, err := os.MkdirTemp("", "albs-git-build-")
@@ -90,7 +96,8 @@ func PrepareGitBuild(root, branch, commit string) (GitBuildSession, error) {
 	bytes := make([]byte, 12)
 	_, _ = rand.Read(bytes)
 	id := hex.EncodeToString(bytes)
-	session := GitBuildSession{ID: id, Branch: branch, Commit: commit, Target: releaseBranchName(branch, status.RemoteBranch), Files: files, Logs: strings.TrimSpace(output), CreatedAt: time.Now()}
+	createdAt := time.Now()
+	session := GitBuildSession{ID: id, Branch: branch, Commit: commit, Target: releaseBranchName(branch, status.RemoteBranch), Files: files, Logs: strings.TrimSpace(output), CreatedAt: createdAt, ExpiresAt: createdAt.Add(30 * time.Minute)}
 	gitBuildSessions.Lock()
 	cleanupGitBuildSessions()
 	gitBuildSessions.items[id] = gitBuildState{GitBuildSession: session, root: path, worktree: worktree}
@@ -158,6 +165,14 @@ func PublishPreparedGitBuild(id, version string, artifacts []string, confirmed b
 	gitBuildSessions.Lock()
 	cleanupGitBuildSessions()
 	state, ok := gitBuildSessions.items[id]
+	if ok && state.publishing {
+		gitBuildSessions.Unlock()
+		return Result{}, errors.New("该构建会话正在发布，请等待当前操作完成")
+	}
+	if ok {
+		state.publishing = true
+		gitBuildSessions.items[id] = state
+	}
 	gitBuildSessions.Unlock()
 	if !ok {
 		return Result{}, errors.New("构建会话已过期，请重新构建")
@@ -178,11 +193,54 @@ func PublishPreparedGitBuild(id, version string, artifacts []string, confirmed b
 		seen[item] = true
 		selected = append(selected, item)
 	}
-	result, err := publishPreparedWorktree(state, version, selected, confirmed)
+	result, err := publishPreparedWorktree(&state, version, selected, confirmed)
+	gitBuildSessions.Lock()
 	if err == nil {
-		gitBuildSessions.Lock()
 		delete(gitBuildSessions.items, id)
+	} else if _, exists := gitBuildSessions.items[id]; exists {
+		state.publishing = false
+		gitBuildSessions.items[id] = state
+	}
+	gitBuildSessions.Unlock()
+	if err == nil {
+		_, _ = gitRun(state.root, "worktree", "remove", "--force", state.worktree)
+		_ = os.RemoveAll(state.worktree)
+	}
+	return result, err
+}
+
+// RetryPreparedGitTag is available only after the release branch commit was
+// accepted but the tag push failed. It never rebuilds or pushes the branch.
+func RetryPreparedGitTag(id string) (Result, error) {
+	gitBuildSessions.Lock()
+	cleanupGitBuildSessions()
+	state, ok := gitBuildSessions.items[id]
+	if !ok {
 		gitBuildSessions.Unlock()
+		return Result{}, errors.New("构建会话已过期，请重新构建")
+	}
+	if state.publishing {
+		gitBuildSessions.Unlock()
+		return Result{}, errors.New("该构建会话正在发布，请等待当前操作完成")
+	}
+	if !state.branchPushed || state.releaseCommit == "" || state.releaseVersion == "" {
+		gitBuildSessions.Unlock()
+		return Result{}, errors.New("当前会话没有可重试的标签推送")
+	}
+	state.publishing = true
+	gitBuildSessions.items[id] = state
+	gitBuildSessions.Unlock()
+
+	result, err := retryPreparedGitTag(state)
+	gitBuildSessions.Lock()
+	if err == nil {
+		delete(gitBuildSessions.items, id)
+	} else if _, exists := gitBuildSessions.items[id]; exists {
+		state.publishing = false
+		gitBuildSessions.items[id] = state
+	}
+	gitBuildSessions.Unlock()
+	if err == nil {
 		_, _ = gitRun(state.root, "worktree", "remove", "--force", state.worktree)
 		_ = os.RemoveAll(state.worktree)
 	}
@@ -191,7 +249,7 @@ func PublishPreparedGitBuild(id, version string, artifacts []string, confirmed b
 
 // publishPreparedWorktree deliberately consumes the exact worktree inspected by
 // the user. Rebuilding here would make the selected artifact list misleading.
-func publishPreparedWorktree(state gitBuildState, version string, artifacts []string, confirmed bool) (Result, error) {
+func publishPreparedWorktree(state *gitBuildState, version string, artifacts []string, confirmed bool) (Result, error) {
 	status, err := GitReleaseStatus(state.root)
 	if err != nil {
 		return Result{}, err
@@ -258,6 +316,9 @@ func publishPreparedWorktree(state gitBuildState, version string, artifacts []st
 	if output, err = gitRun(worktree, "push", "origin", "HEAD:refs/heads/"+state.Target); err != nil {
 		return Result{Path: state.root, Output: strings.Join(append(logs, output), "\n")}, errors.New(state.Target + " 分支推送失败：" + output)
 	}
+	state.releaseCommit, _ = gitRun(worktree, "rev-parse", "HEAD")
+	state.releaseVersion = version
+	state.branchPushed = true
 	if output, err = gitRun(worktree, "tag", "-a", version, "-m", "Release "+version+"\n\nSource: "+state.Branch+"@"+state.Commit); err != nil {
 		return Result{}, errors.New("release 分支已推送，但无法创建标签：" + output)
 	}
@@ -266,4 +327,24 @@ func publishPreparedWorktree(state gitBuildState, version string, artifacts []st
 	}
 	logs = append(logs, "已发布 "+version+"："+state.Target+" 分支、标签及源码映射已推送（"+state.Branch+"@"+shortGitSHA(state.Commit)+"）。")
 	return Result{Path: state.root, Output: strings.Join(logs, "\n")}, nil
+}
+
+func retryPreparedGitTag(state gitBuildState) (Result, error) {
+	worktree, err := os.MkdirTemp("", "albs-tag-retry-")
+	if err != nil {
+		return Result{}, err
+	}
+	defer os.RemoveAll(worktree)
+	if output, err := gitRun(state.root, "worktree", "add", "--detach", worktree, state.releaseCommit); err != nil {
+		return Result{}, errors.New("无法准备标签重试目录：" + output)
+	}
+	defer gitRun(state.root, "worktree", "remove", "--force", worktree)
+	if _, err := gitRun(worktree, "tag", "-a", state.releaseVersion, "-m", "Release "+state.releaseVersion+"\n\nSource: "+state.Branch+"@"+state.Commit); err != nil {
+		return Result{}, errors.New("无法创建重试标签：" + err.Error())
+	}
+	if output, err := gitRun(worktree, "push", "origin", state.releaseVersion); err != nil {
+		_, _ = gitRun(worktree, "tag", "-d", state.releaseVersion)
+		return Result{Path: state.root, Output: output}, errors.New("标签仍未推送；请检查网络或仓库写入权限后重试：" + output)
+	}
+	return Result{Path: state.root, Output: "已重试并推送标签 " + state.releaseVersion + "。release 分支没有重复提交。"}, nil
 }

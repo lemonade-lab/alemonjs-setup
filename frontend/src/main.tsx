@@ -10,7 +10,11 @@ import './styles.css'
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <Provider store={store}>
-      <AuthGate><BrowserRouter><App /></BrowserRouter></AuthGate>
+      <AuthGate>
+        <BrowserRouter>
+          <App />
+        </BrowserRouter>
+      </AuthGate>
     </Provider>
   </StrictMode>
 )

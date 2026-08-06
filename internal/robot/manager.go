@@ -2,6 +2,7 @@
 package robot
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"alemonjs-setup/internal/catalog"
 	"alemonjs-setup/internal/system"
@@ -413,9 +415,21 @@ func (m Manager) RuntimePreflight(root string) (RuntimePreflight, error) {
 			continue
 		}
 		preflight.Package = platform.pkg
+		// PackageConfig intentionally returns an error for a valid connection
+		// package that simply has no alemonjs.config declaration. That must not
+		// be reported as “not installed”: installation and optional configuration
+		// are separate facts.
+		if _, _, installedErr := installedPackageManifest(path, platform.pkg); installedErr != nil {
+			preflight.Missing = append(preflight.Missing, "连接包 "+platform.pkg+" 未安装")
+			return preflight, nil
+		}
 		definition, configErr := m.PackageConfig(root, platform.pkg)
 		if configErr != nil {
-			preflight.Missing = append(preflight.Missing, "连接包 "+platform.pkg+" 未安装或无法读取")
+			if strings.Contains(configErr.Error(), "没有声明 alemonjs.config") {
+				preflight.Summary = append(preflight.Summary, "连接包 "+platform.pkg+"：已安装，无额外配置")
+				return preflight, nil
+			}
+			preflight.Missing = append(preflight.Missing, "连接包 "+platform.pkg+" 配置无法读取")
 			return preflight, nil
 		}
 		for _, field := range definition.Fields {
@@ -476,6 +490,103 @@ func (Manager) RuntimeDependencies(root string) ([]string, error) {
 	}
 	sort.Strings(missing)
 	return missing, nil
+}
+
+type alemonUpgradePlan struct {
+	Dependencies    []string
+	DevDependencies []string
+	Workspace       bool
+}
+
+// UpgradeAlemonDependencies upgrades only the framework and its official
+// scoped packages declared directly by this robot. Business dependencies stay
+// untouched, so the one-click action is safe to use as framework maintenance.
+func (m Manager) UpgradeAlemonDependencies(root string) (Result, error) {
+	path, err := projectPath(root)
+	if err != nil {
+		return Result{}, err
+	}
+	plan, err := readAlemonUpgradePlan(path)
+	if err != nil {
+		return Result{}, err
+	}
+	packages := append(append([]string{}, plan.Dependencies...), plan.DevDependencies...)
+	if len(packages) == 0 {
+		return Result{Path: path, Output: "package.json 中未声明 alemonjs 或 @alemonjs/ 依赖，无需升级。"}, nil
+	}
+	manager := projectPackageManager(path)
+	latest := func(items []string) []string {
+		result := make([]string, 0, len(items))
+		for _, item := range items {
+			result = append(result, item+"@latest")
+		}
+		return result
+	}
+	var outputs []string
+	runUpgrade := func(args ...string) error {
+		output, runErr := runNamedPackageManager(path, manager, args...)
+		if output != "" {
+			outputs = append(outputs, output)
+		}
+		return runErr
+	}
+	switch manager {
+	case "npm":
+		if len(plan.Dependencies) > 0 {
+			if err := runUpgrade(append([]string{"install", "--save"}, latest(plan.Dependencies)...)...); err != nil {
+				return Result{Path: path, Output: strings.Join(outputs, "\n")}, err
+			}
+		}
+		if len(plan.DevDependencies) > 0 {
+			if err := runUpgrade(append([]string{"install", "--save-dev"}, latest(plan.DevDependencies)...)...); err != nil {
+				return Result{Path: path, Output: strings.Join(outputs, "\n")}, err
+			}
+		}
+	default:
+		args := []string{"upgrade", "--latest"}
+		if manager == "pnpm" {
+			args[0] = "update"
+		}
+		if plan.Workspace {
+			if manager == "pnpm" {
+				args = append(args, "-w")
+			}
+		}
+		if err := runUpgrade(append(args, packages...)...); err != nil {
+			return Result{Path: path, Output: strings.Join(outputs, "\n")}, err
+		}
+	}
+	return Result{Path: path, Output: "已升级 AlemonJS 依赖：" + strings.Join(packages, "、") + ".\n" + strings.Join(outputs, "\n")}, nil
+}
+
+func readAlemonUpgradePlan(root string) (alemonUpgradePlan, error) {
+	data, err := os.ReadFile(filepath.Join(root, "package.json"))
+	if err != nil {
+		return alemonUpgradePlan{}, errors.New("无法读取 package.json")
+	}
+	var manifest struct {
+		Dependencies    map[string]string `json:"dependencies"`
+		DevDependencies map[string]string `json:"devDependencies"`
+		Workspaces      json.RawMessage   `json:"workspaces"`
+	}
+	if json.Unmarshal(data, &manifest) != nil {
+		return alemonUpgradePlan{}, errors.New("package.json 格式无法识别")
+	}
+	filter := func(values map[string]string) []string {
+		result := []string{}
+		for name := range values {
+			if name == "alemonjs" || strings.HasPrefix(name, "@alemonjs/") {
+				result = append(result, name)
+			}
+		}
+		sort.Strings(result)
+		return result
+	}
+	return alemonUpgradePlan{
+		Dependencies:    filter(manifest.Dependencies),
+		DevDependencies: filter(manifest.DevDependencies),
+		Workspace:       len(manifest.Workspaces) > 0 && string(manifest.Workspaces) != "null",
+	}, nil
 }
 
 // Console returns a fixed, read-only project snapshot. There is deliberately
@@ -771,6 +882,8 @@ func (m Manager) Run(root, action, message, packageName, version, tag, token str
 		return Result{Path: root, Output: strings.Join(checks, "\n")}, nil
 	case "install":
 		name, args = manager, []string{"install"}
+	case "upgrade-alemon":
+		return (Manager{}).UpgradeAlemonDependencies(root)
 	case "build":
 		if err := fixLegacyLvyScript(root); err != nil {
 			return Result{}, err
@@ -1222,7 +1335,10 @@ func nodeVersionGreater(left, right string) bool {
 }
 
 func runWithEnv(root string, values map[string]string, name string, args ...string) (string, error) {
-	cmd := exec.Command(name, args...)
+	timeout := commandTimeout(name, args...)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = root
 	cmd.Env = os.Environ()
 	for key, value := range values {
@@ -1240,6 +1356,9 @@ func runWithEnv(root string, values map[string]string, name string, args ...stri
 	}
 	output, err := cmd.CombinedOutput()
 	text := strings.TrimSpace(string(output))
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return text, fmt.Errorf("操作超时（%s）；请检查网络、登录状态或代理后重试", timeout.Round(time.Second))
+	}
 	if err != nil {
 		if permissionError(err) || permissionError(errors.New(text)) {
 			return text, permissionAdvice("执行 " + filepath.Base(name))
@@ -1253,6 +1372,20 @@ func runWithEnv(root string, values map[string]string, name string, args ...stri
 		return text, fmt.Errorf("执行 %s 失败：%w", strings.Join(append([]string{filepath.Base(name)}, args...), " "), err)
 	}
 	return text, nil
+}
+
+func commandTimeout(name string, args ...string) time.Duration {
+	base := strings.ToLower(filepath.Base(name))
+	if base == "git" && len(args) > 0 {
+		switch args[0] {
+		case "clone", "fetch", "pull", "push", "ls-remote":
+			return 10 * time.Minute
+		}
+	}
+	if base == "npm" || base == "yarn" || base == "pnpm" || base == "npx" {
+		return 20 * time.Minute
+	}
+	return 2 * time.Minute
 }
 
 func commandNotFound(err error, output string) bool {

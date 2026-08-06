@@ -191,11 +191,14 @@ func NewServerWithAuth(version string, staticFiles fs.FS, identity *access.Manag
 	mux.HandleFunc("/api/v1/robot/git", s.robotGitHandler)
 	mux.HandleFunc("/api/v1/robot/git-clone", s.robotGitCloneHandler)
 	mux.HandleFunc("/api/v1/robot/git-clone/check", s.robotGitCloneCheckHandler)
+	mux.HandleFunc("/api/v1/robot/git-clone/branches", s.robotGitCloneBranchesHandler)
 	mux.HandleFunc("/api/v1/publish/npm/status", s.npmPublishStatusHandler)
 	mux.HandleFunc("/api/v1/publish/npm/pack", s.npmPackPreviewHandler)
 	mux.HandleFunc("/api/v1/publish/git/status", s.gitPublishStatusHandler)
+	mux.HandleFunc("/api/v1/publish/git/refresh-branches", s.gitPublishRefreshBranchesHandler)
 	mux.HandleFunc("/api/v1/publish/git/prepare", s.gitBuildPrepareHandler)
 	mux.HandleFunc("/api/v1/publish/git/publish", s.gitBuildPublishHandler)
+	mux.HandleFunc("/api/v1/publish/git/retry-tag", s.gitBuildRetryTagHandler)
 	mux.Handle("/", s.spa())
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.New()
@@ -333,6 +336,26 @@ func (s *server) gitPublishStatusHandler(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, status)
 }
 
+func (s *server) gitPublishRefreshBranchesHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "该操作暂不支持。")
+		return
+	}
+	var input struct {
+		Root string `json:"root"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		writeError(w, http.StatusBadRequest, "请求内容无法识别。")
+		return
+	}
+	status, err := robot.RefreshGitSourceBranches(input.Root)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, status)
+}
+
 func (s *server) gitBuildPrepareHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "该操作暂不支持。")
@@ -371,6 +394,26 @@ func (s *server) gitBuildPublishHandler(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	result, err := robot.PublishPreparedGitBuild(input.SessionID, input.Version, input.Artifacts, input.Confirm)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *server) gitBuildRetryTagHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "该操作暂不支持。")
+		return
+	}
+	var input struct {
+		SessionID string `json:"sessionId"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		writeError(w, http.StatusBadRequest, "请求内容无法识别。")
+		return
+	}
+	result, err := robot.RetryPreparedGitTag(input.SessionID)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -1919,6 +1962,19 @@ func (s *server) robotGitCloneCheckHandler(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	writeJSON(w, http.StatusOK, target)
+}
+
+func (s *server) robotGitCloneBranchesHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "该操作暂不支持。")
+		return
+	}
+	branches, defaultBranch, err := robot.CloneBranches(r.URL.Query().Get("repository"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"branches": branches, "defaultBranch": defaultBranch})
 }
 
 func (s *server) projectsHandler(w http.ResponseWriter, r *http.Request) {

@@ -1,5 +1,8 @@
-@import "tailwindcss";
-@import "./legacy.scss";
+@import 'tailwindcss';
+@import './legacy.scss';
+
+/* The application theme is controlled by ThemeToggle, not by the OS setting. */
+@custom-variant dark (&:where([data-theme='dark'], [data-theme='dark'] *));
 
 @theme {
   --color-brand-50: var(--theme-brand-50);
@@ -30,6 +33,29 @@
   @apply inline-flex size-8 items-center justify-center rounded-control border border-slate-300 bg-white text-slate-600 transition hover:border-slate-400 hover:bg-slate-50 hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-50;
 }
 
+@utility danger-button {
+  @apply inline-flex min-h-9 items-center justify-center rounded-control border border-red-700 bg-red-700 px-3.5 text-xs font-semibold text-white transition hover:border-red-800 hover:bg-red-800 disabled:cursor-not-allowed disabled:opacity-50;
+}
+
+.ui-tabs { display: flex; gap: 0.25rem; min-width: 0; }
+.ui-tab { align-items: center; background: transparent; border: 0; color: var(--theme-ink-500); cursor: pointer; display: inline-flex; font: inherit; font-size: 0.75rem; font-weight: 600; gap: 0.375rem; justify-content: center; line-height: 1.25rem; min-height: 2rem; padding: 0.375rem 0.625rem; transition: background-color 0.16s, border-color 0.16s, color 0.16s; }
+.ui-tab:hover:not(:disabled) { color: var(--theme-ink-950); }
+.ui-tab:focus-visible { outline: 2px solid #14b8a6; outline-offset: 2px; }
+.ui-tab:disabled { cursor: not-allowed; opacity: 0.5; }
+.ui-tab small { color: inherit; font-size: 0.65rem; font-weight: 600; opacity: 0.72; }
+.ui-tabs--underline { border-bottom: 1px solid #e2e8f0; }
+.ui-tabs--underline .ui-tab { border-bottom: 2px solid transparent; margin-bottom: -1px; }
+.ui-tabs--underline .ui-tab--active { border-bottom-color: #0f766e; color: #0f766e; }
+.ui-tabs--segmented { background: var(--theme-brand-50); border: 1px solid var(--theme-brand-200); border-radius: 0.5rem; padding: 0.1875rem; }
+.ui-tabs--segmented .ui-tab { border-radius: 0.3125rem; flex: 1 1 0; }
+.ui-tabs--segmented .ui-tab--active { background: var(--theme-brand-100); box-shadow: 0 1px 2px rgb(15 23 42 / 0.12); color: var(--theme-ink-950); }
+.ui-tabs--pill .ui-tab { border-radius: 0.375rem; }
+.ui-tabs--pill .ui-tab:hover:not(:disabled) { background: var(--theme-brand-50); }
+.ui-tabs--pill .ui-tab--active { background: var(--theme-brand-50); color: #0f766e; }
+[data-theme='dark'] .ui-tabs--underline { border-color: #3f3f46; }
+[data-theme='dark'] .ui-tabs--underline .ui-tab--active { border-bottom-color: #2dd4bf; color: #5eead4; }
+[data-theme='dark'] .ui-tabs--pill .ui-tab--active { color: #5eead4; }
+
 @utility panel-surface {
   @apply rounded-panel border border-slate-200 bg-white shadow-[0_10px_24px_rgb(15_23_42/0.05)];
 }
@@ -46,7 +72,12 @@
     --theme-ink-500: #73737a;
     color: #171719;
     background: #f7f7f8;
-    font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font-family:
+      Inter,
+      -apple-system,
+      BlinkMacSystemFont,
+      'Segoe UI',
+      sans-serif;
   }
 }
 
@@ -91,7 +122,7 @@ body {
     border-color: #3f3f46;
     background: #27272a;
     color: #f4f4f5;
-    box-shadow: 0 18px 48px rgb(0 0 0 / .28);
+    box-shadow: 0 18px 48px rgb(0 0 0 / 0.28);
   }
 
   .guide-bar,
@@ -135,7 +166,7 @@ body {
   }
 }
 
-[data-theme="dark"] {
+[data-theme='dark'] {
   --theme-brand-50: #27272a;
   --theme-brand-100: #3f3f46;
   --theme-brand-200: #52525b;
@@ -147,213 +178,533 @@ body {
   color-scheme: dark;
 }
 
-[data-theme="dark"] body,
-[data-theme="dark"] .app-shell,
-[data-theme="dark"] .dashboard-shell,
-[data-theme="dark"] .guide-shell {
+[data-theme='dark'] body,
+[data-theme='dark'] .app-shell,
+[data-theme='dark'] .dashboard-shell,
+[data-theme='dark'] .guide-shell {
   background: #18181b;
   color: #f4f4f5;
 }
 
-[data-theme="dark"] .guide-window,
-[data-theme="dark"] .dashboard-window,
-[data-theme="dark"] .panel-surface,
-[data-theme="dark"] .control-card,
-[data-theme="dark"] .ai-chat-page,
-[data-theme="dark"] .ai-workspace,
-[data-theme="dark"] .environment-modal,
-[data-theme="dark"] .git-workspace-dialog {
+[data-theme='dark'] .guide-window,
+[data-theme='dark'] .dashboard-window,
+[data-theme='dark'] .panel-surface,
+[data-theme='dark'] .control-card,
+[data-theme='dark'] .ai-chat-page,
+[data-theme='dark'] .ai-workspace,
+[data-theme='dark'] .environment-modal,
+[data-theme='dark'] .git-workspace-dialog {
   border-color: #3f3f46;
   background: #27272a;
   color: #f4f4f5;
-  box-shadow: 0 18px 48px rgb(0 0 0 / .28);
+  box-shadow: 0 18px 48px rgb(0 0 0 / 0.28);
 }
 
-[data-theme="dark"] .guide-bar,
-[data-theme="dark"] .dashboard-bar,
-[data-theme="dark"] .dashboard-window > header,
-[data-theme="dark"] .ai-chat-page > header,
-[data-theme="dark"] .ai-workspace > header,
-[data-theme="dark"] .ai-workspace main > footer {
+[data-theme='dark'] .guide-bar,
+[data-theme='dark'] .dashboard-bar,
+[data-theme='dark'] .dashboard-window > header,
+[data-theme='dark'] .ai-chat-page > header,
+[data-theme='dark'] .ai-workspace > header,
+[data-theme='dark'] .ai-workspace main > footer {
   border-color: #3f3f46;
   background: #27272a;
 }
 
-[data-theme="dark"] input,
-[data-theme="dark"] select,
-[data-theme="dark"] textarea,
-[data-theme="dark"] .secondary-button,
-[data-theme="dark"] .icon-button {
+[data-theme='dark'] input,
+[data-theme='dark'] select,
+[data-theme='dark'] textarea,
+[data-theme='dark'] .secondary-button,
+[data-theme='dark'] .icon-button {
   border-color: #52525b;
   background: #18181b;
   color: #f4f4f5;
 }
 
-[data-theme="dark"] .primary-button { color: #18181b; }
+[data-theme='dark'] .primary-button {
+  color: #18181b;
+}
 
 /* Content surfaces and navigation rails share the same dark-mode contract. */
-[data-theme="dark"] :is(.wizard, .wizard-page, .workspace-content, .dashboard-detail,
-  .feature-catalog, .control-dock, .control-card, .control-list, .control-sublist,
-  .project-rail, .project-directory, .project-list, .environment-panel,
-  .environment-check-list, .config-form, .config-section, .manifest-panel,
-  .manifest-fields, .npm-publish-panel, .npm-auth-card, .publish-source,
-  .publish-status-line, .publish-scripts, .pack-preview, .pack-tree-frame,
-  .run-panel, .git-release-panel, .backpack-panel, .backpack-manager,
-  .backpack-config-panel, .release-workflow, .release-details, .release-history,
-  .setup-plugin-workspace, .robot-overview, .robot-status) {
+[data-theme='dark']
+  :is(
+    .wizard,
+    .wizard-page,
+    .workspace-content,
+    .dashboard-detail,
+    .feature-catalog,
+    .control-dock,
+    .control-card,
+    .control-list,
+    .control-sublist,
+    .project-rail,
+    .project-directory,
+    .project-list,
+    .environment-panel,
+    .environment-check-list,
+    .config-form,
+    .config-section,
+    .manifest-panel,
+    .manifest-fields,
+    .npm-publish-panel,
+    .npm-auth-card,
+    .publish-source,
+    .publish-status-line,
+    .publish-scripts,
+    .pack-preview,
+    .pack-tree-frame,
+    .run-panel,
+    .git-release-panel,
+    .backpack-panel,
+    .backpack-manager,
+    .backpack-config-panel,
+    .release-workflow,
+    .release-details,
+    .release-history,
+    .setup-plugin-workspace,
+    .robot-overview,
+    .robot-status
+  ) {
   border-color: #3f3f46;
   background-color: #27272a;
   color: #f4f4f5;
 }
 
-[data-theme="dark"] .project-rail {
+[data-theme='dark'] .project-rail {
   border-color: #3f3f46;
   background: #1f1f22;
 }
 
-[data-theme="dark"] .control-dock .control-card,
-[data-theme="dark"] .control-dock .robot-webview-shortcuts > button {
+[data-theme='dark'] .control-dock .control-card,
+[data-theme='dark'] .control-dock .robot-webview-shortcuts > button {
   border-color: #3f3f46;
   background: #27272a;
   color: #f4f4f5;
 }
 
-[data-theme="dark"] .control-dock :is(header, footer) {
+[data-theme='dark'] .control-dock :is(header, footer) {
   border-color: #3f3f46;
 }
 
-[data-theme="dark"] .control-dock :is(button:not(.primary-button):not(.secondary-button):hover) {
+[data-theme='dark']
+  .control-dock
+  :is(button:not(.primary-button):not(.secondary-button):hover) {
   background: #3f3f46;
 }
 
-[data-theme="dark"] .runtime-overview > :is(header, section) {
+[data-theme='dark'] .runtime-overview > :is(header, section) {
   border-color: #3f3f46;
 }
 
-[data-theme="dark"] .runtime-overview > section > header,
-[data-theme="dark"] .runtime-overview > section > div {
+[data-theme='dark'] .runtime-overview > section > header,
+[data-theme='dark'] .runtime-overview > section > div {
   background: #27272a;
 }
 
-[data-theme="dark"] :is(.project-config-panel, .file-editor) {
+[data-theme='dark'] :is(.project-config-panel, .file-editor) {
   border-color: #3f3f46;
   background: #27272a;
   color: #f4f4f5;
 }
 
-[data-theme="dark"] .file-editor textarea,
-[data-theme="dark"] .project-config-panel :is(input, select) {
+[data-theme='dark'] .file-editor textarea,
+[data-theme='dark'] .project-config-panel :is(input, select) {
   border-color: #52525b;
   background: #18181b;
   color: #f4f4f5;
 }
 
-[data-theme="dark"] .editor-mode {
+[data-theme='dark'] .editor-mode {
   background: #18181b;
 }
 
-[data-theme="dark"] :is(.wizard, .wizard-page, .workspace-content, .dashboard-detail,
-  .feature-catalog, .control-dock, .control-card, .control-list, .control-sublist,
-  .project-rail, .project-directory, .project-list, .environment-panel,
-  .environment-check-list, .config-form, .config-section, .manifest-panel,
-  .manifest-fields, .npm-publish-panel, .publish-source, .publish-status-line,
-  .publish-scripts, .pack-preview, .pack-tree-frame, .run-panel,
-  .git-release-panel, .backpack-panel, .backpack-manager, .backpack-config-panel,
-  .release-workflow, .release-details, .release-history, .setup-plugin-workspace,
-  .robot-overview, .robot-status) * {
+[data-theme='dark']
+  :is(
+    .wizard,
+    .wizard-page,
+    .workspace-content,
+    .dashboard-detail,
+    .feature-catalog,
+    .control-dock,
+    .control-card,
+    .control-list,
+    .control-sublist,
+    .project-rail,
+    .project-directory,
+    .project-list,
+    .environment-panel,
+    .environment-check-list,
+    .config-form,
+    .config-section,
+    .manifest-panel,
+    .manifest-fields,
+    .npm-publish-panel,
+    .publish-source,
+    .publish-status-line,
+    .publish-scripts,
+    .pack-preview,
+    .pack-tree-frame,
+    .run-panel,
+    .git-release-panel,
+    .backpack-panel,
+    .backpack-manager,
+    .backpack-config-panel,
+    .release-workflow,
+    .release-details,
+    .release-history,
+    .setup-plugin-workspace,
+    .robot-overview,
+    .robot-status
+  )
+  * {
   border-color: #3f3f46;
 }
 
-[data-theme="dark"] :is(.workspace-content, .dashboard-detail, .feature-catalog,
-  .control-dock, .project-rail, .project-directory, .environment-panel,
-  .config-form, .manifest-panel, .npm-publish-panel, .run-panel,
-  .git-release-panel, .backpack-manager, .release-workflow) :is(h1, h2, h3, h4,
-  strong, b, label, summary, a, span, p, small) {
+[data-theme='dark']
+  :is(
+    .workspace-content,
+    .dashboard-detail,
+    .feature-catalog,
+    .control-dock,
+    .project-rail,
+    .project-directory,
+    .environment-panel,
+    .config-form,
+    .manifest-panel,
+    .npm-publish-panel,
+    .run-panel,
+    .git-release-panel,
+    .backpack-manager,
+    .release-workflow
+  )
+  :is(h1, h2, h3, h4, strong, b, label, summary, a, span, p, small) {
   color: #e4e4e7;
 }
 
-[data-theme="dark"] :is(.control-list button, .control-sublist button,
-  .project-list button, .project-directory button, .feature-catalog button,
-  .backpack-items button, .robot-tabs button, .release-mode-cards button) {
+[data-theme='dark']
+  :is(
+    .control-list button,
+    .control-sublist button,
+    .project-list button,
+    .project-directory button,
+    .feature-catalog button,
+    .backpack-items button,
+    .robot-tabs button,
+    .release-mode-cards button
+  ) {
   color: #d4d4d8;
   background-color: transparent;
 }
 
-[data-theme="dark"] :is(.control-list button:hover, .control-sublist button:hover,
-  .project-list button:hover, .project-directory button:hover,
-  .feature-catalog button:hover, .backpack-items button:hover,
-  .robot-tabs button:hover, .release-mode-cards button:hover) {
+[data-theme='dark']
+  :is(
+    .control-list button:hover,
+    .control-sublist button:hover,
+    .project-list button:hover,
+    .project-directory button:hover,
+    .feature-catalog button:hover,
+    .backpack-items button:hover,
+    .robot-tabs button:hover,
+    .release-mode-cards button:hover
+  ) {
   background-color: #3f3f46;
 }
 
-[data-theme="dark"] :is(.config-note, .config-summary, .publish-issues,
-  .release-blockers, .release-build-note, .environment-panel-state,
-  .run-console-note, .backpack-manager-note, .empty-workspace) {
+[data-theme='dark']
+  :is(
+    .config-note,
+    .config-summary,
+    .publish-issues,
+    .release-blockers,
+    .release-build-note,
+    .environment-panel-state,
+    .run-console-note,
+    .backpack-manager-note,
+    .empty-workspace
+  ) {
   border-color: #52525b;
   background-color: #18181b;
   color: #a1a1aa;
 }
 
-[data-theme="dark"] :is(.robot-output, .git-workspace-output, .readonly-console pre,
-  .operation-tasks-popover pre) {
+[data-theme='dark']
+  :is(
+    .robot-output,
+    .git-workspace-output,
+    .readonly-console pre,
+    .operation-tasks-popover pre
+  ) {
   background-color: #09090b;
   color: #d4d4d8;
 }
 
-[data-theme="dark"] ::-webkit-scrollbar-thumb {
+[data-theme='dark'] ::-webkit-scrollbar-thumb {
   background: #52525b;
 }
 
-[data-theme="dark"] ::-webkit-scrollbar-thumb:hover {
+[data-theme='dark'] ::-webkit-scrollbar-thumb:hover {
   background: #71717a;
 }
 
-[data-theme="dark"] :is(.git-tab-panel, .git-tab-heading, .git-tab-empty,
-  .git-history-list, .git-row-actions, .git-workspace-secondary,
-  .setup-update-popover, .operation-tasks-popover, .mcp-popover,
-  .auth-popover, .ssh-popover, .directory-picker, .directory-picker-toolbar,
-  .directory-picker-list, .directory-choice, .robot-plugin-webview,
-  .robot-plugin-webview-frame, .robot-plugin-webview-instance,
-  .robot-plugin-webview-tabs, .package-config-panel, .package-config-fields,
-  .project-config-panel, .official-config-form, .env-config-form) {
+[data-theme='dark']
+  :is(
+    .git-tab-panel,
+    .git-tab-heading,
+    .git-tab-empty,
+    .git-history-list,
+    .git-row-actions,
+    .git-workspace-secondary,
+    .setup-update-popover,
+    .operation-tasks-popover,
+    .mcp-popover,
+    .auth-popover,
+    .ssh-popover,
+    .directory-picker,
+    .directory-picker-toolbar,
+    .directory-picker-list,
+    .directory-choice,
+    .robot-plugin-webview,
+    .robot-plugin-webview-frame,
+    .robot-plugin-webview-instance,
+    .robot-plugin-webview-tabs,
+    .package-config-panel,
+    .package-config-fields,
+    .project-config-panel,
+    .official-config-form,
+    .env-config-form
+  ) {
   border-color: #3f3f46;
   background-color: #27272a;
   color: #f4f4f5;
 }
 
-[data-theme="dark"] :is(.git-tab-panel, .git-tab-heading, .git-tab-empty,
-  .git-history-list, .git-row-actions, .git-workspace-secondary,
-  .setup-update-popover, .operation-tasks-popover, .mcp-popover,
-  .auth-popover, .ssh-popover, .directory-picker, .directory-picker-toolbar,
-  .directory-picker-list, .directory-choice, .robot-plugin-webview,
-  .robot-plugin-webview-frame, .robot-plugin-webview-instance,
-  .robot-plugin-webview-tabs, .package-config-panel, .package-config-fields,
-  .project-config-panel, .official-config-form, .env-config-form) :is(h1, h2,
-  h3, h4, strong, b, label, summary, a, span, p, small) {
+[data-theme='dark']
+  :is(
+    .git-tab-panel,
+    .git-tab-heading,
+    .git-tab-empty,
+    .git-history-list,
+    .git-row-actions,
+    .git-workspace-secondary,
+    .setup-update-popover,
+    .operation-tasks-popover,
+    .mcp-popover,
+    .auth-popover,
+    .ssh-popover,
+    .directory-picker,
+    .directory-picker-toolbar,
+    .directory-picker-list,
+    .directory-choice,
+    .robot-plugin-webview,
+    .robot-plugin-webview-frame,
+    .robot-plugin-webview-instance,
+    .robot-plugin-webview-tabs,
+    .package-config-panel,
+    .package-config-fields,
+    .project-config-panel,
+    .official-config-form,
+    .env-config-form
+  )
+  :is(h1, h2, h3, h4, strong, b, label, summary, a, span, p, small) {
   color: #e4e4e7;
 }
 
-[data-theme="dark"] :is(.git-tab-panel input, .git-tab-panel select,
-  .git-workspace-actions input, .setup-update-popover input,
-  .directory-picker input, .package-config-fields input,
-  .package-config-fields select, .project-config-panel input,
-  .project-config-panel select, .official-config-form input,
-  .env-config-form input, .env-config-form select) {
+[data-theme='dark']
+  :is(
+    .git-tab-panel input,
+    .git-tab-panel select,
+    .git-workspace-actions input,
+    .setup-update-popover input,
+    .directory-picker input,
+    .package-config-fields input,
+    .package-config-fields select,
+    .project-config-panel input,
+    .project-config-panel select,
+    .official-config-form input,
+    .env-config-form input,
+    .env-config-form select
+  ) {
   border-color: #52525b;
   background: #18181b;
   color: #f4f4f5;
 }
 
-[data-theme="dark"] :is(.git-tab-panel button, .git-history-list button,
-  .git-row-actions button, .directory-picker-list button,
-  .setup-update-popover button, .operation-tasks-popover button,
-  .auth-popover button, .ssh-popover button) {
+[data-theme='dark'] .directory-picker .finder-sidebar,
+[data-theme='dark'] .directory-picker .git-clone-access {
+  border-color: #3f3f46;
+  background: #1f1f22;
+}
+
+[data-theme='dark']
+  .directory-picker
+  :is(input, select, button:not(.primary-button):not(.secondary-button)) {
+  border-color: #52525b;
+  background: #18181b;
+  color: #f4f4f5;
+}
+
+[data-theme='dark'] .directory-picker button:hover {
+  background: #3f3f46;
+}
+
+[data-theme='dark'] .backpack-panel article,
+[data-theme='dark'] .backpack-panel .package-config-panel {
+  border-color: #3f3f46;
+  background: #27272a;
+  color: #f4f4f5;
+}
+
+[data-theme='dark']
+  :is(
+    .git-tab-panel button,
+    .git-history-list button,
+    .git-row-actions button,
+    .directory-picker-list button,
+    .setup-update-popover button,
+    .operation-tasks-popover button,
+    .auth-popover button,
+    .ssh-popover button
+  ) {
   color: #d4d4d8;
 }
 
-[data-theme="dark"] :is(.git-tab-panel button:hover, .git-history-list button:hover,
-  .git-row-actions button:hover, .directory-picker-list button:hover,
-  .setup-update-popover button:hover, .operation-tasks-popover button:hover,
-  .auth-popover button:hover, .ssh-popover button:hover) {
+[data-theme='dark']
+  :is(
+    .git-tab-panel button:hover,
+    .git-history-list button:hover,
+    .git-row-actions button:hover,
+    .directory-picker-list button:hover,
+    .setup-update-popover button:hover,
+    .operation-tasks-popover button:hover,
+    .auth-popover button:hover,
+    .ssh-popover button:hover
+  ) {
   background: #3f3f46;
+}
+
+/*
+ * A number of the workspace controls are composed with Tailwind's concrete
+ * slate/white utilities instead of the shared surface classes above.  Map
+ * those utilities to the theme palette here so a newly added control cannot
+ * accidentally remain a light island when the user explicitly selects dark
+ * mode.  The selector is deliberately scoped to the app shell: status and
+ * semantic colours (teal, amber, rose, etc.) keep their own contrast rules.
+ */
+[data-theme='dark'] .app-shell :is(.bg-white, .bg-slate-50, .bg-slate-100) {
+  background-color: #27272a !important;
+}
+
+[data-theme='dark'] .app-shell :is(.bg-slate-200, .hover\:bg-slate-100:hover) {
+  background-color: #3f3f46 !important;
+}
+
+[data-theme='dark'] .app-shell :is(.border-slate-50, .border-slate-100, .border-slate-200) {
+  border-color: #3f3f46 !important;
+}
+
+[data-theme='dark'] .app-shell :is(.border-slate-300, .border-slate-400) {
+  border-color: #52525b !important;
+}
+
+[data-theme='dark'] .app-shell :is(.text-slate-900, .text-slate-800, .text-slate-700) {
+  color: #f4f4f5 !important;
+}
+
+[data-theme='dark'] .app-shell :is(.text-slate-600, .text-slate-500) {
+  color: #d4d4d8 !important;
+}
+
+[data-theme='dark'] .app-shell :is(.text-slate-400, .placeholder\:text-slate-400::placeholder) {
+  color: #a1a1aa !important;
+}
+
+[data-theme='dark'] .app-shell :is(.hover\:bg-slate-50:hover, .hover\:bg-slate-100:hover) {
+  background-color: #3f3f46 !important;
+}
+
+[data-theme='dark'] .app-shell :is(.hover\:text-slate-700:hover, .hover\:text-slate-800:hover, .hover\:text-slate-900:hover) {
+  color: #ffffff !important;
+}
+
+/* Legacy plugin-manager rules set their own card fill, so they need the same
+ * token mapping as utility-composed panels. */
+[data-theme='dark'] .setup-plugin-cards > article {
+  background-color: #27272a !important;
+  border-color: #3f3f46 !important;
+}
+
+[data-theme='dark'] .setup-plugin-cards > article.disabled {
+  background-color: #1f1f22 !important;
+}
+
+[data-theme='dark'] .setup-plugin-cards > article > .setup-plugin-open:hover:not(:disabled) {
+  background-color: #3f3f46 !important;
+}
+
+/* Guide flows still include a small set of legacy, fixed-colour primitives. */
+[data-theme='dark'] .wizard-steps {
+  background: #1f1f22 !important;
+  border-color: #3f3f46 !important;
+}
+
+[data-theme='dark'] .wizard-steps > p {
+  color: #5eead4 !important;
+}
+
+[data-theme='dark'] .wizard-steps > div {
+  color: #a1a1aa !important;
+}
+
+[data-theme='dark'] .wizard-steps span {
+  background: #3f3f46 !important;
+  color: #d4d4d8 !important;
+}
+
+[data-theme='dark'] .wizard-steps .current {
+  background: #3f3f46 !important;
+  color: #f4f4f5 !important;
+}
+
+[data-theme='dark'] .question-options button {
+  background: #27272a !important;
+  border-color: #3f3f46 !important;
+  color: #f4f4f5 !important;
+}
+
+[data-theme='dark'] .question-options button:hover,
+[data-theme='dark'] .question-options button.selected {
+  background: #3f3f46 !important;
+}
+
+[data-theme='dark'] .question-options :is(strong, small) {
+  color: #e4e4e7 !important;
+}
+
+[data-theme='dark'] :is(.guide-question h1, .wizard-content h1) {
+  color: #f4f4f5 !important;
+}
+
+[data-theme='dark'] :is(.question-lead, .wizard-content > p) {
+  color: #a1a1aa !important;
+}
+
+[data-theme='dark'] .question-options i {
+  background: #153c35 !important;
+  border-color: #1f6c5f !important;
+  color: #5eead4 !important;
+}
+
+[data-theme='dark'] .guide-shell :is(.bg-emerald-50, .bg-emerald-50\/45) {
+  background-color: #153c35 !important;
+}
+
+[data-theme='dark'] .guide-shell .border-emerald-100 {
+  border-color: #1f6c5f !important;
+}
+
+[data-theme='dark'] .guide-shell .bg-amber-50 {
+  background-color: #422006 !important;
+}
+
+[data-theme='dark'] .guide-shell .border-amber-200 {
+  border-color: #854d0e !important;
 }
