@@ -164,7 +164,8 @@ export const workspaceApi = createApi({
     'PackageManifest',
     'Runtime',
     'OperationTasks',
-    'SetupPlugins'
+    'SetupPlugins',
+    'EnvironmentReport'
   ],
   endpoints: build => ({
     goals: build.query<unknown[], void>({ query: () => 'goals' }),
@@ -173,7 +174,9 @@ export const workspaceApi = createApi({
       { goalId: string; variant: string }
     >({
       query: body => ({ url: 'checks', method: 'POST', body }),
-      keepUnusedDataFor: 5 * 60
+      providesTags: (_result, _error, arg) => [
+        { type: 'EnvironmentReport', id: `${arg.goalId}:${arg.variant}` }
+      ]
     }),
     releases: build.query<unknown[], string>({
       query: app => `releases?app=${encodeURIComponent(app)}`

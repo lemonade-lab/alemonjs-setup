@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -14,6 +15,8 @@ import (
 	"testing/fstest"
 	"time"
 
+	"github.com/gin-gonic/gin"
+
 	"alemonx/internal/access"
 	"alemonx/internal/robot"
 )
@@ -22,6 +25,32 @@ var errInternalTest = errors.New("internal test failure")
 
 func newTestServer() http.Handler {
 	return NewServer("test", fstest.MapFS{"dist/index.html": &fstest.MapFile{Data: []byte("<!doctype html>")}})
+}
+
+// TestLoggableRequestBodyRedactsSecretsAndRestoresStream ensures the request
+// logger prints the action for the console while redacting tokens/passwords
+// and keeping the body readable by the downstream handler.
+func TestLoggableRequestBodyRedactsSecretsAndRestoresStream(t *testing.T) {
+	s := newStatefulTestServer()
+	payload := `{"action":"npm-publish","token":"sekrit","package":"@alemonjs/onebot","values":{"a":"b"}}`
+	recorder := httptest.NewRecorder()
+	ginCtx, _ := gin.CreateTestContext(recorder)
+	ginCtx.Request = httptest.NewRequest(http.MethodPost, "/api/v1/robot", bytes.NewBufferString(payload))
+	logged := s.loggableRequestBody(ginCtx)
+	if strings.Contains(logged, "sekrit") {
+		t.Fatalf("token leaked into log: %s", logged)
+	}
+	if !strings.Contains(logged, `"action":"npm-publish"`) {
+		t.Fatalf("action missing from log: %s", logged)
+	}
+	if !strings.Contains(logged, `"[REDACTED]"`) {
+		t.Fatalf("secrets not redacted: %s", logged)
+	}
+	// The body must still be readable by the handler after logging.
+	after, err := io.ReadAll(ginCtx.Request.Body)
+	if err != nil || string(after) != payload {
+		t.Fatalf("body not restored: %q, %v", after, err)
+	}
 }
 
 // TestOperationWriterBuffersPartialLines ensures chunked writes that split a

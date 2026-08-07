@@ -73,7 +73,7 @@ export function NpmrcConfigForm({ content, busy, onChange, onSave }: Props) {
               保存
             </button>
           </header>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <label className="grid gap-1 text-xs font-semibold text-slate-600">
               Registry
               <select

@@ -11,6 +11,7 @@ import { Dashboard } from './components/Dashboard'
 import { EnvironmentFixDialog } from './components/EnvironmentFixDialog'
 import { ErrorNotice } from './components/ErrorNotice'
 import {
+  workspaceApi,
   useGoalsQuery,
   useLazyEnvironmentReportQuery,
   useReleasesQuery
@@ -72,9 +73,15 @@ export default function App() {
     const selectedVariant = typeof variant === 'string' ? variant : ''
     try {
       setError('')
+      // Invalidate the cached result first so "重新检查" always performs a
+      // fresh server-side environment check instead of returning the cached
+      // 5-minute report with no visible change.
+      workspaceApi.util.invalidateTags([
+        { type: 'EnvironmentReport', id: `${activeID}:${selectedVariant}` }
+      ])
       await loadEnvironmentReport(
         { goalId: activeID, variant: selectedVariant },
-        true
+        false
       ).unwrap()
     } catch (reason) {
       setError(
@@ -728,13 +735,6 @@ function FlowView({
                 <span>
                   开发技能：{config.skills === 'yes' ? '下载' : '不下载'}
                 </span>
-              </div>
-            )}
-            {creation?.logs && (
-              <div className="creation-logs">
-                {creation.logs.map((log, index) => (
-                  <p key={index}>{log}</p>
-                ))}
               </div>
             )}
           </>

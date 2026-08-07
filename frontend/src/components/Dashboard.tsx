@@ -1673,6 +1673,7 @@ export function Dashboard({
                 <Code2 />
                 <span
                   className={cn(
+                    'hidden sm:inline',
                     developerMode ? ' text-blue-700' : ' text-slate-500 '
                   )}
                 >
@@ -1703,7 +1704,9 @@ export function Dashboard({
                 title="查看并检查全局环境"
               >
                 <i>{checking ? '◌' : environmentWarning ? '!' : '✓'}</i>
-                <strong>{checking ? '检查中' : environmentReady}</strong>
+                <strong className="hidden sm:inline">
+                  {checking ? '检查中' : environmentReady}
+                </strong>
               </Button>
               <Button
                 variant="icon"

@@ -2,6 +2,7 @@
 package project
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 )
 
 type Config struct {
@@ -133,20 +135,23 @@ func (c *Creator) Create(config Config) (Result, error) {
 		}
 	}
 	if config.DownloadSkills {
-		log("正在下载 AlemonJS 开发技能…")
 		// The canonical location is the cross-agent .agents/skills directory
 		// (agentskills.io spec; Codex/OpenCode/Gemini read it natively). Claude
 		// Code only reads .claude/skills, so link the same checkout in there
 		// instead of keeping a second copy. A custom top-level .skills/ is read
 		// by no agent and is therefore useless.
+		//
+		// A skill download is optional: a network or permission failure must not
+		// abort the whole project creation, so it degrades to a logged warning.
 		if err := run(path, &result.Logs, "git", "clone", "--depth", "1", "https://github.com/lemonade-lab/alemonjs-dev-skill.git", ".agents/skills/alemonjs-dev-skill"); err != nil {
-			return result, fmt.Errorf("下载开发技能失败：%w", err)
-		}
-		if err := os.MkdirAll(filepath.Join(path, ".claude", "skills"), 0755); err != nil {
-			return result, fmt.Errorf("创建 Claude 技能目录失败：%w", err)
-		}
-		if err := os.Symlink(filepath.Join("..", "..", ".agents", "skills", "alemonjs-dev-skill"), filepath.Join(path, ".claude", "skills", "alemonjs-dev-skill")); err != nil {
-			return result, fmt.Errorf("创建 Claude 技能链接失败：%w", err)
+			log("开发技能下载失败（不影响项目创建）：" + err.Error())
+		} else {
+			log("正在下载 AlemonJS 开发技能…")
+			if err := os.MkdirAll(filepath.Join(path, ".claude", "skills"), 0755); err != nil {
+				log("创建 Claude 技能目录失败（不影响项目创建）：" + err.Error())
+			} else if err := os.Symlink(filepath.Join("..", "..", ".agents", "skills", "alemonjs-dev-skill"), filepath.Join(path, ".claude", "skills", "alemonjs-dev-skill")); err != nil {
+				log("创建 Claude 技能链接失败（不影响项目创建）：" + err.Error())
+			}
 		}
 	}
 	result.Status = "ready"
@@ -277,8 +282,14 @@ func patchPackage(root string, config Config) error {
 	}
 	if config.ESLint {
 		dependencies["eslint"] = "^9.0.0"
+		dependencies["@eslint/js"] = "^9.0.0"
+		if config.Language == "ts" {
+			dependencies["@typescript-eslint/parser"] = "^8.0.0"
+		}
 		scripts["lint"] = "eslint ."
-		_ = os.WriteFile(filepath.Join(root, "eslint.config.js"), []byte("export default [{ ignores: ['node_modules', 'dist'] }]\n"), 0644)
+		if err := os.WriteFile(filepath.Join(root, "eslint.config.js"), []byte(eslintConfig(config)), 0644); err != nil {
+			return err
+		}
 	}
 	if !config.ESLint {
 		_ = os.Remove(filepath.Join(root, "eslint.config.js"))
@@ -289,6 +300,50 @@ func patchPackage(root string, config Config) error {
 		return err
 	}
 	return os.WriteFile(path, append(encoded, '\n'), 0644)
+}
+
+// eslintConfig generates a useful ESLint config for the guided projects.
+// AlemonJS exposes defineChildren/logger as globals (no explicit import), and
+// JSX uses the modern automatic runtime so React needs no import. Without the
+// globals declaration `eslint .` would fail on the framework API, and the
+// old bare-ignores config enforced nothing at all.
+func eslintConfig(c Config) string {
+	parser := ""
+	if c.Language == "ts" {
+		// TypeScript source needs the TS parser; the default espree cannot
+		// understand type annotations (`: string`, `Map<string>`).
+		parser = "    parser: '@typescript-eslint/parser',\n"
+	}
+	files := "**/*.{js,jsx}"
+	jsxLine := "      parserOptions: { ecmaFeatures: { jsx: true } },\n"
+	if c.Language == "ts" {
+		files = "**/*.{ts,tsx}"
+		jsxLine = ""
+	}
+	return `import js from '@eslint/js'
+
+export default [
+  { ignores: ['node_modules', 'dist', 'lib', 'eslint.config.js'] },
+  {
+    ...js.configs.recommended,
+    files: ['` + files + `'],
+    languageOptions: {
+      ecmaVersion: 2022,
+      sourceType: 'module',
+` + jsxLine + `      globals: {
+        defineChildren: 'readonly',
+        logger: 'readonly'
+      }
+    },
+` + parser + `    rules: {
+      // JSX components (Word, Html, React, …) are used in markup, which the
+      // core no-unused-vars rule does not count as usage. Ignore capitalised
+      // identifiers (components) so the template's JSX imports lint clean.
+      'no-unused-vars': ['warn', { varsIgnorePattern: '^[A-Z]', argsIgnorePattern: '^_' }]
+    }
+  }
+]
+`
 }
 
 var developmentPackageCapabilities = map[string]string{
@@ -319,6 +374,10 @@ func writeAgentsFile(root string, config Config) error {
 	if config.ESLint {
 		verify += "\nnpx eslint src --ext ." + extension
 	}
+	lvyConfig := "lvy.config.ts"
+	if config.Language == "js" {
+		lvyConfig = "lvy.config.js"
+	}
 	content := `# AGENTS.md
 
 这是一个 AlemonJS（聊天平台机器人开发框架）项目，基于 Node.js 开发。
@@ -344,7 +403,7 @@ func writeAgentsFile(root string, config Config) error {
 ## 项目目录说明
 
 - src/：项目源码目录
-- lvy.config.ts：基于 tsx 和 rollup 的开发工具配置，修改代码时需要符合其中的构建与运行约定
+- ` + lvyConfig + `：基于 tsx 和 rollup 的开发工具配置，修改代码时需要符合其中的构建与运行约定
 `
 	return os.WriteFile(filepath.Join(root, "AGENTS.md"), []byte(content), 0644)
 }
@@ -420,13 +479,32 @@ func patchDevelopmentSource(root string, config Config) error {
 	return os.WriteFile(packagePath, append(encoded, '\n'), 0644)
 }
 
+// createCommandTimeout bounds how long one setup subprocess (dependency install,
+// git init, skill clone) may run so a hung network never blocks the request.
+func createCommandTimeout(name string, args ...string) time.Duration {
+	base := filepath.Base(name)
+	if base == "git" && len(args) > 0 && (args[0] == "clone" || args[0] == "fetch" || args[0] == "pull") {
+		return 10 * time.Minute
+	}
+	if base == "npm" || base == "yarn" || base == "pnpm" || base == "npx" {
+		return 20 * time.Minute
+	}
+	return 5 * time.Minute
+}
+
 func run(directory string, logs *[]string, name string, args ...string) error {
-	command := exec.Command(name, args...)
+	timeout := createCommandTimeout(name, args...)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	command := exec.CommandContext(ctx, name, args...)
 	command.Dir = directory
 	output, err := command.CombinedOutput()
 	line := strings.TrimSpace(string(output))
 	if line != "" {
 		*logs = append(*logs, line)
+	}
+	if ctx.Err() == context.DeadlineExceeded {
+		return fmt.Errorf("%s 执行超时（%s）；请检查网络后重试", filepath.Base(name), timeout.Round(time.Second))
 	}
 	if err != nil {
 		if isPermissionError(err) || isPermissionError(errors.New(line)) {

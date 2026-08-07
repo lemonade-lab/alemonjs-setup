@@ -109,6 +109,37 @@ func TestDevelopmentTemplateKeepsOnlyChosenLanguageVariant(t *testing.T) {
 	run(t, "ts", "ts", []string{"js"})
 }
 
+// TestJSLvyConfigDisablesTypeScriptPlugin verifies the JS project's lvy.config
+// disables the TypeScript plugin, otherwise lvy build reads tsconfig.json
+// (absent in a JS project) and fails with TS18003.
+func TestJSLvyConfigDisablesTypeScriptPlugin(t *testing.T) {
+	root := t.TempDir()
+	if err := copyTemplate(os.DirFS("../../templates"), "dev", root); err != nil {
+		t.Fatal(err)
+	}
+	config := Config{Template: "dev", Language: "js", ImageMode: "none", StyleMode: "css"}
+	if err := patchPackage(root, config); err != nil {
+		t.Fatal(err)
+	}
+	if err := patchDevelopmentSource(root, config); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(root, "lvy.config.js"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(data)
+	if !strings.Contains(content, "typescript: false") {
+		t.Fatalf("JS lvy.config.js should disable the typescript plugin:\n%s", content)
+	}
+	if strings.Contains(content, "include: ['src/**/*.js']") {
+		t.Fatalf("JS lvy.config.js must not use the invalid build.include:\n%s", content)
+	}
+	if !strings.Contains(content, "OutputOptions") {
+		t.Fatalf("JS lvy.config.js should set output via OutputOptions:\n%s", content)
+	}
+}
+
 // TestDevelopmentTemplateJSFilesCarryNoTypeScriptSyntax ensures the hand-kept
 // JS variants really are plain JavaScript, so a JS project never parses TS.
 func TestDevelopmentTemplateJSFilesCarryNoTypeScriptSyntax(t *testing.T) {

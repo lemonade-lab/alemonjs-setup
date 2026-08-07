@@ -2544,6 +2544,14 @@ func (s *server) ginRequestLog() gin.HandlerFunc {
 		started := time.Now()
 		c.Set("requestID", id)
 		log.Printf("[GIN %06d] 开始 %s %s", id, c.Request.Method, c.Request.URL.Path)
+		if query := c.Request.URL.RawQuery; query != "" {
+			// The browser always sends query params (root, file, page, …); echo
+			// them so a front-end action is traceable from the console.
+			log.Printf("[GIN %06d] 参数 %s", id, query)
+		}
+		if body := s.loggableRequestBody(c); body != "" {
+			log.Printf("[GIN %06d] 请求 %s", id, body)
+		}
 		c.Next()
 		status := c.Writer.Status()
 		label := "完成"
@@ -2552,6 +2560,36 @@ func (s *server) ginRequestLog() gin.HandlerFunc {
 		}
 		log.Printf("[GIN %06d] %s status=%d duration=%s response=%dB", id, label, status, time.Since(started).Round(time.Millisecond), c.Writer.Size())
 	}
+}
+
+// loggableRequestBody reads a bounded JSON body for logging and restores the
+// stream so handlers still decode it. Sensitive fields (tokens, passwords) are
+// redacted; the body is capped to keep logs readable.
+func (s *server) loggableRequestBody(c *gin.Context) string {
+	if c.Request.Body == nil || c.Request.Body == http.NoBody {
+		return ""
+	}
+	raw, err := io.ReadAll(io.LimitReader(c.Request.Body, 16*1024))
+	if err != nil {
+		return ""
+	}
+	c.Request.Body = io.NopCloser(bytes.NewReader(raw))
+	var fields map[string]any
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		// Not JSON; log a trimmed prefix.
+		text := strings.TrimSpace(string(raw))
+		if len(text) > 200 {
+			text = text[:200] + "…"
+		}
+		return text
+	}
+	for _, key := range []string{"token", "password", "confirmation", "content", "message", "values"} {
+		if _, ok := fields[key]; ok {
+			fields[key] = "[REDACTED]"
+		}
+	}
+	encoded, _ := json.Marshal(fields)
+	return string(encoded)
 }
 
 func writeJSON(w http.ResponseWriter, status int, data any) {

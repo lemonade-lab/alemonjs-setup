@@ -88,6 +88,36 @@ func TestParsePM2ProcessesMapsJListFields(t *testing.T) {
 	}
 }
 
+// TestIsConsoleNoisePathFiltersDependencyDirectories ensures the terminal
+// snapshot hides node_modules and build output so the "目录信息" is about the
+// project, not its dependencies.
+func TestIsConsoleNoisePathFiltersDependencyDirectories(t *testing.T) {
+	noisy := []string{
+		"node_modules/alemonjs/index.js",
+		"node_modules",
+		"dist/index.js",
+		"lib/index.js",
+		".env",
+		"logs/error.log",
+		"build/out.js",
+	}
+	for _, path := range noisy {
+		if !isConsoleNoisePath(strings.TrimSpace(path)) {
+			t.Errorf("expected %q to be filtered as noise", path)
+		}
+	}
+	// A git status line strips its leading "XY " marker before the check.
+	if !isConsoleNoisePath(strings.TrimSpace("?? node_modules/"[3:])) {
+		t.Errorf("expected git-status node_modules line to be filtered")
+	}
+	keep := []string{"src/index.ts", "package.json", "README.md", "app.ts"}
+	for _, path := range keep {
+		if isConsoleNoisePath(path) {
+			t.Errorf("expected %q to be kept", path)
+		}
+	}
+}
+
 // TestStripPM2BannerAndParse covers a PM2 daemon version mismatch, where PM2
 // writes a ">>>> In-memory PM2 is out-of-date" banner to stdout ahead of the
 // JSON array. The banner must be stripped before parsing.

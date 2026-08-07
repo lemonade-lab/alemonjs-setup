@@ -124,20 +124,20 @@ function buildChangeTree(changes: Change[]) {
 
 function ChangeTree({ nodes }: { nodes: ChangeTreeNode[] }) {
   return (
-    <ul className="grid gap-0.5 pl-4 first:pl-0">
+    <ul className="grid min-w-0 gap-0.5 pl-4 first:pl-0">
       {nodes.map(node => {
         const folder = node.children.size > 0 || node.change?.path.endsWith('/')
         return (
-          <li key={node.path}>
+          <li className="min-w-0" key={node.path}>
             {node.children.size > 0 ? (
-              <details className="group" open>
+              <details className="group min-w-0" open>
                 <summary className="flex cursor-pointer list-none items-center gap-1.5 rounded px-1.5 py-1 text-xs text-slate-700 hover:bg-slate-100 [&::-webkit-details-marker]:hidden">
-                  <ChevronDown className="size-3.5 transition-transform group-not-open:-rotate-90" />
-                  <Folder className="size-3.5 text-slate-400" />
+                  <ChevronDown className="size-3.5 shrink-0 transition-transform group-not-open:-rotate-90" />
+                  <Folder className="size-3.5 shrink-0 text-slate-400" />
                   <span className="min-w-0 flex-1 truncate">{node.name}</span>
                   {node.change && (
                     <code
-                      className={`rounded px-1 text-[10px] font-medium ${node.change.status.trim() === '??' ? 'bg-slate-100 text-slate-500' : 'bg-brand-50 text-brand-700'}`}
+                      className={`shrink-0 rounded px-1 text-[10px] font-medium ${node.change.status.trim() === '??' ? 'bg-slate-100 text-slate-500' : 'bg-brand-50 text-brand-700'}`}
                     >
                       {changeStatusLabel(node.change.status)}
                     </code>
@@ -146,15 +146,15 @@ function ChangeTree({ nodes }: { nodes: ChangeTreeNode[] }) {
                 <ChangeTree nodes={[...node.children.values()]} />
               </details>
             ) : (
-              <div className="flex items-center gap-1.5 rounded px-1.5 py-1 text-xs text-slate-600 hover:bg-slate-50">
+              <div className="flex min-w-0 items-center gap-1.5 rounded px-1.5 py-1 text-xs text-slate-600 hover:bg-slate-50">
                 {folder ? (
-                  <Folder className="size-3.5 text-slate-400" />
+                  <Folder className="size-3.5 shrink-0 text-slate-400" />
                 ) : (
-                  <File className="size-3.5 text-slate-400" />
+                  <File className="size-3.5 shrink-0 text-slate-400" />
                 )}
                 <span className="min-w-0 flex-1 truncate">{node.name}</span>
                 <code
-                  className={`rounded px-1 text-[10px] font-medium ${node.change && node.change.status.trim() === '??' ? 'bg-slate-100 text-slate-500' : 'bg-brand-50 text-brand-700'}`}
+                  className={`shrink-0 rounded px-1 text-[10px] font-medium ${node.change && node.change.status.trim() === '??' ? 'bg-slate-100 text-slate-500' : 'bg-brand-50 text-brand-700'}`}
                 >
                   {node.change ? changeStatusLabel(node.change.status) : '变更'}
                 </code>
@@ -231,8 +231,8 @@ export function RobotGitControl({
 
   const commitPanel = (
     <section className="git-tab-panel grid content-start gap-3 rounded-lg border border-slate-200 bg-white p-4">
-      <div className="git-tab-heading grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 border-b border-slate-200 pb-3">
-        <label className="grid gap-0.5">
+      <div className="git-tab-heading grid grid-cols-[1fr_auto] items-center gap-3 border-b border-slate-200 pb-3 sm:grid-cols-[auto_minmax(0,1fr)_auto]">
+        <label className="col-span-2 grid gap-0.5 sm:col-span-1">
           <strong className="text-sm font-semibold text-slate-800">
             提交说明
           </strong>

@@ -682,10 +682,29 @@ func (Manager) Console(root string) (Result, error) {
 	}
 	lines = append(lines, "", "$ git status --short")
 	if output, gitErr := run(path, "git", "status", "--short"); gitErr == nil {
-		if output == "" {
+		// A project without a .gitignore (or one missing node_modules) reports
+		// thousands of dependency entries. The terminal snapshot is about the
+		// project, so filter noisy generated/ignored paths out of the display.
+		clean := []string{}
+		for _, line := range strings.Split(output, "\n") {
+			trimmed := strings.TrimSpace(line)
+			if trimmed == "" {
+				continue
+			}
+			entry := trimmed
+			if len(entry) >= 4 {
+				entry = entry[3:]
+			}
+			entry = strings.TrimSpace(entry)
+			if entry == "" || isConsoleNoisePath(entry) {
+				continue
+			}
+			clean = append(clean, line)
+		}
+		if len(clean) == 0 {
 			lines = append(lines, "工作区干净")
 		} else {
-			lines = append(lines, output)
+			lines = append(lines, clean...)
 		}
 	} else {
 		lines = append(lines, "当前目录尚未初始化 Git，或 Git 不可用。")
@@ -697,6 +716,24 @@ func (Manager) Console(root string) (Result, error) {
 		lines = append(lines, "未检测到 Node.js。")
 	}
 	return Result{Path: path, Output: strings.Join(lines, "\n")}, nil
+}
+
+// isConsoleNoisePath reports whether a git-status path should be hidden from
+// the terminal snapshot. Dependency/build/environment directories add nothing
+// to a project overview and dominate the output when untracked.
+func isConsoleNoisePath(path string) bool {
+	lower := strings.ToLower(path)
+	for _, prefix := range []string{"node_modules/", "dist/", "lib/", "build/", ".git/", "logs/"} {
+		if strings.HasPrefix(lower, prefix) {
+			return true
+		}
+	}
+	for _, name := range []string{"node_modules", "dist", "lib", "build", ".env", ".DS_Store"} {
+		if lower == name {
+			return true
+		}
+	}
+	return false
 }
 
 func (Manager) PM2Logs(root string, page int) (PM2LogPage, error) {

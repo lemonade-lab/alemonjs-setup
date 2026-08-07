@@ -98,7 +98,7 @@ export function EnvConfigForm({ content, busy, onChange, onSave }: Props) {
       <div className="grid gap-2">
         {entries.map((entry, index) => (
           <div
-            className="grid grid-cols-[minmax(150px,.85fr)_auto_minmax(180px,1.4fr)_auto] items-center gap-2"
+            className="grid grid-cols-1 items-center gap-2 sm:grid-cols-[minmax(150px,.85fr)_auto_minmax(180px,1.4fr)_auto]"
             key={`${index}-${entry.key}`}
           >
             <input
@@ -107,7 +107,7 @@ export function EnvConfigForm({ content, busy, onChange, onSave }: Props) {
               onChange={event => update(index, 'key', event.target.value)}
               placeholder="变量名，例如 BOT_TOKEN"
             />
-            <span className="font-mono text-slate-400">=</span>
+            <span className="hidden justify-self-center font-mono text-slate-400 sm:inline">=</span>
             <input
               className={inputClass}
               value={entry.value}
@@ -117,7 +117,7 @@ export function EnvConfigForm({ content, busy, onChange, onSave }: Props) {
               autoComplete="off"
             />
             <button
-              className="inline-flex size-8 items-center justify-center rounded-md border border-slate-300 bg-white text-slate-400 hover:bg-slate-50 hover:text-red-700"
+              className="inline-flex size-8 items-center justify-center justify-self-end rounded-md border border-slate-300 bg-white text-slate-400 hover:bg-slate-50 hover:text-red-700 sm:justify-self-auto"
               onClick={() =>
                 setEntries(current =>
                   current.filter((_, position) => position !== index)
