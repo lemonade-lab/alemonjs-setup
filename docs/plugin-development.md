@@ -74,9 +74,11 @@ Content-Type: application/json
 - **`action` 名称由执行器自行白名单**：alx 不校验清单，直接把请求转发给执行器，执行器内部 `switch` 只处理自己支持的动作并校验每个参数。
 - **危险操作的二次确认由 Web 界面负责**（例如自绘确认弹窗）。安装插件即等于授予其执行系统命令的能力（「安装即信任」），因此不再有清单级 confirm 声明。
 - 结果文本若每行以 `✓ `、`! ` 或 `? ` 开头（符号后一个空格），可按状态着色；缩进行按普通文本显示。
-- 完整可参考的界面见 [alemonx-network/web](../plugins/alemonx-network/web/)（原生 HTML/JS，无构建链，含确认弹窗与结果渲染）。
+- 完整可参考的界面见 [alemonx-network/frontend](../plugins/alemonx-network/frontend/)（React + Vite + Tailwind，复用 alx 的设计 token，构建产物为 `web/`）。
 
 安全边界：Web 界面**只对已安装且启用的插件**提供；在线识别或未安装的插件返回 404。托管仅 serve `web.root` 内的普通文件，拒绝路径穿越与符号链接逃逸，并设置 `X-Content-Type-Options` 与 CSP。
+
+插件前端建议用 `frontend/` 工程（React + Vite + Tailwind，视觉对齐 alx），构建产物输出到 `web.root` 目录。参考 `alemonx-network/frontend`：`yarn install && yarn build` 生成 `web/`；开发时 `yarn dev`（Vite 代理可指向本地 alx）。`web/` 是构建产物，不提交仓库，发布 zip 由 CI 构建。
 
 ## 执行器协议
 

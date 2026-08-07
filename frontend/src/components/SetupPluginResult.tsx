@@ -12,7 +12,7 @@ export type StatusLine = { kind: StatusLineKind; text: string }
 const STATUS_PREFIX = /^([✓!?]) /
 const STATUS_ESCAPE = /^\\([✓!?]) /
 
-export function parseStatusLine(raw: string): StatusLine {
+function parseStatusLine(raw: string): StatusLine {
   const line = raw.endsWith('\r') ? raw.slice(0, -1) : raw
   const escape = STATUS_ESCAPE.exec(line)
   if (escape) return { kind: 'plain', text: line.slice(1) }
@@ -25,7 +25,7 @@ export function parseStatusLine(raw: string): StatusLine {
   return { kind: 'plain', text: line }
 }
 
-export function splitStatusLines(output: string): StatusLine[] {
+function splitStatusLines(output: string): StatusLine[] {
   return output.split(/\r?\n/).map(parseStatusLine)
 }
 
