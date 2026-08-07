@@ -117,11 +117,16 @@ func TestGitWorkspaceFetchConvertsShallowCloneToFullHistory(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// A shallow clone carries only the checked-out branch. A file:// URL is
-	// required so --depth is honoured; git ignores it for plain local paths.
+	// Build a shallow, single-branch clone deterministically. Some git builds
+	// ignore --depth on clone for local/file transports, so make the repo
+	// shallow afterwards with git fetch --depth; --single-branch keeps only the
+	// checked-out branch, which is what a shallow clone carries.
 	parent := t.TempDir()
 	root := filepath.Join(parent, "repo")
-	if _, err := gitRun(parent, "clone", "--depth", "1", "file://"+remote, "repo"); err != nil {
+	if _, err := gitRun(parent, "clone", "--single-branch", "--branch", "main", "file://"+remote, "repo"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gitRun(root, "fetch", "--depth", "1", "origin"); err != nil {
 		t.Fatal(err)
 	}
 	if shallow, err := gitRun(root, "rev-parse", "--is-shallow-repository"); err != nil || strings.TrimSpace(shallow) != "true" {
