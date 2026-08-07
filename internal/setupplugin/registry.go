@@ -1,6 +1,8 @@
-// Package setupplugin discovers declarative extensions that add system
-// controls to alx. Discovery never executes plugin code: a plugin becomes
-// runnable only after a later, explicitly approved action protocol is added.
+// Package setupplugin discovers setup plugins that add system controls to
+// alx. A plugin is a static web UI (web.root) plus an optional executor that
+// runs system operations the web UI requests through a generic forward. The
+// declarative pages/actions manifest model has been removed: the web UI is the
+// plugin's interface. Discovery never executes plugin code.
 package setupplugin
 
 import (
@@ -15,7 +17,9 @@ import (
 	"regexp"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -26,13 +30,6 @@ const onlineIndexURL = "https://raw.githubusercontent.com/lemonade-lab/alemonjs.
 var validID = regexp.MustCompile(`^[a-z][a-z0-9-]{1,63}$`)
 var onlineRepository = regexp.MustCompile(`(?m)^\s*\[[^\]]+\]:\s*(https://github\.com/lemonade-lab/([A-Za-z0-9_.-]+))\s*$`)
 
-// Page is a secondary navigation item contributed by a Setup plugin.
-type Page struct {
-	ID          string `json:"id"`
-	Label       string `json:"label"`
-	Description string `json:"description,omitempty"`
-}
-
 // Navigation controls where the plugin appears in the global function rail.
 type Navigation struct {
 	Label string `json:"label"`
@@ -40,37 +37,9 @@ type Navigation struct {
 	Order int    `json:"order,omitempty"`
 }
 
-// Action is a user-visible operation supplied by a Setup plugin. Dangerous
-// actions always require a second explicit confirmation from the UI/API.
-// Advanced marks the action as a lower-frequency power feature so the UI can
-// fold it away from the default view; it is optional and default false.
-type Action struct {
-	ID          string  `json:"id"`
-	Label       string  `json:"label"`
-	Description string  `json:"description,omitempty"`
-	Confirm     bool    `json:"confirm,omitempty"`
-	Advanced    bool    `json:"advanced,omitempty"`
-	Page        string  `json:"page,omitempty"`
-	Fields      []Field `json:"fields,omitempty"`
-}
-
-type Field struct {
-	Key     string   `json:"key"`
-	Label   string   `json:"label"`
-	Type    string   `json:"type"`
-	Options []Option `json:"options,omitempty"`
-	Default string   `json:"default,omitempty"`
-	// Help is a short beginner-friendly explanation shown under the input.
-	Help string `json:"help,omitempty"`
-}
-
-type Option struct {
-	Label string `json:"label"`
-	Value string `json:"value"`
-}
-
 // Plugin is intentionally declarative. It is safe to list and render because
-// no file from its directory is executed during discovery.
+// no file from its directory is executed during discovery. A plugin is usable
+// only when it declares a web root (its UI) and has an executor.
 type Plugin struct {
 	ID          string            `json:"id"`
 	Name        string            `json:"name"`
@@ -78,11 +47,10 @@ type Plugin struct {
 	Description string            `json:"description,omitempty"`
 	Platforms   []string          `json:"platforms,omitempty"`
 	Navigation  Navigation        `json:"navigation"`
-	Pages       []Page            `json:"pages"`
-	Actions     []Action          `json:"actions,omitempty"`
 	Runtime     string            `json:"runtime,omitempty"`
 	Entry       map[string]string `json:"entry,omitempty"`
 	Development *RuntimeSpec      `json:"development,omitempty"`
+	Web         *WebSpec          `json:"web,omitempty"`
 	Runnable    bool              `json:"runnable"`
 	Enabled     bool              `json:"enabled"`
 	Online      bool              `json:"online,omitempty"`
@@ -97,30 +65,42 @@ type RuntimeSpec struct {
 	Entry   map[string]string `json:"entry"`
 }
 
+// WebSpec declares the plugin's web UI directory inside the plugin folder. alx
+// serves it same-origin so the UI can call the plugin's action forward API
+// directly. Only installed, enabled plugins have their web root served.
+type WebSpec struct {
+	Root string `json:"root"`
+}
+
 // Registry scans immediate child directories in order. Earlier roots win on
 // duplicate IDs, allowing a user-installed plugin to override a bundled one.
+// Results are cached and refreshed by Rescan/StartWatch so hot-plugging a
+// plugin directory is reflected without restarting alx.
 type Registry struct {
-	roots             []string
-	statePath         string
+	mu           sync.RWMutex
+	roots        []string
+	statePath    string
 	onlineIndexURL    string
 	httpClient        *http.Client
 	onlineManifestURL func(string) string
+	cached       []Plugin
+	revision     uint64
+	loaded       bool
+	lastFingerprint string
 }
 
-func NewRegistry(roots ...string) Registry {
-	statePath := ""
+func NewRegistry(roots ...string) *Registry {
 	if len(roots) == 0 {
 		roots = defaultRoots()
-		statePath = defaultStatePath()
-		return Registry{
+		return &Registry{
 			roots:             uniqueRoots(roots),
-			statePath:         statePath,
+			statePath:         defaultStatePath(),
 			onlineIndexURL:    onlineIndexURL,
 			httpClient:        &http.Client{Timeout: 5 * time.Second},
 			onlineManifestURL: defaultOnlineManifestURL,
 		}
 	}
-	return Registry{roots: uniqueRoots(roots), statePath: statePath}
+	return &Registry{roots: uniqueRoots(roots)}
 }
 
 func defaultRoots() []string {
@@ -158,19 +138,124 @@ func uniqueRoots(roots []string) []string {
 	return result
 }
 
-// List returns valid plugins only. A malformed third-party directory must not
-// stop the app or hide other plugin entries.
-func (r Registry) List() []Plugin {
-	return r.list(false)
+// List returns valid, enabled plugins from the cached snapshot.
+func (r *Registry) List() []Plugin {
+	r.ensureLoaded()
+	items := r.snapshot()
+	enabled := items[:0]
+	for _, plugin := range items {
+		if plugin.Enabled {
+			enabled = append(enabled, plugin)
+		}
+	}
+	return enabled
 }
 
 // All includes disabled plugins so the manager can offer a deliberate
 // re-enable action, while List remains the source for the live navigation.
-func (r Registry) All() []Plugin {
-	return r.list(true)
+func (r *Registry) All() []Plugin {
+	r.ensureLoaded()
+	return r.snapshot()
 }
 
-func (r Registry) list(includeDisabled bool) []Plugin {
+// Find returns one currently discoverable plugin from the cache.
+func (r *Registry) Find(id string) (Plugin, error) {
+	for _, plugin := range r.All() {
+		if plugin.ID == id {
+			return plugin, nil
+		}
+	}
+	return Plugin{}, errors.New("未找到已加载的 Setup 插件")
+}
+
+// Revision returns the cache revision, bumped whenever a rescan changes the
+// plugin set. Poll it (or the plugin list) for hot-plug detection.
+func (r *Registry) Revision() uint64 {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.revision
+}
+
+func (r *Registry) ensureLoaded() {
+	r.mu.RLock()
+	loaded := r.loaded
+	r.mu.RUnlock()
+	if loaded {
+		return
+	}
+	r.Rescan()
+}
+
+func (r *Registry) snapshot() []Plugin {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return append([]Plugin(nil), r.cached...)
+}
+
+// Rescan recomputes the full plugin set and replaces the cache. It bumps the
+// revision only when the set actually changed, so watchers can cheaply detect
+// real changes.
+func (r *Registry) Rescan() {
+	next := r.compute()
+	r.mu.Lock()
+	changed := !pluginSetsEqual(r.cached, next)
+	r.cached = next
+	r.loaded = true
+	if changed {
+		r.revision++
+	}
+	r.mu.Unlock()
+}
+
+func pluginSetsEqual(a, b []Plugin) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if !pluginsEqual(a[i], b[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func pluginsEqual(a, b Plugin) bool {
+	return a.ID == b.ID && a.Name == b.Name && a.Version == b.Version &&
+		a.Description == b.Description && a.Runnable == b.Runnable &&
+		a.Enabled == b.Enabled && a.Online == b.Online &&
+		strings.Join(a.Platforms, ",") == strings.Join(b.Platforms, ",") &&
+		a.Navigation.Label == b.Navigation.Label && a.Navigation.Icon == b.Navigation.Icon &&
+		a.Navigation.Order == b.Navigation.Order && webRootEqual(a.Web, b.Web) &&
+		entryEqual(a.Entry, b.Entry) && entryEqual(a.DevelopmentEntry(), b.DevelopmentEntry())
+}
+
+func (p Plugin) DevelopmentEntry() map[string]string {
+	if p.Development != nil {
+		return p.Development.Entry
+	}
+	return nil
+}
+
+func webRootEqual(a, b *WebSpec) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return a.Root == b.Root
+}
+
+func entryEqual(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, v := range a {
+		if b[k] != v {
+			return false
+		}
+	}
+	return true
+}
+
+func (r *Registry) compute() []Plugin {
 	items := make([]Plugin, 0)
 	seen := map[string]bool{}
 	disabled := r.disabled()
@@ -189,9 +274,6 @@ func (r Registry) list(includeDisabled bool) []Plugin {
 			}
 			plugin.Enabled = !disabled[plugin.ID]
 			seen[plugin.ID] = true
-			if !includeDisabled && !plugin.Enabled {
-				continue
-			}
 			items = append(items, plugin)
 		}
 	}
@@ -201,9 +283,6 @@ func (r Registry) list(includeDisabled bool) []Plugin {
 		}
 		plugin.Enabled = !disabled[plugin.ID]
 		seen[plugin.ID] = true
-		if !includeDisabled && !plugin.Enabled {
-			continue
-		}
 		items = append(items, plugin)
 	}
 	sort.SliceStable(items, func(i, j int) bool {
@@ -219,7 +298,7 @@ type disabledState struct {
 	Disabled []string `json:"disabled"`
 }
 
-func (r Registry) disabled() map[string]bool {
+func (r *Registry) disabled() map[string]bool {
 	items := map[string]bool{}
 	if r.statePath == "" {
 		return items
@@ -241,8 +320,9 @@ func (r Registry) disabled() map[string]bool {
 }
 
 // SetEnabled is a reversible uninstall: the plugin's files are left intact,
-// but it disappears from the active function rail and cannot run actions.
-func (r Registry) SetEnabled(id string, enabled bool) error {
+// but it disappears from the active function rail and its web UI is no longer
+// served. The cache is refreshed immediately.
+func (r *Registry) SetEnabled(id string, enabled bool) error {
 	if !validID.MatchString(id) {
 		return errors.New("无效的 Setup 插件标识")
 	}
@@ -281,18 +361,11 @@ func (r Registry) SetEnabled(id string, enabled bool) error {
 	if err := os.WriteFile(temporary, data, 0600); err != nil {
 		return err
 	}
-	return os.Rename(temporary, r.statePath)
-}
-
-// Find returns one currently discoverable plugin. It rescans deliberately so
-// adding a folder is reflected without restarting alx.
-func (r Registry) Find(id string) (Plugin, error) {
-	for _, plugin := range r.List() {
-		if plugin.ID == id {
-			return plugin, nil
-		}
+	if err := os.Rename(temporary, r.statePath); err != nil {
+		return err
 	}
-	return Plugin{}, errors.New("未找到已加载的 Setup 插件")
+	r.Rescan()
+	return nil
 }
 
 type request struct {
@@ -307,9 +380,13 @@ type response struct {
 	Error  string `json:"error,omitempty"`
 }
 
-// Run invokes a declared plugin entry using the stable JSON stdin/stdout
-// contract. The plugin receives no shell and no inherited user input.
-func (r Registry) Run(id, actionID string, params map[string]string, confirmed bool) (string, error) {
+// Run forwards a web UI request to the plugin executor using the stable JSON
+// stdin/stdout contract. The plugin receives no shell and no inherited user
+// input. The executor itself whitelists the action names it supports and
+// validates every parameter; there is no manifest-level action declaration
+// anymore. "confirmed" is accepted for API compatibility but the web UI owns
+// its own confirmation UX.
+func (r *Registry) Run(id, actionID string, params map[string]string, confirmed bool) (string, error) {
 	plugin, err := r.Find(id)
 	if err != nil {
 		return "", err
@@ -317,19 +394,11 @@ func (r Registry) Run(id, actionID string, params map[string]string, confirmed b
 	if plugin.Online {
 		return "", errors.New("在线系统插件尚未安装，不能执行远程代码")
 	}
-	var action Action
-	found := false
-	for _, item := range plugin.Actions {
-		if item.ID == actionID {
-			action, found = item, true
-			break
-		}
+	if !plugin.Enabled {
+		return "", errors.New("该 Setup 插件已停用")
 	}
-	if !found {
-		return "", errors.New("该 Setup 插件没有声明此操作")
-	}
-	if action.Confirm && !confirmed {
-		return "", fmt.Errorf("“%s”会修改本机系统，请确认后继续", action.Label)
+	if !plugin.Runnable {
+		return "", errors.New("该 Setup 插件缺少可用的执行器")
 	}
 	entry, err := plugin.entryPath()
 	if err != nil {
@@ -417,6 +486,32 @@ func (p Plugin) runtimeEntry(runtimeName string, entries map[string]string) (exe
 	return executable{name: path}, nil
 }
 
+// WebRoot resolves the plugin's static web directory and verifies it stays
+// inside the plugin directory even if intermediate components are symlinks.
+func (p Plugin) WebRoot() (string, error) {
+	if p.Web == nil || strings.TrimSpace(p.Web.Root) == "" {
+		return "", errors.New("此插件未提供静态 Web 界面")
+	}
+	root := filepath.Join(p.Source, filepath.FromSlash(p.Web.Root))
+	resolved, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", errors.New("插件 Web 目录不存在或不可访问")
+	}
+	sourceResolved, err := filepath.EvalSymlinks(p.Source)
+	if err != nil {
+		return "", errors.New("插件目录不可访问")
+	}
+	rel, err := filepath.Rel(sourceResolved, resolved)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", errors.New("插件 Web 目录越界")
+	}
+	info, err := os.Stat(resolved)
+	if err != nil || !info.IsDir() {
+		return "", errors.New("插件 Web 目录不可用")
+	}
+	return resolved, nil
+}
+
 func load(directory string) (Plugin, error) {
 	path := filepath.Join(directory, manifestName)
 	info, err := os.Lstat(path)
@@ -444,30 +539,33 @@ func decodeManifest(data []byte, source string) (Plugin, error) {
 	if plugin.Navigation.Icon == "" {
 		plugin.Navigation.Icon = "◈"
 	}
-	if len(plugin.Pages) == 0 {
-		plugin.Pages = []Page{{ID: "overview", Label: "概览", Description: "查看此系统能力的安装与运行状态。"}}
+	// Web UI is the plugin's interface; a manifest without a web root is not a
+	// usable setup plugin.
+	if plugin.Web == nil {
+		return Plugin{}, errors.New("setup plugin requires a web root")
 	}
+	root := filepath.ToSlash(strings.TrimSpace(plugin.Web.Root))
+	if root == "" || filepath.IsAbs(root) || root == ".." {
+		return Plugin{}, errors.New("setup plugin web root must be a directory inside the plugin")
+	}
+	// Reject any ".." path component before cleaning hides it.
+	for _, component := range strings.Split(root, "/") {
+		if component == ".." {
+			return Plugin{}, errors.New("setup plugin web root must be a directory inside the plugin")
+		}
+	}
+	clean := filepath.Clean(root)
+	if clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return Plugin{}, errors.New("setup plugin web root must be a directory inside the plugin")
+	}
+	plugin.Web.Root = root
 	if !validRuntime(plugin.Runtime) {
 		return Plugin{}, errors.New("setup plugin runtime must be binary, node or go")
 	}
 	if plugin.Development != nil && (!validRuntime(plugin.Development.Runtime) || len(plugin.Development.Entry) == 0) {
 		return Plugin{}, errors.New("setup plugin development runner is invalid")
 	}
-	seenPages := map[string]bool{}
-	for _, page := range plugin.Pages {
-		if !validID.MatchString(page.ID) || strings.TrimSpace(page.Label) == "" || seenPages[page.ID] {
-			return Plugin{}, fmt.Errorf("invalid setup plugin page")
-		}
-		seenPages[page.ID] = true
-	}
-	seenActions := map[string]bool{}
-	for _, action := range plugin.Actions {
-		if !validID.MatchString(action.ID) || strings.TrimSpace(action.Label) == "" || seenActions[action.ID] {
-			return Plugin{}, errors.New("invalid setup plugin action")
-		}
-		seenActions[action.ID] = true
-	}
-	plugin.Runnable = len(plugin.Actions) > 0 && (len(plugin.Entry) > 0 || plugin.Development != nil)
+	plugin.Runnable = len(plugin.Entry) > 0 || plugin.Development != nil
 	plugin.Source = source
 	return plugin, nil
 }
@@ -481,7 +579,7 @@ func defaultOnlineManifestURL(repository string) string {
 // lemonade-lab are accepted, so a documentation edit cannot turn discovery
 // into an arbitrary URL fetch. Online manifests are deliberately read-only:
 // they render in the manager but must be installed locally before execution.
-func (r Registry) onlinePlugins() []Plugin {
+func (r *Registry) onlinePlugins() []Plugin {
 	if r.onlineIndexURL == "" || r.httpClient == nil || r.onlineManifestURL == nil {
 		return nil
 	}
@@ -509,7 +607,7 @@ func (r Registry) onlinePlugins() []Plugin {
 	return items
 }
 
-func (r Registry) readOnlineFile(url string) ([]byte, error) {
+func (r *Registry) readOnlineFile(url string) ([]byte, error) {
 	request, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
@@ -543,4 +641,98 @@ func supportsCurrentPlatform(platforms []string) bool {
 		}
 	}
 	return false
+}
+
+// Watcher polls the plugin roots and rescans when a manifest or the plugin
+// directory listing changes, giving hot-plug without a filesystem event
+// library. The poll is cheap: it only stats alx.json files and lists each
+// root's immediate children.
+type Watcher struct {
+	registry *Registry
+	stop     chan struct{}
+	done     chan struct{}
+}
+
+// StartWatch begins polling at interval. Call Stop to end it. Interval 0
+// disables the poller (the cache is still filled by the first List/All call).
+func (r *Registry) StartWatch(interval time.Duration) *Watcher {
+	r.ensureLoaded()
+	watcher := &Watcher{registry: r, stop: make(chan struct{}), done: make(chan struct{})}
+	if interval <= 0 {
+		close(watcher.done)
+		return watcher
+	}
+	go watcher.loop(interval)
+	return watcher
+}
+
+func (w *Watcher) loop(interval time.Duration) {
+	defer close(w.done)
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-w.stop:
+			return
+		case <-ticker.C:
+			if w.registry.fingerprintChanged() {
+				w.registry.Rescan()
+			}
+		}
+	}
+}
+
+// Stop ends the polling goroutine and waits for it to exit.
+func (w *Watcher) Stop() {
+	select {
+	case <-w.stop:
+	default:
+		close(w.stop)
+	}
+	<-w.done
+}
+
+// fingerprintChanged stats the manifest files and directory listings. It
+// returns true when the previous fingerprint differs.
+func (r *Registry) fingerprintChanged() bool {
+	next := r.fingerprint()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if next != r.lastFingerprint {
+		r.lastFingerprint = next
+		return true
+	}
+	return false
+}
+
+func (r *Registry) fingerprint() string {
+	var builder strings.Builder
+	for _, root := range r.roots {
+		entries, err := os.ReadDir(root)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
+				continue
+			}
+			builder.WriteString(root)
+			builder.WriteByte(0)
+			builder.WriteString(entry.Name())
+			builder.WriteByte(0)
+			if info, statErr := os.Stat(filepath.Join(root, entry.Name(), manifestName)); statErr == nil {
+				builder.WriteString(strconv.FormatInt(info.ModTime().UnixNano(), 10))
+				builder.WriteByte(':')
+				builder.WriteString(strconv.FormatInt(info.Size(), 10))
+			}
+			builder.WriteByte('\n')
+		}
+	}
+	if r.statePath != "" {
+		if info, statErr := os.Stat(r.statePath); statErr == nil {
+			builder.WriteString("state:")
+			builder.WriteString(strconv.FormatInt(info.ModTime().UnixNano(), 10))
+		}
+	}
+	return builder.String()
 }

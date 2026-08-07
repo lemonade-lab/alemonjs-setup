@@ -11,10 +11,10 @@
     "delete": "npx pm2 delete pm2.config.cjs"
   },
   "devDependencies": {
-    "@alemonjs/onebot": "^2.1.17",
-    "@alemonjs/qq-bot": "^2.1.28",
+    "@alemonjs/onebot": "^2.1.19",
+    "@alemonjs/qq-bot": "^2.1.30",
     "@types/node": "^22",
-    "alemonjs": "^2.1.93"
+    "alemonjs": "^2.1.94"
   },
   "dependencies": {
     "@alemonjs/db": "^0.0.17",

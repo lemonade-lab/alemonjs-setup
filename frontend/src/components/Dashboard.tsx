@@ -23,6 +23,7 @@ import {
   ChevronRight,
   ClipboardList,
   Code2,
+  ExternalLink,
   Eye,
   EyeOff,
   Folder,
@@ -70,7 +71,6 @@ import { SetupUpdateButton } from './SetupUpdateButton'
 import { AgentChatPage } from './AgentChat'
 import { ErrorNotice } from './ErrorNotice'
 import { ConfirmDialog } from './ConfirmDialog'
-import { SetupPluginResult } from './SetupPluginResult'
 import { AuthControl } from './AuthControl'
 import { RobotGitControl } from './RobotGitControl'
 import { SSHControl } from './SSHControl'
@@ -100,7 +100,6 @@ import {
   useSetSetupPluginEnabledMutation,
   useSetupPluginsQuery,
   useStartRobotTaskMutation,
-  useStartSetupPluginTaskMutation,
   useWritePackageConfigMutation,
   useWriteRobotFileMutation,
   type RuntimeOverview,
@@ -3333,8 +3332,8 @@ function SystemPluginCenter({
             >
               <button
                 className="setup-plugin-open flex min-h-11 min-w-0 flex-1 items-center gap-2.5 rounded-lg bg-transparent p-0 text-left transition hover:bg-slate-50 disabled:cursor-default disabled:opacity-60 dark:hover:bg-slate-800"
-                onClick={() => plugin.enabled && onOpen(plugin.id)}
-                disabled={!plugin.enabled}
+                onClick={() => plugin.enabled && plugin.web && onOpen(plugin.id)}
+                disabled={!plugin.enabled || !plugin.web}
               >
                 <i className="inline-flex size-8 shrink-0 items-center justify-center rounded-lg bg-brand-50 text-brand-600 not-italic dark:bg-brand-100/60 dark:text-brand-200">
                   {setupPluginIcon(plugin.navigation.icon)}
@@ -3347,12 +3346,14 @@ function SystemPluginCenter({
                     v{plugin.version} ·{' '}
                     {plugin.online
                       ? '在线目录'
-                      : plugin.enabled
-                        ? '已启用'
-                        : '已卸载'}
+                      : !plugin.web
+                        ? '缺少 Web 界面'
+                        : plugin.enabled
+                          ? '已启用'
+                          : '已卸载'}
                   </small>
                 </div>
-                {plugin.enabled && (
+                {plugin.enabled && plugin.web && (
                   <ChevronRight className="ml-auto size-4 shrink-0 text-slate-400" />
                 )}
               </button>
@@ -3386,341 +3387,46 @@ function SystemPluginCenter({
   )
 }
 function SetupPluginCenter({ plugin }: { plugin: SetupPlugin }) {
-  type SetupAction = NonNullable<SetupPlugin['actions']>[number]
-  const [page, setPage] = useState(plugin.pages[0]?.id ?? 'overview')
-  const [activeAction, setActiveAction] = useState('')
-  const [message, setMessage] = useState('')
-  const [taskID, setTaskID] = useState('')
-  const [values, setValues] = useState<Record<string, string>>({})
-  const [startTask, { isLoading }] = useStartSetupPluginTaskMutation()
-  const { data: pluginTasks = [] } = useRobotTasksQuery(undefined, {
-    skip: !taskID,
-    pollingInterval: taskID ? 800 : 0,
-    refetchOnMountOrArgChange: true
-  })
-  const pluginTask = pluginTasks.find(item => item.id === taskID)
-  const current = plugin.pages.find(item => item.id === page) ?? plugin.pages[0]
-  const visibleActions = (plugin.actions ?? []).filter(
-    action => !action.page || action.page === current?.id
-  )
-  const basicActions = visibleActions.filter(action => !action.advanced)
-  const advancedActions = visibleActions.filter(action => action.advanced)
-
-  useEffect(() => {
-    setPage(plugin.pages[0]?.id ?? 'overview')
-    setActiveAction('')
-    setMessage('')
-    setTaskID('')
-    setValues(
-      Object.fromEntries(
-        (plugin.actions ?? []).flatMap(action =>
-          (action.fields ?? []).map(field => [
-            `${action.id}:${field.key}`,
-            field.default ?? ''
-          ])
-        )
-      )
-    )
-  }, [plugin.actions, plugin.id, plugin.pages])
-
-  const paramsFor = (action: SetupAction) =>
-    Object.fromEntries(
-      (action.fields ?? []).map(field => [
-        field.key,
-        values[`${action.id}:${field.key}`] ?? field.default ?? ''
-      ])
-    )
-  const run = async (action: SetupAction) => {
-    try {
-      const task = await startTask({
-        pluginID: plugin.id,
-        action: action.id,
-        confirm: action.confirm ?? false,
-        params: paramsFor(action)
-      }).unwrap()
-      setActiveAction('')
-      setMessage('')
-      setTaskID(task.id)
-    } catch (reason) {
-      setMessage(operationErrorMessage(reason, '插件操作未开始。'))
-    }
-  }
+  // A setup plugin's interface is its web UI, served same-origin by alx. The
+  // declarative action-list model was removed; the web view calls the plugin's
+  // action forward API itself.
+  const hasWeb = Boolean(plugin.web && plugin.runnable && !plugin.online)
+  const theme = document.documentElement.dataset.theme ?? 'light'
+  const webSrc = `/api/v1/setup/plugins/web/${plugin.id}/index.html?theme=${theme}`
 
   return (
-    <section className="workspace-content setup-plugin-page grid max-w-[900px] content-start gap-4">
+    <section className="workspace-content setup-plugin-page grid max-w-[1100px] content-start gap-4">
       <header className="flex min-h-10 items-center justify-between border-b border-slate-200 pb-3 dark:border-slate-700">
         <div>
           <h1 className="m-0 text-base font-semibold tracking-tight text-slate-900 dark:text-slate-100">
             {plugin.name}
           </h1>
+          {plugin.description && (
+            <p className="m-0 mt-0.5 text-xs text-slate-400">{plugin.description}</p>
+          )}
         </div>
         <small className="rounded-full bg-slate-100 px-2 py-1 text-xs font-semibold text-slate-500 dark:bg-slate-800 dark:text-slate-400">
           v{plugin.version}
         </small>
       </header>
-      <div className="setup-plugin-layout grid gap-3">
-        <Tabs
-          ariaLabel={`${plugin.name} 功能页`}
-          value={page}
-          onChange={id => {
-            setPage(id)
-            setActiveAction('')
-          }}
-          variant="segmented"
-          className="w-fit"
-          items={plugin.pages.map(item => ({ id: item.id, label: item.label }))}
-        />
-        <section className="setup-plugin-workspace grid max-w-[760px] gap-3 border-t border-slate-200 pt-4 dark:border-slate-700">
-          <header className="setup-plugin-context flex items-baseline gap-2">
-            <h2 className="m-0 text-sm font-semibold text-slate-800 dark:text-slate-100">
-              {current?.label}
-            </h2>
-            {current?.description && (
-              <span className="text-xs text-slate-400">
-                {current.description}
-              </span>
-            )}
-          </header>
-          {!plugin.runnable && (
-            <p className="setup-plugin-unavailable rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-300">
-              {plugin.online
-                ? '此插件由在线目录识别，当前仅展示其功能；安装到本机后才能执行操作。'
-                : '当前系统缺少此插件的执行器。'}
-            </p>
-          )}
-          {basicActions.length > 0 && (
-            <div className="setup-plugin-actions grid overflow-hidden rounded-xl border border-slate-200 dark:border-slate-700">
-              {basicActions.map(action => (
-                <SetupPluginActionItem
-                  key={action.id}
-                  action={action}
-                  runnable={plugin.runnable}
-                  isLoading={isLoading}
-                  activeAction={activeAction}
-                  values={values}
-                  onToggle={id =>
-                    setActiveAction(activeAction === id ? '' : id)
-                  }
-                  onValues={setValues}
-                  onRun={run}
-                />
-              ))}
-            </div>
-          )}
-          {advancedActions.length > 0 && (
-            <details className="setup-plugin-advanced group overflow-hidden rounded-xl border border-slate-200 dark:border-slate-700">
-              <summary className="flex min-h-11 cursor-pointer list-none select-none items-center justify-between gap-3 bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-600 transition hover:bg-slate-100 dark:bg-slate-900 dark:text-slate-300 dark:hover:bg-slate-800 [&::-webkit-details-marker]:hidden">
-                高级操作
-                <ChevronDown className="size-4 shrink-0 transition-transform group-open:rotate-180" />
-              </summary>
-              <div className="setup-plugin-advanced-actions grid border-t border-slate-200 dark:border-slate-700">
-                {advancedActions.map(action => (
-                  <SetupPluginActionItem
-                    key={action.id}
-                    action={action}
-                    runnable={plugin.runnable}
-                    isLoading={isLoading}
-                    activeAction={activeAction}
-                    values={values}
-                    onToggle={id =>
-                      setActiveAction(activeAction === id ? '' : id)
-                    }
-                    onValues={setValues}
-                    onRun={run}
-                  />
-                ))}
-              </div>
-            </details>
-          )}
-          {message && (
-            <p className="setup-plugin-message rounded-lg border border-brand-200 bg-brand-50 px-3 py-2 text-xs text-brand-600 dark:border-brand-200 dark:bg-brand-100/40 dark:text-brand-200">
-              {message}
-            </p>
-          )}
-          {pluginTask && (
-            <SetupPluginResult
-              status={pluginTask.status}
-              output={pluginTask.output}
-              error={pluginTask.error}
-              onDismiss={() => setTaskID('')}
-            />
-          )}
-        </section>
-      </div>
-    </section>
-  )
-}
-
-// A single action row: read-only actions render an inline check button,
-// confirm/field actions render as an expandable editor.
-function SetupPluginActionItem({
-  action,
-  runnable,
-  isLoading,
-  activeAction,
-  values,
-  onToggle,
-  onValues,
-  onRun
-}: {
-  action: NonNullable<SetupPlugin['actions']>[number]
-  runnable: boolean
-  isLoading: boolean
-  activeAction: string
-  values: Record<string, string>
-  onToggle: (id: string) => void
-  onValues: (values: Record<string, string>) => void
-  onRun: (action: NonNullable<SetupPlugin['actions']>[number]) => void
-}) {
-  const needsEditor = Boolean(action.confirm || action.fields?.length)
-  const inputClass =
-    'min-h-9 rounded-lg border border-slate-200 bg-white px-2 text-sm font-normal text-slate-700 outline-none focus:border-brand-600 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-200'
-
-  if (!needsEditor)
-    return (
-      <section className="setup-plugin-action border-b border-slate-100 last:border-b-0 dark:border-slate-800">
-        <div className="setup-plugin-action-row flex min-h-14 items-center justify-between gap-3 px-3 py-2">
-          <span className="grid min-w-0 gap-0.5">
-            <strong className="text-sm font-semibold text-slate-800 dark:text-slate-100">
-              {action.label}
-            </strong>
-            {action.description && (
-              <small className="text-xs leading-5 text-slate-400">
-                {action.description}
-              </small>
-            )}
-          </span>
-          <button
-            className="inline-flex min-h-8 shrink-0 items-center justify-center gap-1.5 rounded-lg border border-sky-200 bg-sky-50 px-3 text-xs font-semibold text-sky-700 transition hover:bg-sky-100 hover:text-sky-800 disabled:cursor-not-allowed disabled:opacity-50 dark:border-sky-900 dark:bg-sky-950/40 dark:text-sky-300 dark:hover:bg-sky-950"
-            disabled={!runnable || isLoading}
-            onClick={() => void onRun(action)}
-          >
-            {isLoading ? (
-              '启动中…'
-            ) : (
-              <>
-                <ScanSearch className="size-3.5" />
-                {action.label}
-              </>
-            )}
-          </button>
+      {hasWeb ? (
+        <div className="setup-plugin-web relative min-h-0 overflow-hidden rounded-xl border border-slate-200 dark:border-slate-700">
+          <iframe
+            className="h-[640px] w-full border-0"
+            src={webSrc}
+            title={`${plugin.name} 界面`}
+          />
         </div>
-      </section>
-    )
-
-  const open = activeAction === action.id
-  return (
-    <section
-      className={cn(
-        'setup-plugin-action border-b border-slate-100 last:border-b-0 dark:border-slate-800',
-        open && 'bg-brand-50/40 dark:bg-brand-100/20'
-      )}
-    >
-      <button
-        className="setup-plugin-action-choice flex min-h-14 w-full items-center justify-between gap-3 bg-transparent px-3 py-2 text-left transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50 dark:hover:bg-slate-800"
-        disabled={!runnable}
-        onClick={() => onToggle(action.id)}
-      >
-        <span>
-          <strong className="flex items-center gap-1.5 text-sm font-semibold text-slate-800 dark:text-slate-100">
-            {action.label}
-            {action.confirm && (
-              <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-700 dark:bg-amber-950/60 dark:text-amber-300">
-                <TriangleAlert className="size-3" />
-                需确认
-              </span>
-            )}
+      ) : (
+        <div className="setup-plugin-web-missing grid gap-2 rounded-xl border border-dashed border-slate-300 bg-slate-50 p-6 text-center dark:border-slate-600 dark:bg-slate-900">
+          <strong className="text-sm text-slate-700 dark:text-slate-200">
+            此插件需要 Web 界面
           </strong>
-          {action.description && (
-            <small className="text-xs leading-5 text-slate-400">
-              {action.description}
-            </small>
-          )}
-        </span>
-        <b className="text-lg font-normal text-brand-600 dark:text-brand-200">
-          {open ? '−' : '+'}
-        </b>
-      </button>
-      {open && (
-        <div className="setup-plugin-action-editor grid gap-3 border-t border-slate-200 px-3 py-3 dark:border-slate-700">
-          {action.fields?.length ? (
-            <div className="setup-plugin-fields flex flex-wrap gap-3">
-              {action.fields.map(field => (
-                <label
-                  className="grid min-w-[150px] flex-1 gap-1 text-xs font-semibold text-slate-500"
-                  key={field.key}
-                >
-                  {field.label}
-                  {field.type === 'select' ? (
-                    <select
-                      className={inputClass}
-                      value={
-                        values[`${action.id}:${field.key}`] ??
-                        field.default ??
-                        ''
-                      }
-                      onChange={event =>
-                        onValues({
-                          ...values,
-                          [`${action.id}:${field.key}`]: event.target.value
-                        })
-                      }
-                    >
-                      {(field.options ?? []).map(option => (
-                        <option key={option.value} value={option.value}>
-                          {option.label}
-                        </option>
-                      ))}
-                    </select>
-                  ) : (
-                    <input
-                      className={inputClass}
-                      type={field.type}
-                      value={values[`${action.id}:${field.key}`] ?? ''}
-                      onChange={event =>
-                        onValues({
-                          ...values,
-                          [`${action.id}:${field.key}`]: event.target.value
-                        })
-                      }
-                      placeholder={field.default || field.label}
-                    />
-                  )}
-                  {field.help && (
-                    <small className="font-normal leading-4 text-slate-400">
-                      {field.help}
-                    </small>
-                  )}
-                </label>
-              ))}
-            </div>
-          ) : null}
-          <footer className="flex items-center justify-end gap-2">
-            {action.confirm && (
-              <small className="mr-auto flex items-center gap-1 text-xs text-amber-700 dark:text-amber-300">
-                <TriangleAlert className="size-3.5" />
-                此操作会修改本机系统设置，执行前请再次确认。
-              </small>
-            )}
-            <button
-              className="inline-flex min-h-8 items-center justify-center rounded-lg border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-600 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-300"
-              onClick={() => onToggle('')}
-            >
-              取消
-            </button>
-            <button
-              className={cn(
-                'inline-flex min-h-8 items-center justify-center rounded-lg border px-3 text-xs font-semibold text-white transition hover:opacity-90 disabled:opacity-50',
-                action.confirm
-                  ? 'border-rose-600 bg-rose-600 hover:bg-rose-700'
-                  : 'border-brand-600 bg-brand-600 hover:bg-brand-700'
-              )}
-              disabled={isLoading}
-              onClick={() => void onRun(action)}
-            >
-              {isLoading ? '启动中…' : '确认执行'}
-            </button>
-          </footer>
+          <p className="m-0 text-xs leading-5 text-slate-500">
+            {plugin.online
+              ? '该插件由在线目录识别，安装到本机后才能打开其界面。'
+              : '插件清单未声明 web 目录，或缺少可用的执行器，因此无法展示界面。'}
+          </p>
         </div>
       )}
     </section>
@@ -5234,7 +4940,7 @@ function RuntimePanel({
                     disabled={busy}
                     onClick={() =>
                       ask('修复前台运行', '会补齐前台运行所需的命令。', () =>
-                        onRun('repair-dev')
+                        onRun('repair-app')
                       )
                     }
                   >

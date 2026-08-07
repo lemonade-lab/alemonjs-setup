@@ -81,7 +81,8 @@ type server struct {
 	checker         *system.Checker
 	creator         *project.Creator
 	robots          robot.Manager
-	plugins         setupplugin.Registry
+	plugins         *setupplugin.Registry
+	pluginWatcher   *setupplugin.Watcher
 	auth            *access.Manager
 	ai              *ai.Manager
 	agentSessions   *agent.SessionStore
@@ -158,6 +159,9 @@ func NewServerWithAuth(version string, staticFiles fs.FS, identity *access.Manag
 		panic(err)
 	}
 	s := &server{version: version, assets: assets, static: http.FileServer(http.FS(assets)), checker: system.NewChecker(), plugins: setupplugin.NewRegistry(), auth: identity, ai: aiManager, agentSessions: sessionStore, agentConfirms: newAgentConfirmManager(), development: map[string]developmentProcess{}, webviewRuntimes: map[string]*webViewRuntime{}, stopping: map[string]bool{}, consoleCache: map[string]consoleSnapshot{}, directoryRoots: managedDirectoryRoots()}
+	// Poll plugin roots so adding/removing a plugin directory or editing a
+	// manifest is reflected without a restart or manual refresh.
+	s.pluginWatcher = s.plugins.StartWatch(time.Second)
 	if len(templateFiles) > 0 {
 		templates, err := fs.Sub(templateFiles[0], "templates")
 		if err != nil {
@@ -193,7 +197,9 @@ func NewServerWithAuth(version string, staticFiles fs.FS, identity *access.Manag
 	mux.HandleFunc("/api/v1/catalog/document", s.catalogDocumentHandler)
 	mux.HandleFunc("/api/v1/catalog/package-config", s.catalogPackageConfigHandler)
 	mux.HandleFunc("/api/v1/setup/plugins", s.setupPluginsHandler)
+	mux.HandleFunc("/api/v1/setup/plugins/revision", s.setupPluginRevisionHandler)
 	mux.HandleFunc("/api/v1/setup/plugins/", s.setupPluginActionHandler)
+	mux.HandleFunc("/api/v1/setup/plugins/web/", s.setupPluginWebHandler)
 	mux.HandleFunc("/api/v1/robot", s.robotHandler)
 	mux.HandleFunc("/api/v1/robot/validate", s.robotValidateHandler)
 	mux.HandleFunc("/api/v1/robot/console", s.robotConsoleHandler)
@@ -507,6 +513,16 @@ func (s *server) setupPluginsHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.plugins.All())
 }
 
+// setupPluginRevisionHandler exposes the plugin registry revision so the UI can
+// cheaply detect hot-plugged plugin changes without re-fetching the whole list.
+func (s *server) setupPluginRevisionHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "该操作暂不支持。")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"revision": s.plugins.Revision()})
+}
+
 func (s *server) setupPluginActionHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "该操作暂不支持。")
@@ -572,6 +588,73 @@ func (s *server) setupPluginActionHandler(w http.ResponseWriter, r *http.Request
 		}
 	}()
 	writeJSON(w, http.StatusAccepted, created)
+}
+
+// setupPluginWebHandler serves a setup plugin's static web UI. It is served
+// same-origin so the UI can call the plugin's own action API directly. Only
+// installed, enabled plugins are served: an online-only plugin is read-only
+// and must be installed locally before its web assets exist. Path traversal
+// and symlink escapes are rejected before any file is read.
+func (s *server) setupPluginWebHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		writeError(w, http.StatusMethodNotAllowed, "该操作暂不支持。")
+		return
+	}
+	const prefix = "/api/v1/setup/plugins/web/"
+	parts := strings.SplitN(strings.TrimPrefix(r.URL.Path, prefix), "/", 2)
+	if len(parts) == 0 || parts[0] == "" {
+		writeError(w, http.StatusNotFound, "未找到插件 Web 界面。")
+		return
+	}
+	plugin, err := s.plugins.Find(parts[0])
+	if err != nil || plugin.Online || !plugin.Runnable || !plugin.Enabled {
+		writeError(w, http.StatusNotFound, "未找到插件 Web 界面。")
+		return
+	}
+	root, err := plugin.WebRoot()
+	if err != nil {
+		writeError(w, http.StatusNotFound, "插件 Web 界面不可用。")
+		return
+	}
+	requestPath := ""
+	if len(parts) == 2 {
+		requestPath = parts[1]
+	}
+	requestPath = strings.TrimPrefix(filepath.ToSlash(requestPath), "/")
+	if requestPath == "" {
+		requestPath = "index.html"
+	}
+	clean := filepath.Clean(requestPath)
+	if clean == "." || filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		writeError(w, http.StatusNotFound, "插件 Web 资源路径无效。")
+		return
+	}
+	candidate := filepath.Join(root, clean)
+	resolved, err := filepath.EvalSymlinks(candidate)
+	if err != nil {
+		// A no-extension path is treated as an SPA route served by index.html.
+		if filepath.Ext(clean) == "" {
+			resolved = filepath.Join(root, "index.html")
+		} else {
+			writeError(w, http.StatusNotFound, "插件 Web 资源不存在。")
+			return
+		}
+	}
+	rel, err := filepath.Rel(root, resolved)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		writeError(w, http.StatusNotFound, "插件 Web 资源路径无效。")
+		return
+	}
+	info, err := os.Stat(resolved)
+	if err != nil || !info.Mode().IsRegular() {
+		writeError(w, http.StatusNotFound, "插件 Web 资源不存在。")
+		return
+	}
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	// Same-origin UI that may call the plugin action API. frame-ancestors keeps
+	// it embeddable only from the loopback management UI.
+	w.Header().Set("Content-Security-Policy", "default-src 'self'; connect-src 'self'; img-src 'self' data: blob: https: http:; style-src 'self' 'unsafe-inline'; frame-ancestors http://localhost:* http://127.0.0.1:*; base-uri 'none'")
+	http.ServeFile(w, r, resolved)
 }
 
 func (s *server) sshHandler(w http.ResponseWriter, r *http.Request) {
@@ -1932,6 +2015,7 @@ func (s *server) ensureRobotWebViewRuntime(root string) (*webViewRuntime, error)
 	}
 	command := exec.Command(node, scriptPath)
 	command.Dir = project
+	robot.HideWindow(command)
 	stdin, err := command.StdinPipe()
 	if err != nil {
 		return nil, err

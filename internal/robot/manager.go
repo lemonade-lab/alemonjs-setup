@@ -820,7 +820,7 @@ func (Manager) RepairRuntime(root, mode string) (Result, error) {
 		return Result{}, err
 	}
 	var manifest map[string]any
-	if json.Unmarshal(data, &manifest) != nil {
+	if err := json.Unmarshal(data, &manifest); err != nil {
 		return Result{}, errors.New("无法读取 package.json")
 	}
 	scripts, _ := manifest["scripts"].(map[string]any)
@@ -833,12 +833,19 @@ func (Manager) RepairRuntime(root, mode string) (Result, error) {
 		dependencies = map[string]any{}
 		manifest["devDependencies"] = dependencies
 	}
-	if mode == "dev" {
+	main, _ := manifest["main"].(string)
+	entry := runtimeEntryFile(path, main)
+	if mode == "dev" || mode == "app" {
+		// "app" repairs the foreground entry only; "dev" also wires the dev
+		// script to it. Both respect the package's declared main entry so a
+		// TypeScript project is not forced onto node index.js.
 		if _, ok := scripts["app"]; !ok {
-			scripts["app"] = "node index.js"
+			scripts["app"] = "node " + entry
 		}
-		if _, ok := scripts["dev"]; !ok {
-			scripts["dev"] = scripts["app"]
+		if mode == "dev" {
+			if _, ok := scripts["dev"]; !ok {
+				scripts["dev"] = scripts["app"]
+			}
 		}
 	}
 	if mode == "pm2" {
@@ -847,16 +854,16 @@ func (Manager) RepairRuntime(root, mode string) (Result, error) {
 		dependencies["pm2"] = "^5"
 		dependencies["yaml"] = "^2.6.0"
 		config := filepath.Join(path, "pm2.config.cjs")
-		pm2Config := "const pm2 = globalThis.pm2;\n\nmodule.exports = pm2 || {\n  apps: [\n    {\n      name: 'alemonb',\n      script: 'node index.js',\n      env: {\n        NODE_ENV: 'production'\n      }\n    }\n  ]\n};\n"
+		pm2Config := "const pm2 = globalThis.pm2;\n\nmodule.exports = pm2 || {\n  apps: [\n    {\n      name: 'alemonb',\n      script: 'node " + entry + "',\n      env: {\n        NODE_ENV: 'production'\n      }\n    }\n  ]\n};\n"
 		if err := os.WriteFile(config, []byte(pm2Config), 0644); err != nil {
 			if permissionError(err) {
 				return Result{}, permissionAdvice("保存 PM2 配置")
 			}
 			return Result{}, fmt.Errorf("无法写入 PM2 配置：%w", err)
 		}
-		entry := filepath.Join(path, "index.js")
-		if _, statErr := os.Stat(entry); os.IsNotExist(statErr) {
-			if err := os.WriteFile(entry, []byte("import { start } from 'alemonjs';\n\nstart();\n"), 0644); err != nil {
+		entryFile := filepath.Join(path, entry)
+		if _, statErr := os.Stat(entryFile); os.IsNotExist(statErr) {
+			if err := os.WriteFile(entryFile, []byte("import { start } from 'alemonjs';\n\nstart();\n"), 0644); err != nil {
 				if permissionError(err) {
 					return Result{}, permissionAdvice("保存生产入口")
 				}
@@ -875,6 +882,18 @@ func (Manager) RepairRuntime(root, mode string) (Result, error) {
 		return Result{}, err
 	}
 	return Result{Path: path, Output: "已补齐运行脚本与配置，请安装依赖后重试。"}, nil
+}
+
+// runtimeEntryFile resolves the robot's start entry: the package.json main
+// field when present (stripped of any ./ prefix), otherwise index.js.
+func runtimeEntryFile(path, main string) string {
+	if main = strings.TrimSpace(main); main != "" {
+		main = strings.TrimPrefix(main, "./")
+		if main != "" && !strings.Contains(main, "..") && filepath.Ext(main) != "" {
+			return main
+		}
+	}
+	return "index.js"
 }
 
 func (m Manager) Read(root, name string) (Result, error) {
@@ -996,6 +1015,8 @@ func (m Manager) Run(root, action, message, packageName, version, tag, token str
 		name, args = manager, []string{"run", "app"}
 	case "repair-dev":
 		return (Manager{}).RepairRuntime(root, "dev")
+	case "repair-app":
+		return (Manager{}).RepairRuntime(root, "app")
 	case "repair-pm2":
 		return (Manager{}).RepairRuntime(root, "pm2")
 	case "commit":
@@ -1219,6 +1240,7 @@ func packageManagerCommand(root, manager string, args ...string) (*exec.Cmd, str
 	if _, err := exec.LookPath(manager); err == nil {
 		command := exec.Command(manager, args...)
 		command.Dir = root
+		HideWindow(command)
 		return command, ""
 	}
 	packageName := ""
@@ -1230,10 +1252,12 @@ func packageManagerCommand(root, manager string, args ...string) (*exec.Cmd, str
 	default:
 		command := exec.Command(manager, args...)
 		command.Dir = root
+		HideWindow(command)
 		return command, ""
 	}
 	command := exec.Command("npx", append([]string{"--yes", packageName}, args...)...)
 	command.Dir = root
+	HideWindow(command)
 	return command, "未找到 " + strings.ToUpper(manager) + "，临时通过 npm 获取并执行；不会修改电脑的全局安装。"
 }
 
@@ -1344,6 +1368,7 @@ func runWithEnv(root string, values map[string]string, name string, args ...stri
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = root
 	cmd.Env = os.Environ()
+	HideWindow(cmd)
 	for key, value := range values {
 		prefix := key + "="
 		for index := len(cmd.Env) - 1; index >= 0; index-- {

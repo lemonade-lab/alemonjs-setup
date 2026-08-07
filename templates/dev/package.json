@@ -1,10 +1,12 @@
 {
   "description": "template code",
   "devDependencies": {
-    "@alemonjs/onebot": "^2.1.17",
-    "@alemonjs/qq-bot": "^2.1.28",
+    "@alemonjs/onebot": "^2.1.19",
+    "@alemonjs/qq-bot": "^2.1.30",
     "@types/node": "^22",
-    "alemonjs": "^2.1.93",
+    "@alemonjs/db": "^0.0.17",
+    "jsxp": "^1.4.0",
+    "alemonjs": "^2.1.94",
     "lvyjs": "^0.3.0-alpha.2"
   },
   "exports": {
@@ -30,9 +32,5 @@
     "view": "lvy app.ts --jsxp"
   },
   "type": "module",
-  "version": "1.0.0",
-  "dependencies": {
-    "@alemonjs/db": "^0.0.17",
-    "jsxp": "^1.4.0"
-  }
+  "version": "1.0.0"
 }

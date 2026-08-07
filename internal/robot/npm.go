@@ -278,6 +278,7 @@ func npmPackage(name string) (latest, publishedAt string, found bool, err error)
 func npmWhoami(root string) string {
 	cmd := exec.Command("npm", "whoami", "--registry="+npmRegistry)
 	cmd.Dir = root
+	HideWindow(cmd)
 	output, err := cmd.Output()
 	if err != nil {
 		return ""

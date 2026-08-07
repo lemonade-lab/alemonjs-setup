@@ -130,23 +130,7 @@ export type SetupPlugin = {
   description?: string
   platforms?: string[]
   navigation: { label: string; icon?: string; order?: number }
-  pages: Array<{ id: string; label: string; description?: string }>
-  actions?: Array<{
-    id: string
-    label: string
-    description?: string
-    confirm?: boolean
-    advanced?: boolean
-    page?: string
-    fields?: Array<{
-      key: string
-      label: string
-      type: 'select' | 'number' | 'text'
-      default?: string
-      options?: Array<{ label: string; value: string }>
-      help?: string
-    }>
-  }>
+  web?: { root: string }
   runnable: boolean
   enabled: boolean
   online?: boolean
@@ -197,7 +181,8 @@ export const workspaceApi = createApi({
     >({ query: () => 'update' }),
     setupPlugins: build.query<SetupPlugin[], void>({
       query: () => 'setup/plugins',
-      providesTags: ['SetupPlugins']
+      providesTags: ['SetupPlugins'],
+      pollingInterval: 3000
     }),
     setSetupPluginEnabled: build.mutation<
       { id: string; enabled: boolean },

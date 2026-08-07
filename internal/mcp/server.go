@@ -238,8 +238,7 @@ func tools() []map[string]any {
 		tool("alemonjs_stop_development", "停止开发模式", "停止由 alemonjs_start_project_action 的 dev 操作启动的开发机器人。必须在用户明确确认后调用。", objectSchema(map[string]any{"taskId": stringSchema("dev 操作返回的任务 ID。"), "confirm": boolSchema("用户已经确认停止开发机器人时为 true。")}, "taskId", "confirm"), false, true),
 		tool("alemonjs_get_project_task", "查询项目操作", "查询一个 MCP 项目操作任务的实时状态和输出。", objectSchema(map[string]any{"taskId": stringSchema("alemonjs_start_project_action 返回的任务 ID。")}, "taskId"), true, false),
 		tool("alemonjs_list_project_tasks", "列出项目操作", "列出当前 MCP 会话创建的项目操作任务。", objectSchema(map[string]any{"root": stringSchema("可选。仅返回该机器人项目的操作任务。")}), true, false),
-		tool("alemonjs_list_setup_plugins", "列出 Setup 插件", "列出当前电脑可用的声明式 Setup 插件及其操作，不执行插件代码。", objectSchema(map[string]any{}), true, false),
-		tool("alemonjs_run_setup_plugin", "运行 Setup 插件", "运行一个已声明的 Setup 插件操作。此操作始终需要用户明确确认；插件自身也可声明额外确认。", objectSchema(map[string]any{"pluginId": stringSchema("Setup 插件 ID。"), "actionId": stringSchema("插件声明的操作 ID。"), "values": map[string]any{"type": "object", "additionalProperties": map[string]any{"type": "string"}, "description": "按插件动作字段声明提供的值。"}, "confirm": boolSchema("用户已经确认运行该系统插件操作时为 true。")}, "pluginId", "actionId", "confirm"), false, true),
+		tool("alemonjs_list_setup_plugins", "列出 Setup 插件", "列出当前电脑可用的 Setup 插件及其 Web 界面入口（是否已安装、可运行）。不执行插件代码。", objectSchema(map[string]any{}), true, false),
 		tool("alemonjs_create_project", "创建项目", "使用内置模板创建 AlemonJS 项目，并安装依赖。会写入磁盘、联网下载依赖，必须在用户明确确认后调用。", objectSchema(map[string]any{"config": map[string]any{"type": "object", "description": "与 ALemonX 创建向导相同的项目配置。"}, "confirm": boolSchema("用户已经确认创建项目时为 true。")}, "config", "confirm"), false, true),
 	}
 }
@@ -641,22 +640,27 @@ func (s *Server) execute(name string, arguments json.RawMessage) (string, error)
 		}
 		return encodeResult(s.listTasks(input.Root))
 	case "alemonjs_list_setup_plugins":
-		return encodeResult(setupplugin.NewRegistry().List())
-	case "alemonjs_run_setup_plugin":
-		var input struct {
-			PluginID string            `json:"pluginId"`
-			ActionID string            `json:"actionId"`
-			Values   map[string]string `json:"values"`
-			Confirm  bool              `json:"confirm"`
+		plugins := setupplugin.NewRegistry().List()
+		type setupPluginSummary struct {
+			ID       string `json:"id"`
+			Name     string `json:"name"`
+			Version  string `json:"version"`
+			Enabled  bool   `json:"enabled"`
+			Runnable bool   `json:"runnable"`
+			Web      bool   `json:"web"`
 		}
-		if err := decodeArguments(arguments, &input); err != nil {
-			return "", err
+		summary := make([]setupPluginSummary, 0, len(plugins))
+		for _, plugin := range plugins {
+			summary = append(summary, setupPluginSummary{
+				ID:       plugin.ID,
+				Name:     plugin.Name,
+				Version:  plugin.Version,
+				Enabled:  plugin.Enabled,
+				Runnable: plugin.Runnable,
+				Web:      plugin.Web != nil,
+			})
 		}
-		if !input.Confirm {
-			return "", fmt.Errorf("此操作会运行 Setup 插件；请在用户明确确认后传 confirm=true")
-		}
-		output, err := setupplugin.NewRegistry().Run(input.PluginID, input.ActionID, input.Values, true)
-		return output, err
+		return encodeResult(summary)
 	case "alemonjs_create_project":
 		var input struct {
 			Config  project.Config `json:"config"`
