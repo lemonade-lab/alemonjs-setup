@@ -23,7 +23,6 @@ import {
   ChevronRight,
   ClipboardList,
   Code2,
-  ExternalLink,
   Eye,
   EyeOff,
   Folder,
@@ -46,14 +45,12 @@ import {
   Radio,
   RefreshCw,
   Route,
-  ScanSearch,
   Search,
   Send,
   Settings,
   Shield,
   Terminal,
   Trash2,
-  TriangleAlert,
   Waypoints,
   Wifi,
   X,
@@ -836,7 +833,9 @@ export function Dashboard({
   const [writePackageConfig] = useWritePackageConfigMutation()
   const [saveRobotLogin] = useSaveRobotLoginMutation()
   const [initializeGit] = useInitializeGitMutation()
-  const { data: setupPlugins = [] } = useSetupPluginsQuery()
+  const { data: setupPlugins = [] } = useSetupPluginsQuery(undefined, {
+    pollingInterval: 3000
+  })
   const catalogError = catalogQueryError ? '在线目录暂时无法读取。' : ''
   const showOutput = (message: string, failed = false) => {
     setOutput(message)

@@ -181,8 +181,7 @@ export const workspaceApi = createApi({
     >({ query: () => 'update' }),
     setupPlugins: build.query<SetupPlugin[], void>({
       query: () => 'setup/plugins',
-      providesTags: ['SetupPlugins'],
-      pollingInterval: 3000
+      providesTags: ['SetupPlugins']
     }),
     setSetupPluginEnabled: build.mutation<
       { id: string; enabled: boolean },
