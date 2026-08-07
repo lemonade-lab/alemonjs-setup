@@ -204,7 +204,18 @@ export const persistedWorkspace = persistReducer(
       'webviewTabs',
       'activeWebviewTabKey'
     ],
-    transforms: [privateDraftsTransform]
+    transforms: [privateDraftsTransform],
+    // A stored state written by an older release may hold null/undefined for
+    // fields this build expects to be arrays. Never let that leak into the
+    // live state, or components calling .find on them crash on first render.
+    stateReconciler: (inbound, _original, reduced) => {
+      const restored = { ...reduced, ...(inbound ?? {}) } as WorkspaceState
+      if (!Array.isArray(restored.projects)) restored.projects = []
+      if (!Array.isArray(restored.webviewTabs)) restored.webviewTabs = []
+      if (!restored.activeProjectID) restored.activeProjectID = ''
+      if (!restored.activeWebviewTabKey) restored.activeWebviewTabKey = ''
+      return restored
+    }
   },
   workspaceSlice.reducer
 )

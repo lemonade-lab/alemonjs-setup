@@ -68,6 +68,7 @@ import { SetupUpdateButton } from './SetupUpdateButton'
 import { AgentChatPage } from './AgentChat'
 import { ErrorNotice } from './ErrorNotice'
 import { ConfirmDialog } from './ConfirmDialog'
+import { Modal } from './Modal'
 import { AuthControl } from './AuthControl'
 import { RobotGitControl } from './RobotGitControl'
 import { SSHControl } from './SSHControl'
@@ -91,6 +92,7 @@ import {
   usePackageConfigQuery,
   useRobotRuntimeQuery,
   useRobotPM2StatusQuery,
+  useRobotPM2ProcessesQuery,
   useRobotTasksQuery,
   useSaveRobotLoginMutation,
   useRobotWebViewsQuery,
@@ -383,12 +385,11 @@ export function DirectoryPicker({
     }
   }
   return (
-    <div
-      className={cn(
-        'fixed inset-0 z-[95] flex items-center justify-center bg-slate-950/30 p-4',
-        priority && 'z-[200]'
-      )}
-      onClick={() => setContextMenu(null)}
+    <Modal
+      open
+      zIndex={priority ? 200 : 95}
+      onBackdropClick={() => setContextMenu(null)}
+      ariaLabel="选择目录"
     >
       <section
         className="directory-picker finder-picker grid h-[min(700px,calc(100vh-32px))] w-full max-w-5xl grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden rounded-xl border border-slate-200 bg-white shadow-[0_24px_70px_rgb(28_26_23/0.26)]"
@@ -601,7 +602,7 @@ export function DirectoryPicker({
         </div>
       )}
       {newFolderName !== '' && (
-        <div className="fixed inset-0 z-[220] grid place-items-center bg-slate-950/30 p-4">
+        <Modal open zIndex={220} ariaLabel="新建文件夹">
           <form
             className="grid w-full max-w-sm gap-3 rounded-xl bg-white p-4 shadow-xl"
             onSubmit={event => {
@@ -636,7 +637,7 @@ export function DirectoryPicker({
               </button>
             </div>
           </form>
-        </div>
+        </Modal>
       )}
       {deleteTarget && (
         <ConfirmDialog
@@ -653,7 +654,7 @@ export function DirectoryPicker({
           }}
         />
       )}
-    </div>
+    </Modal>
   )
 }
 
@@ -690,7 +691,9 @@ export function Dashboard({
   const [gitProject, setGitProject] = useState<Project | null>(null)
   const [invalidDirectory, setInvalidDirectory] = useState('')
   const [pendingBackpackRemoval, setPendingBackpackRemoval] = useState('')
-  const [pendingProjectRemoval, setPendingProjectRemoval] = useState<string | null>(null)
+  const [pendingProjectRemoval, setPendingProjectRemoval] = useState<
+    string | null
+  >(null)
   const [trackRuntimeTasks, setTrackRuntimeTasks] = useState(false)
   const [aiOpen, setAIOpen] = useState(false)
   const [agentSessions, setAgentSessions] = useState<
@@ -744,16 +747,22 @@ export function Dashboard({
       window.removeEventListener('alx:top-tool-open', closeWhenAnotherToolOpens)
   }, [])
   const environmentChecked = useRef(false)
+  const rootParamHandled = useRef(false)
   const dispatch = useDispatch()
-  const projects = useSelector(
+  const rawProjects = useSelector(
     (state: RootState) => state.workspace.projects
-  ) as Project[]
+  )
+  // Keep a stable array reference so effects depending on it do not re-run on
+  // every render when the selector briefly yields null/undefined.
+  const projects = useMemo(
+    () => (rawProjects ?? []) as Project[],
+    [rawProjects]
+  )
   const activeProjectID = useSelector(
     (state: RootState) => state.workspace.activeProjectID
   )
-  const webviewTabs = useSelector(
-    (state: RootState) => state.workspace.webviewTabs
-  )
+  const webviewTabs =
+    useSelector((state: RootState) => state.workspace.webviewTabs) ?? []
   const activeWebviewTabKey = useSelector(
     (state: RootState) => state.workspace.activeWebviewTabKey
   )
@@ -806,7 +815,10 @@ export function Dashboard({
     error: pm2StatusError,
     refetch: refetchPM2Status
   } = useRobotPM2StatusQuery(root, {
-    skip: !root || !runtime?.pm2Configured,
+    // Always query once a root is selected. Skipping on pm2Configured meant a
+    // freshly generated pm2.config.cjs (right after "修复后台运行") never woke
+    // the query, so the card stayed on "启动服务" even after PM2 came online.
+    skip: !root,
     refetchOnMountOrArgChange: true
   })
   const {
@@ -858,6 +870,33 @@ export function Dashboard({
   useEffect(() => {
     if (defaultPage === 'robot') setPage('robot')
   }, [defaultPage])
+  // Open /dashboard/robot?root=<path> links by adding that directory (if it is
+  // not already listed) and selecting it, restoring the pre-refactor behaviour
+  // of the "前往管理机器人" links generated after project creation.
+  useEffect(() => {
+    if (rootParamHandled.current || !projects) return
+    rootParamHandled.current = true
+    const param = new URLSearchParams(window.location.search).get('root')
+    if (!param) return
+    const path = param
+    if (projects.some(item => item.path === path)) {
+      dispatch(selectProject(projects.find(item => item.path === path)!.id))
+      return
+    }
+    void (async () => {
+      try {
+        const response = await fetch(
+          `/api/v1/robot/validate?${new URLSearchParams({ root: path })}`
+        )
+        const data = (await response.json()) as { valid?: boolean }
+        if (response.ok && data.valid === true) {
+          dispatch(addProjects([{ id: path, path, name: projectName(path) }]))
+        }
+      } catch {
+        // A missing/invalid directory must not break the dashboard render.
+      }
+    })()
+  }, [dispatch, projects])
   useEffect(() => {
     if (report || checking || environmentChecked.current) return
     environmentChecked.current = true
@@ -1405,7 +1444,7 @@ export function Dashboard({
           )}
           onRefresh={() => {
             void refetchRuntime()
-            if (runtime?.pm2Configured) void refetchPM2Status()
+            void refetchPM2Status()
           }}
           onOpenConsole={() => setConsoleOpen(true)}
           onRun={(action, packageName) =>
@@ -1421,7 +1460,11 @@ export function Dashboard({
                 // reject the original operation result.
                 try {
                   await refetchRuntime().unwrap()
-                  if (runtime?.pm2Configured) void refetchPM2Status()
+                  // PM2 status is always refreshed here; gating it on the
+                  // closure's pm2Configured would skip the fetch right after a
+                  // "修复后台运行" generated the config, leaving the card stuck
+                  // on "启动服务".
+                  await refetchPM2Status()
                 } catch {
                   // Keep the original result; the overview refetches on next poll.
                 }
@@ -1710,7 +1753,7 @@ export function Dashboard({
             open={Boolean(pendingProjectRemoval)}
             title="移除机器人目录"
             subtitle="仅从管理列表中移除，不会删除磁盘上的项目文件。"
-            message={`确定将「${pendingProjectRemoval ? projects.find(p => p.id === pendingProjectRemoval)?.name ?? pendingProjectRemoval : ''}」从机器人目录移除吗？其磁盘文件保持不变，可随时重新添加。`}
+            message={`确定将「${pendingProjectRemoval ? (projects.find(p => p.id === pendingProjectRemoval)?.name ?? pendingProjectRemoval) : ''}」从机器人目录移除吗？其磁盘文件保持不变，可随时重新添加。`}
             confirmLabel="移除目录"
             destructive
             onCancel={() => setPendingProjectRemoval(null)}
@@ -1741,7 +1784,7 @@ export function Dashboard({
             onConfirm={cloneRobotRepository}
           />
           {renameTarget && (
-            <div className="fixed inset-0 z-[300] grid place-items-center bg-slate-900/40 p-4">
+            <Modal open zIndex={300} className="bg-slate-900/40">
               <div className="grid w-full max-w-sm gap-4 rounded-xl bg-white p-5 shadow-2xl">
                 <h3 className="text-base font-semibold text-slate-900">
                   重命名对话
@@ -1780,7 +1823,7 @@ export function Dashboard({
                   </button>
                 </footer>
               </div>
-            </div>
+            </Modal>
           )}
           <section className="console-layout">
             <ProjectRail
@@ -1906,7 +1949,12 @@ function ProjectRail({
   setupPlugins: SetupPlugin[]
   projects: Project[]
   activeID: string
-  agentSessions: Array<{ id: string; title: string; root: string; updated: string }>
+  agentSessions: Array<{
+    id: string
+    title: string
+    root: string
+    updated: string
+  }>
   onFeature: (feature: SystemFeature) => void
   onAdd: () => void
   onClone: () => void
@@ -2199,7 +2247,7 @@ function GitCloneDialog({
   if (!open) return null
   const usesSSH = /^(git@|ssh:\/\/)/.test(repository.trim())
   return (
-    <div className="fixed inset-0 z-[95] flex items-center justify-center bg-slate-950/30 p-4">
+    <Modal open ariaLabel="从 Git 克隆机器人">
       <section
         className="git-dialog git-clone-dialog grid max-h-[min(720px,calc(100vh-32px))] w-full max-w-xl grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden rounded-xl border border-slate-200 bg-white shadow-[0_22px_58px_rgb(28_26_23/0.25)]"
         role="dialog"
@@ -2327,18 +2375,6 @@ function GitCloneDialog({
                 )}
               </label>
               <label className="grid gap-1 text-xs font-semibold text-slate-600">
-                下载来源
-                <select
-                  className="h-9 rounded-md border border-slate-300 bg-white px-2.5 text-sm font-normal text-slate-800 outline-none focus:border-brand-600 focus:ring-2 focus:ring-brand-100"
-                  value={mirror}
-                  onChange={event => setMirror(event.target.value)}
-                >
-                  <option value="official">Git 官方（推荐）</option>
-                  <option value="gh-proxy">GitHub 加速 · gh-proxy</option>
-                  <option value="ghproxy-net">GitHub 加速 · ghproxy.net</option>
-                </select>
-              </label>
-              <label className="grid gap-1 text-xs font-semibold text-slate-600">
                 克隆深度
                 <select
                   className="h-9 rounded-md border border-slate-300 bg-white px-2.5 text-sm font-normal text-slate-800 outline-none focus:border-brand-600 focus:ring-2 focus:ring-brand-100"
@@ -2350,9 +2386,18 @@ function GitCloneDialog({
                   <option value={200}>最近 200 条提交</option>
                   <option value={0}>完整历史</option>
                 </select>
-                <small className="font-normal text-slate-400">
-                  深度越浅下载越快；想看到其他分支的提交历史请选完整历史。
-                </small>
+              </label>
+              <label className="grid gap-1 text-xs font-semibold text-slate-600">
+                下载来源
+                <select
+                  className="h-9 rounded-md border border-slate-300 bg-white px-2.5 text-sm font-normal text-slate-800 outline-none focus:border-brand-600 focus:ring-2 focus:ring-brand-100"
+                  value={mirror}
+                  onChange={event => setMirror(event.target.value)}
+                >
+                  <option value="official">Git 官方（推荐）</option>
+                  <option value="gh-proxy">GitHub 加速 · gh-proxy</option>
+                  <option value="ghproxy-net">GitHub 加速 · ghproxy.net</option>
+                </select>
               </label>
             </div>
           </section>
@@ -2431,7 +2476,7 @@ function GitCloneDialog({
           </button>
         </footer>
       </section>
-    </div>
+    </Modal>
   )
 }
 
@@ -2479,7 +2524,7 @@ function GitInitializeDialog({
   const update = (key: keyof typeof values, value: string) =>
     onChange({ ...values, [key]: value })
   return (
-    <div className="fixed inset-0 z-[95] flex items-center justify-center bg-slate-950/30 p-4">
+    <Modal open ariaLabel="填写 Git 初始化信息">
       <section
         className="git-dialog grid w-full max-w-lg grid-rows-[auto_1fr_auto] overflow-hidden rounded-xl border border-slate-200 bg-white shadow-[0_22px_58px_rgb(28_26_23/0.25)]"
         role="dialog"
@@ -2556,7 +2601,7 @@ function GitInitializeDialog({
           </button>
         </footer>
       </section>
-    </div>
+    </Modal>
   )
 }
 function ProjectItem({
@@ -2572,7 +2617,12 @@ function ProjectItem({
 }: {
   project: Project
   active: boolean
-  agentSessions: Array<{ id: string; title: string; root: string; updated: string }>
+  agentSessions: Array<{
+    id: string
+    title: string
+    root: string
+    updated: string
+  }>
   onSelect: (id: string) => void
   onRemove: (id: string) => void
   onOpenAgent: (sessionID?: string) => void
@@ -2705,7 +2755,12 @@ function ProjectItem({
                 onClick={() => onOpenAgent(item.id)}
                 onContextMenu={event => {
                   event.preventDefault()
-                  setCtxMenu({ id: item.id, title: item.title, x: event.clientX, y: event.clientY })
+                  setCtxMenu({
+                    id: item.id,
+                    title: item.title,
+                    x: event.clientX,
+                    y: event.clientY
+                  })
                 }}
                 title={`${item.title}（右键操作）`}
               >
@@ -3331,7 +3386,9 @@ function SystemPluginCenter({
             >
               <button
                 className="setup-plugin-open flex min-h-11 min-w-0 flex-1 items-center gap-2.5 rounded-lg bg-transparent p-0 text-left transition hover:bg-slate-50 disabled:cursor-default disabled:opacity-60 dark:hover:bg-slate-800"
-                onClick={() => plugin.enabled && plugin.web && onOpen(plugin.id)}
+                onClick={() =>
+                  plugin.enabled && plugin.web && onOpen(plugin.id)
+                }
                 disabled={!plugin.enabled || !plugin.web}
               >
                 <i className="inline-flex size-8 shrink-0 items-center justify-center rounded-lg bg-brand-50 text-brand-600 not-italic dark:bg-brand-100/60 dark:text-brand-200">
@@ -3394,28 +3451,13 @@ function SetupPluginCenter({ plugin }: { plugin: SetupPlugin }) {
   const webSrc = `/api/v1/setup/plugins/web/${plugin.id}/index.html?theme=${theme}`
 
   return (
-    <section className="workspace-content setup-plugin-page grid max-w-[1100px] content-start gap-4">
-      <header className="flex min-h-10 items-center justify-between border-b border-slate-200 pb-3 dark:border-slate-700">
-        <div>
-          <h1 className="m-0 text-base font-semibold tracking-tight text-slate-900 dark:text-slate-100">
-            {plugin.name}
-          </h1>
-          {plugin.description && (
-            <p className="m-0 mt-0.5 text-xs text-slate-400">{plugin.description}</p>
-          )}
-        </div>
-        <small className="rounded-full bg-slate-100 px-2 py-1 text-xs font-semibold text-slate-500 dark:bg-slate-800 dark:text-slate-400">
-          v{plugin.version}
-        </small>
-      </header>
+    <section>
       {hasWeb ? (
-        <div className="setup-plugin-web relative min-h-0 overflow-hidden rounded-xl border border-slate-200 dark:border-slate-700">
-          <iframe
-            className="h-[640px] w-full border-0"
-            src={webSrc}
-            title={`${plugin.name} 界面`}
-          />
-        </div>
+        <iframe
+          className="h-[640px] w-full border-0"
+          src={webSrc}
+          title={`${plugin.name} 界面`}
+        />
       ) : (
         <div className="setup-plugin-web-missing grid gap-2 rounded-xl border border-dashed border-slate-300 bg-slate-50 p-6 text-center dark:border-slate-600 dark:bg-slate-900">
           <strong className="text-sm text-slate-700 dark:text-slate-200">
@@ -4310,10 +4352,13 @@ function RuntimePanel({
   const [loginDialogError, setLoginDialogError] = useState('')
   const [loginDialogBusy, setLoginDialogBusy] = useState(false)
   const [pm2LogsOpen, setPM2LogsOpen] = useState(false)
+  const [pm2ProcessesOpen, setPM2ProcessesOpen] = useState(false)
   const persistentReady = overview?.pm2Configured && overview.hasStartScript
   const pm2Managed = Boolean(pm2Status?.managed)
   const pm2LocalRunning = pm2Running
   const localRunning = developmentRunning || foregroundRunning
+  // A missing dependency blocks every run action until dependencies install.
+  const depsMissing = overview ? !overview.dependenciesComplete : false
   const knownPlatform = (overview?.platforms ?? []).find(
     item => item.id === selectedPlatform
   )
@@ -4411,9 +4456,11 @@ function RuntimePanel({
     // so a package installed moments ago loads its config (with any saved
     // required values) instead of being treated as "not installed".
     const freshOverview = await onRefreshOverview()
-    const platform = (freshOverview?.platforms ?? overview?.platforms ?? []).find(
-      item => item.id === id
-    )
+    const platform = (
+      freshOverview?.platforms ??
+      overview?.platforms ??
+      []
+    ).find(item => item.id === id)
     if (platform) {
       setCustomLogin(platform.id)
       setCustomPackage(platform.package)
@@ -4435,9 +4482,7 @@ function RuntimePanel({
         setLoginDialogError('连接包已安装。请填写下方配置后点击“启动”。')
       }
     } catch (reason) {
-      setLoginDialogError(
-        operationErrorMessage(reason, '连接包安装未完成。')
-      )
+      setLoginDialogError(operationErrorMessage(reason, '连接包安装未完成。'))
     } finally {
       setLoginDialogBusy(false)
     }
@@ -4698,8 +4743,7 @@ function RuntimePanel({
                   const missing = (connectionConfig?.fields ?? [])
                     .filter(
                       field =>
-                        field.required &&
-                        !connectionValues[field.name]?.trim()
+                        field.required && !connectionValues[field.name]?.trim()
                     )
                     .map(field => field.description || field.name)
                   const blocked = userLogin && missing.length > 0
@@ -4727,46 +4771,29 @@ function RuntimePanel({
         )}
       <section className="grid gap-3">
         <section className="overflow-hidden rounded-xl border border-slate-200 bg-white">
-          <header className="flex items-center justify-between gap-3 border-b border-slate-200 px-4 py-3">
-            <div className="grid gap-1">
-              <strong className="flex items-center gap-2 text-sm font-semibold text-slate-800">
-                本机运行
-                <StatusDot active={developmentRunning || foregroundRunning} />
-              </strong>
-              <span className="text-xs text-slate-500">
-                {developmentRunning || foregroundRunning
-                  ? '正在运行，可随时停止。'
-                  : pm2LocalRunning
-                    ? '当前正在后台运行，请先停止后台服务后再启动本机进程。'
-                    : '适合调试。停止后，机器人就会下线。'}
-              </span>
-            </div>
-            <button className="secondary-button" onClick={onOpenConsole}>
-              运行终端
-            </button>
-          </header>
           <div className="divide-y divide-slate-200">
             <section className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
               <div>
                 <strong className="block text-sm font-semibold text-slate-700">
                   依赖
+                  <StatusDot
+                    active={overview?.dependenciesComplete}
+                    label={overview?.dependenciesComplete ? '已安装' : '未安装'}
+                  />
                 </strong>
                 <span className="block text-xs text-slate-500">
-                  运行前会自动检查；可只升级 AlemonJS
-                  相关依赖，或重新安装全部依赖。
+                  {overview?.dependenciesComplete
+                    ? '依赖完整；可只升级 AlemonJS 相关依赖，或重新安装全部依赖。'
+                    : '依赖未安装或缺失，请先安装后再运行。'}
                 </span>
               </div>
               <div className="ml-auto flex shrink-0 flex-wrap justify-end gap-2">
                 <button
-                  className="text-button"
-                  disabled={busy}
-                  onClick={() => onRun('dependency-status')}
-                >
-                  检查
-                </button>
-                <button
                   className="secondary-button"
-                  disabled={busy}
+                  disabled={busy || !overview?.dependenciesComplete}
+                  title={
+                    !overview?.dependenciesComplete ? '请先安装依赖。' : ''
+                  }
                   onClick={() =>
                     ask(
                       '升级 AlemonJS',
@@ -4778,99 +4805,28 @@ function RuntimePanel({
                   一键升级
                 </button>
                 <button
-                  className="secondary-button"
+                  className={
+                    overview?.dependenciesComplete
+                      ? 'secondary-button'
+                      : 'danger-button'
+                  }
                   disabled={busy}
                   onClick={() =>
                     ask(
-                      '重新安装依赖',
-                      '会根据 package.json 重新安装当前机器人的全部依赖。',
+                      overview?.dependenciesComplete
+                        ? '重新安装依赖'
+                        : '安装依赖',
+                      overview?.dependenciesComplete
+                        ? '会根据 package.json 重新安装当前机器人的全部依赖。'
+                        : '会安装 package.json 声明的全部依赖。',
                       () => onRun('install')
                     )
                   }
                 >
-                  重新安装
+                  {overview?.dependenciesComplete ? '重新安装' : '安装'}
                 </button>
               </div>
             </section>
-            {developerMode && (
-              <section className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
-                <div>
-                  <strong className="flex items-center gap-2 text-sm font-semibold text-slate-700">
-                    开发运行
-                    <StatusDot
-                      active={developmentRunning}
-                      stopping={developmentStopping}
-                    />
-                  </strong>
-                  <span className="block text-xs text-slate-500">
-                    {developmentStopping
-                      ? '正在停止…'
-                      : developmentRunning
-                        ? '正在运行，可随时停止。'
-                        : foregroundRunning
-                          ? '当前正在前台运行，请先停止前台进程。'
-                          : overview?.hasDevScript
-                            ? '适合改代码、排查问题。'
-                            : '还没有开发命令。'}
-                  </span>
-                </div>
-                <div className="ml-auto flex shrink-0 justify-end">
-                  {overview?.hasDevScript ? (
-                    <button
-                      className={
-                        developmentRunning || developmentStopping
-                          ? 'secondary-button'
-                          : 'primary-button'
-                      }
-                      disabled={
-                        busy ||
-                        foregroundRunning ||
-                        developmentStopping ||
-                        pm2LocalRunning
-                      }
-                      title={
-                        pm2LocalRunning
-                          ? '当前目录正在后台运行，请先停止服务。'
-                          : foregroundRunning
-                            ? '当前目录正在前台运行，请先停止。'
-                            : ''
-                      }
-                      onClick={() =>
-                        developmentRunning
-                          ? ask('停止开发', '会停止当前项目的开发运行。', () =>
-                              onRun('dev-stop')
-                            )
-                          : void askStart(
-                              'dev',
-                              '启动开发',
-                              '会以开发模式启动，并打开运行日志。'
-                            )
-                      }
-                    >
-                      {developmentStopping
-                        ? '正在停止…'
-                        : developmentRunning
-                          ? '停止开发'
-                          : '启动开发'}
-                    </button>
-                  ) : (
-                    <button
-                      className="secondary-button"
-                      disabled={busy}
-                      onClick={() =>
-                        ask(
-                          '修复开发命令',
-                          '会补齐开发所需的运行命令，并保留现有设置。',
-                          () => onRun('repair-dev')
-                        )
-                      }
-                    >
-                      修复
-                    </button>
-                  )}
-                </div>
-              </section>
-            )}
             <section className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
               <div>
                 <strong className="flex items-center gap-2 text-sm font-semibold text-slate-700">
@@ -4892,7 +4848,10 @@ function RuntimePanel({
                     : '还没有前台运行命令。'}
                 </span>
               </div>
-              <div className="ml-auto flex shrink-0 justify-end">
+              <div className="ml-auto flex gap-2 shrink-0 justify-end">
+                <button className="secondary-button" onClick={onOpenConsole}>
+                  运行终端
+                </button>
                 {overview?.hasAppScript ? (
                   <button
                     className={
@@ -4902,16 +4861,19 @@ function RuntimePanel({
                     }
                     disabled={
                       busy ||
+                      depsMissing ||
                       developmentRunning ||
                       foregroundStopping ||
                       pm2LocalRunning
                     }
                     title={
-                      pm2LocalRunning
-                        ? '当前目录正在后台运行，请先停止服务。'
-                        : developmentRunning
-                          ? '当前目录正在开发运行，请先停止。'
-                          : ''
+                      depsMissing
+                        ? '请先安装依赖。'
+                        : pm2LocalRunning
+                          ? '当前目录正在后台运行，请先停止服务。'
+                          : developmentRunning
+                            ? '当前目录正在开发运行，请先停止。'
+                            : ''
                     }
                     onClick={() =>
                       foregroundRunning
@@ -4952,6 +4914,108 @@ function RuntimePanel({
             </section>
           </div>
         </section>
+        {developerMode && (
+          <section className="overflow-hidden rounded-xl border border-slate-200 bg-white">
+            <header className="flex items-center justify-between gap-3 border-b border-slate-200 px-4 py-3">
+              <div className="grid gap-1">
+                <strong className="flex items-center gap-2 text-sm font-semibold text-slate-800">
+                  开发运行
+                  <StatusDot
+                    active={developmentRunning}
+                    stopping={developmentStopping}
+                  />
+                </strong>
+                <span className="block text-xs text-slate-500">
+                  {developmentStopping
+                    ? '正在停止…'
+                    : developmentRunning
+                      ? '正在运行，可随时停止。'
+                      : foregroundRunning
+                        ? '当前正在前台运行，请先停止前台进程。'
+                        : pm2LocalRunning
+                          ? '当前正在后台运行，请先停止后台服务。'
+                          : overview?.hasDevScript
+                            ? '适合改代码、排查问题。'
+                            : '还没有开发命令。'}
+                </span>
+              </div>
+              <div className="flex shrink-0 flex-wrap justify-end gap-2">
+                {overview?.hasBuildScript && (
+                  <button
+                    className="secondary-button"
+                    disabled={busy || depsMissing}
+                    title={depsMissing ? '请先安装依赖。' : ''}
+                    onClick={() =>
+                      ask(
+                        '构建脚本',
+                        '会运行 build 脚本生成构建产物；后台运行需要先构建才能识别本地应用。',
+                        () => onRun('build')
+                      )
+                    }
+                  >
+                    构建脚本
+                  </button>
+                )}
+                {overview?.hasDevScript ? (
+                  <button
+                    className={
+                      developmentRunning || developmentStopping
+                        ? 'secondary-button'
+                        : 'primary-button'
+                    }
+                    disabled={
+                      busy ||
+                      depsMissing ||
+                      foregroundRunning ||
+                      developmentStopping ||
+                      pm2LocalRunning
+                    }
+                    title={
+                      depsMissing
+                        ? '请先安装依赖。'
+                        : pm2LocalRunning
+                          ? '当前目录正在后台运行，请先停止服务。'
+                          : foregroundRunning
+                            ? '当前目录正在前台运行，请先停止。'
+                            : ''
+                    }
+                    onClick={() =>
+                      developmentRunning
+                        ? ask('停止开发', '会停止当前项目的开发运行。', () =>
+                            onRun('dev-stop')
+                          )
+                        : void askStart(
+                            'dev',
+                            '启动开发',
+                            '会以开发模式启动，并打开运行日志。'
+                          )
+                    }
+                  >
+                    {developmentStopping
+                      ? '正在停止…'
+                      : developmentRunning
+                        ? '停止开发'
+                        : '启动开发'}
+                  </button>
+                ) : (
+                  <button
+                    className="secondary-button"
+                    disabled={busy}
+                    onClick={() =>
+                      ask(
+                        '修复开发命令',
+                        '会补齐开发所需的运行命令，并保留现有设置。',
+                        () => onRun('repair-dev')
+                      )
+                    }
+                  >
+                    修复
+                  </button>
+                )}
+              </div>
+            </header>
+          </section>
+        )}
         <section className="overflow-hidden rounded-xl border border-slate-200 bg-white">
           <header className="flex items-center justify-between gap-3 border-b border-slate-200 px-4 py-3">
             <div className="grid gap-1">
@@ -4986,13 +5050,15 @@ function RuntimePanel({
             </div>
             <button
               className="primary-button"
-              disabled={busy || !persistentReady || localRunning}
+              disabled={busy || depsMissing || !persistentReady || localRunning}
               title={
-                localRunning
-                  ? '当前目录正在本机运行，请先停止本机进程。'
-                  : !persistentReady
-                    ? '补齐 start 脚本和 PM2 配置后可使用。'
-                    : ''
+                depsMissing
+                  ? '请先安装依赖。'
+                  : localRunning
+                    ? '当前目录正在本机运行，请先停止本机进程。'
+                    : !persistentReady
+                      ? '补齐 start 脚本和 PM2 配置后可使用。'
+                      : ''
               }
               onClick={() =>
                 void askStart(
@@ -5008,10 +5074,12 @@ function RuntimePanel({
             </button>
           </header>
           <div className="flex flex-wrap items-center justify-end gap-2 px-4 py-3">
+            {/* PM2 status detection can be unreliable (daemon/version mismatch,
+                sandboxed reads), so these actions stay clickable regardless of
+                the detected state. The backend reports errors per action. */}
             <button
               className="secondary-button"
-              disabled={busy || !pm2Managed}
-              title={pm2Managed ? '' : '当前机器人没有可停止的 PM2 服务。'}
+              disabled={busy}
               onClick={() =>
                 ask('停止服务', '会停止当前项目在后台运行的机器人。', () =>
                   onRun('pm2-stop')
@@ -5022,8 +5090,7 @@ function RuntimePanel({
             </button>
             <button
               className="secondary-button"
-              disabled={busy || !pm2Managed}
-              title={pm2Managed ? '' : '当前机器人没有可重启的 PM2 服务。'}
+              disabled={busy}
               onClick={() =>
                 ask('重启服务', '会停止并重新启动后台运行的机器人。', () =>
                   onRun('pm2-restart')
@@ -5034,8 +5101,7 @@ function RuntimePanel({
             </button>
             <button
               className="secondary-button"
-              disabled={busy || !pm2Running}
-              title={pm2Running ? '' : '当前机器人没有正在运行的 PM2 服务。'}
+              disabled={busy}
               onClick={() =>
                 ask('更新服务', '会尽量不中断服务地应用最新设置。', () =>
                   onRun('pm2-reload')
@@ -5060,14 +5126,21 @@ function RuntimePanel({
             <div className="runtime-persistent-utilities">
               <button
                 className="text-button"
-                disabled={busy || !pm2Managed}
+                disabled={busy}
+                onClick={() => setPM2ProcessesOpen(true)}
+              >
+                状态
+              </button>
+              <button
+                className="text-button"
+                disabled={busy}
                 onClick={() => setPM2LogsOpen(true)}
               >
-                PM2 日志
+                日志
               </button>
               <button
                 className="text-button danger-action"
-                disabled={busy || !overview?.pm2Configured}
+                disabled={busy}
                 onClick={() =>
                   ask(
                     '移除后台服务',
@@ -5086,6 +5159,11 @@ function RuntimePanel({
         open={pm2LogsOpen}
         root={root}
         onClose={() => setPM2LogsOpen(false)}
+      />
+      <PM2ProcessesPanel
+        open={pm2ProcessesOpen}
+        root={root}
+        onClose={() => setPM2ProcessesOpen(false)}
       />
     </section>
   )
@@ -5375,9 +5453,10 @@ function ControlCard({
   const { data: gitChanges } = useGitWorkspaceQuery(gitOverviewChangesArgs, {
     skip: !gitRoot || page !== 'robot' || section !== 'runtime'
   })
-  const gitOverview = gitBranches && gitChanges
-    ? { ...gitBranches, changes: gitChanges.changes }
-    : gitBranches ?? gitChanges ?? undefined
+  const gitOverview =
+    gitBranches && gitChanges
+      ? { ...gitBranches, changes: gitChanges.changes }
+      : (gitBranches ?? gitChanges ?? undefined)
   const activePrimary =
     page === 'robot'
       ? section === 'backpack'
@@ -5678,9 +5757,11 @@ function ReadonlyConsole({
   }, [message, open])
   if (!open) return null
   return (
-    <div
-      className="readonly-console-backdrop fixed inset-0 z-40 grid place-items-center bg-slate-950/35 p-4 backdrop-blur-sm"
-      role="presentation"
+    <Modal
+      open
+      zIndex={40}
+      className="readonly-console-backdrop bg-slate-950/35 backdrop-blur-sm"
+      ariaLabel="运行终端"
     >
       <section
         className="readonly-console grid max-h-[min(720px,calc(100vh-32px))] w-[min(860px,100%)] grid-rows-[auto_minmax(0,1fr)] overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl dark:border-slate-700 dark:bg-slate-900"
@@ -5755,7 +5836,7 @@ function ReadonlyConsole({
           )}
         </div>
       </section>
-    </div>
+    </Modal>
   )
 }
 
@@ -5812,9 +5893,11 @@ function PM2LogsPanel({
   }, [load, open, page, root])
   if (!open) return null
   return (
-    <div
-      className="readonly-console-backdrop fixed inset-0 z-40 grid place-items-center bg-slate-950/35 p-4 backdrop-blur-sm"
-      role="presentation"
+    <Modal
+      open
+      zIndex={40}
+      className="readonly-console-backdrop bg-slate-950/35 backdrop-blur-sm"
+      ariaLabel="PM2 日志"
     >
       <section
         className="readonly-console pm2-log-panel grid max-h-[min(720px,calc(100vh-32px))] w-[min(860px,100%)] grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl dark:border-slate-700 dark:bg-slate-900"
@@ -5877,7 +5960,173 @@ function PM2LogsPanel({
           </button>
         </footer>
       </section>
-    </div>
+    </Modal>
+  )
+}
+function PM2ProcessesPanel({
+  open,
+  root,
+  onClose
+}: {
+  open: boolean
+  root: string
+  onClose: () => void
+}) {
+  const { data, isFetching, isError, error, refetch } =
+    useRobotPM2ProcessesQuery(root, {
+      skip: !open || !root
+    })
+  const items = data?.items ?? []
+  if (!open) return null
+  const formatBytes = (value: number) => {
+    if (!value) return '—'
+    const units = ['B', 'KB', 'MB', 'GB']
+    let size = value
+    let index = 0
+    while (size >= 1024 && index < units.length - 1) {
+      size /= 1024
+      index++
+    }
+    return `${size.toFixed(index === 0 ? 0 : 1)} ${units[index]}`
+  }
+  const formatUptime = (value: number) => {
+    if (!value) return '—'
+    const seconds = Math.floor((Date.now() - value) / 1000)
+    if (seconds < 60) return `${seconds}s`
+    if (seconds < 3600) return `${Math.floor(seconds / 60)}m`
+    if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`
+    return `${Math.floor(seconds / 86400)}d`
+  }
+  const statusTone = (status: string) =>
+    status === 'online'
+      ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300'
+      : status === 'launching'
+        ? 'bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300'
+        : 'bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400'
+  return (
+    <Modal
+      open
+      zIndex={40}
+      className="readonly-console-backdrop bg-slate-950/35 backdrop-blur-sm"
+      ariaLabel="PM2 进程"
+    >
+      <section
+        className="grid max-h-[min(720px,calc(100vh-32px))] w-[min(860px,100%)] grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl dark:border-slate-700 dark:bg-slate-900"
+        role="dialog"
+        aria-modal="true"
+        aria-label="PM2 进程"
+      >
+        <header className="flex items-center justify-between gap-3 border-b border-slate-200 px-4 py-3 dark:border-slate-700">
+          <div className="flex min-w-0 items-center gap-2">
+            <Terminal className="size-4 shrink-0 text-brand-600 dark:text-brand-200" />
+            <strong className="text-sm font-semibold text-slate-900 dark:text-slate-100">
+              PM2 进程
+            </strong>
+            <small className="hidden text-xs text-slate-400 sm:inline">
+              当前机器人的 PM2 守护进程管理的全部服务
+            </small>
+          </div>
+          <div className="flex items-center gap-1">
+            <button
+              className="inline-flex size-8 items-center justify-center rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-800"
+              disabled={isFetching}
+              onClick={() => void refetch()}
+              aria-label="刷新 PM2 进程"
+              title="刷新"
+            >
+              <RefreshCw className="size-4" />
+            </button>
+            <button
+              className="inline-flex size-8 items-center justify-center rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-800"
+              onClick={onClose}
+              aria-label="关闭 PM2 进程"
+              title="关闭"
+            >
+              <X className="size-4" />
+            </button>
+          </div>
+        </header>
+        {isError ? (
+          <div className="grid min-h-0 place-items-center gap-3 p-8 text-center">
+            <p className="text-xs text-slate-500">
+              {operationErrorMessage(error, '无法读取 PM2 进程。')}
+            </p>
+            <button className="secondary-button" onClick={() => void refetch()}>
+              重试
+            </button>
+          </div>
+        ) : isFetching && !items.length ? (
+          <div className="grid min-h-0 place-items-center p-8 text-xs text-slate-400">
+            正在读取 PM2 进程…
+          </div>
+        ) : !items.length ? (
+          <div className="grid min-h-0 place-items-center p-8 text-xs text-slate-400">
+            当前没有正在运行的 PM2 进程。
+          </div>
+        ) : (
+          <div className="min-h-0 overflow-auto">
+            <table className="w-full border-collapse text-left text-xs">
+              <thead className="sticky top-0 bg-slate-50 text-slate-400 dark:bg-slate-800 dark:text-slate-300">
+                <tr>
+                  <th className="px-3 py-2 font-medium">ID</th>
+                  <th className="px-3 py-2 font-medium">名称</th>
+                  <th className="px-3 py-2 font-medium">状态</th>
+                  <th className="px-3 py-2 font-medium">PID</th>
+                  <th className="px-3 py-2 font-medium">内存</th>
+                  <th className="px-3 py-2 font-medium">CPU</th>
+                  <th className="px-3 py-2 font-medium">重启</th>
+                  <th className="px-3 py-2 font-medium">运行时长</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                {items.map(item => (
+                  <tr
+                    key={item.id}
+                    className="text-slate-700 dark:text-slate-200"
+                  >
+                    <td className="px-3 py-2 font-mono text-slate-400">
+                      {item.id}
+                    </td>
+                    <td className="px-3 py-2 font-semibold">{item.name}</td>
+                    <td className="px-3 py-2">
+                      <span
+                        className={`inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-medium ${statusTone(item.status)}`}
+                      >
+                        <i className="inline-block size-1.5 rounded-full bg-current" />
+                        {item.status}
+                      </span>
+                    </td>
+                    <td className="px-3 py-2 font-mono">{item.pid || '—'}</td>
+                    <td className="px-3 py-2 font-mono">
+                      {formatBytes(item.memory)}
+                    </td>
+                    <td className="px-3 py-2 font-mono">
+                      {item.cpu ? `${item.cpu.toFixed(1)}%` : '—'}
+                    </td>
+                    <td className="px-3 py-2 font-mono">{item.restarts}</td>
+                    <td className="px-3 py-2 font-mono">
+                      {formatUptime(item.uptime)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        <footer className="flex items-center justify-between border-t border-slate-200 px-4 py-3 dark:border-slate-700">
+          <span className="text-xs text-slate-500">
+            共 {items.length} 个进程
+          </span>
+          <button
+            className="secondary-button"
+            disabled={isFetching}
+            onClick={() => void refetch()}
+          >
+            刷新
+          </button>
+        </footer>
+      </section>
+    </Modal>
   )
 }
 function EditorMode({

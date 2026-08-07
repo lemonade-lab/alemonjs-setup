@@ -92,7 +92,7 @@ func TestRepairPM2CreatesRunnableProductionEntryAndConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, expected := range []string{"module.exports = pm2 ||", "name: 'alemonb'", "script: 'node index.js'", "NODE_ENV: 'production'"} {
+	for _, expected := range []string{"module.exports = pm2 ||", "name: 'alemonb'", "script: './index.js'", "NODE_ENV: 'production'"} {
 		if !strings.Contains(string(config), expected) {
 			t.Errorf("pm2 config does not contain %q:\n%s", expected, config)
 		}

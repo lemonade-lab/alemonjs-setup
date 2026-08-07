@@ -70,6 +70,7 @@ export type RuntimeOverview = {
   hasBuildScript: boolean
   hasStartScript: boolean
   pm2Configured: boolean
+  dependenciesComplete: boolean
   platforms: Array<{
     id: string
     label: string
@@ -84,6 +85,18 @@ export type PM2Status = {
   managed: boolean
   running: boolean
   status?: string
+}
+export type PM2Process = {
+  id: number
+  name: string
+  namespace: string
+  status: string
+  pid: number
+  memory: number
+  cpu: number
+  uptime: number
+  restarts: number
+  script: string
 }
 export type GitWorkspace = {
   root: string
@@ -283,6 +296,9 @@ export const workspaceApi = createApi({
       query: root => `robot/pm2-status?${new URLSearchParams({ root })}`,
       providesTags: (_result, _error, root) => [{ type: 'Runtime', id: root }]
     }),
+    robotPM2Processes: build.query<{ items: PM2Process[] }, string>({
+      query: root => `robot/pm2-processes?${new URLSearchParams({ root })}`
+    }),
     robotRuntimePreflight: build.query<RuntimePreflight, string>({
       query: root => `robot/runtime/preflight?${new URLSearchParams({ root })}`
     }),
@@ -463,6 +479,7 @@ export const {
   useLazyRobotConsoleQuery,
   useRobotRuntimeQuery,
   useRobotPM2StatusQuery,
+  useRobotPM2ProcessesQuery,
   useLazyRobotRuntimePreflightQuery,
   useLazyRobotProjectQuery,
   useLazyRobotFileQuery,

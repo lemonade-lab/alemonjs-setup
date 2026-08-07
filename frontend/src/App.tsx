@@ -676,7 +676,7 @@ function FlowView({
             </h1>
             {creation?.status === 'ready' ? (
               <>
-                <p>项目已保存至：{creation.path}</p>
+                <p>{creation.path}</p>
                 {creation.path && (
                   <a
                     className="primary-button"
@@ -736,15 +736,6 @@ function FlowView({
                   <p key={index}>{log}</p>
                 ))}
               </div>
-            )}
-            {creation?.status !== 'ready' && (
-              <button
-                className="primary-button"
-                onClick={() => onCreate(createConfig())}
-                disabled={creating}
-              >
-                {creating ? '正在创建…' : '确认创建'}
-              </button>
             )}
           </>
         )

@@ -3,6 +3,7 @@ package web
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -205,6 +206,7 @@ func NewServerWithAuth(version string, staticFiles fs.FS, identity *access.Manag
 	mux.HandleFunc("/api/v1/robot/console", s.robotConsoleHandler)
 	mux.HandleFunc("/api/v1/robot/pm2-logs", s.robotPM2LogsHandler)
 	mux.HandleFunc("/api/v1/robot/pm2-status", s.robotPM2StatusHandler)
+	mux.HandleFunc("/api/v1/robot/pm2-processes", s.robotPM2ProcessesHandler)
 	mux.HandleFunc("/api/v1/robot/runtime", s.robotRuntimeHandler)
 	mux.HandleFunc("/api/v1/robot/runtime/preflight", s.robotRuntimePreflightHandler)
 	mux.HandleFunc("/api/v1/robot/tasks", s.robotTasksHandler)
@@ -1233,12 +1235,10 @@ func (s *server) robotConsoleHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	output, status, runError := s.operationOutput(root, "app")
-	mode := "前台运行"
-	if output == "" && status == "" {
-		output, status, runError = s.operationOutput(root, "dev")
-		mode = "开发模式"
-	}
+	// Prefer the process that is actually running; otherwise show the most
+	// recent dev/app run. A fixed "app first, then dev" order would hide a fresh
+	// dev run whenever an older foreground run still has history.
+	output, status, runError, mode := s.runtimeProcessOutput(root)
 	payload := consolePayload{Path: root, Snapshot: console.Output, Mode: mode}
 	switch {
 	case status == "running":
@@ -1307,6 +1307,19 @@ func (s *server) robotPM2StatusHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *server) robotPM2ProcessesHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "该操作暂不支持。")
+		return
+	}
+	result, err := s.robots.PM2Processes(r.URL.Query().Get("root"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": result})
 }
 
 func (s *server) robotRuntimeHandler(w http.ResponseWriter, r *http.Request) {
@@ -1461,16 +1474,13 @@ func (s *server) robotTasksHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		configureManagedProcess(command)
-		stdout, err := command.StdoutPipe()
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "无法连接运行输出："+err.Error())
-			return
-		}
-		stderr, err := command.StderrPipe()
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "无法连接运行错误输出："+err.Error())
-			return
-		}
+		// Route stdout/stderr through a writer instead of StdoutPipe. exec copies
+		// process output into the writer on its own goroutine, so when the
+		// process exits the copy ends with a clean EOF rather than the pipe
+		// being closed underneath a concurrent reader (the "read |0: file
+		// already closed" error). It also cannot lose the final lines.
+		command.Stdout = newOperationWriter(created.ID, s)
+		command.Stderr = newOperationWriter(created.ID, s)
 		if err := command.Start(); err != nil {
 			writeError(w, http.StatusBadRequest, "运行启动失败："+err.Error())
 			return
@@ -1483,7 +1493,7 @@ func (s *server) robotTasksHandler(w http.ResponseWriter, r *http.Request) {
 		created.Output = map[bool]string{true: "开发模式已启动，正在等待进程输出…\n", false: "前台运行已启动，正在等待进程输出…\n"}[input.Action == "dev"]
 		s.addOperation(created)
 		log.Printf("[ROBOT %s] 开始 action=%s root=%q", created.ID, input.Action, created.Root)
-		go s.watchDevelopmentTask(created.ID, input.Root, input.Action, command, stdout, stderr)
+		go s.watchDevelopmentTask(created.ID, input.Root, input.Action, command)
 		writeJSON(w, http.StatusAccepted, created)
 		return
 	}
@@ -1539,6 +1549,28 @@ func (s *server) operationOutput(root, action string) (output, status, runError 
 		}
 	}
 	return "", "", ""
+}
+
+// runtimeProcessOutput returns the dev/app process output for a root that the
+// terminal should show: the currently running process if there is one,
+// otherwise the most recent run (operations are kept newest-first).
+func (s *server) runtimeProcessOutput(root string) (output, status, runError, mode string) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var latestOutput, latestStatus, latestError, latestMode string
+	for _, item := range s.operations {
+		if item.Root != root || (item.Action != "dev" && item.Action != "app") {
+			continue
+		}
+		if latestOutput == "" {
+			latestOutput, latestStatus, latestError = item.Output, item.Status, item.Error
+			latestMode = map[string]string{"dev": "开发模式", "app": "前台运行"}[item.Action]
+		}
+		if item.Status == "running" {
+			return item.Output, item.Status, item.Error, map[string]string{"dev": "开发模式", "app": "前台运行"}[item.Action]
+		}
+	}
+	return latestOutput, latestStatus, latestError, latestMode
 }
 
 // pm2StatusFor returns the PM2 state, or an error after a short window. A
@@ -1658,24 +1690,39 @@ func (s *server) appendOperationOutput(id, output string) {
 	}
 }
 
-func (s *server) watchDevelopmentTask(id, root, action string, command *exec.Cmd, stdout, stderr io.Reader) {
-	var readers sync.WaitGroup
-	read := func(stream io.Reader) {
-		defer readers.Done()
-		scanner := bufio.NewScanner(stream)
-		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-		for scanner.Scan() {
-			s.appendOperationOutput(id, scanner.Text()+"\n")
+// operationWriter forwards a supervised process's output into its operation
+// record. It buffers partial lines so a chunked write that splits a "\n" is
+// not rendered as two fragments, and it is safe for concurrent writes from the
+// separate stdout/stderr copy goroutines.
+type operationWriter struct {
+	id      string
+	server  *server
+	buffer  []byte
+	writeMu sync.Mutex
+}
+
+func newOperationWriter(id string, s *server) *operationWriter {
+	return &operationWriter{id: id, server: s}
+}
+
+func (w *operationWriter) Write(data []byte) (int, error) {
+	w.writeMu.Lock()
+	defer w.writeMu.Unlock()
+	written := len(data)
+	w.buffer = append(w.buffer, data...)
+	for {
+		index := bytes.IndexByte(w.buffer, '\n')
+		if index < 0 {
+			break
 		}
-		if err := scanner.Err(); err != nil {
-			s.appendOperationOutput(id, "读取进程输出失败："+err.Error()+"\n")
-		}
+		w.server.appendOperationOutput(w.id, string(w.buffer[:index+1]))
+		w.buffer = w.buffer[index+1:]
 	}
-	readers.Add(2)
-	go read(stdout)
-	go read(stderr)
+	return written, nil
+}
+
+func (s *server) watchDevelopmentTask(id, root, action string, command *exec.Cmd) {
 	err := command.Wait()
-	readers.Wait()
 
 	finished := time.Now()
 	s.mu.Lock()

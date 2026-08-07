@@ -15,6 +15,7 @@ import {
   X
 } from 'lucide-react'
 import { ConfirmDialog } from './ConfirmDialog'
+import { Modal } from './Modal'
 import { Tabs } from './Tabs'
 import {
   useGitWorkspaceActionMutation,
@@ -644,9 +645,11 @@ export function RobotGitControl({
             ? branchPanel
             : remotePanel
   return (
-    <div
-      className="git-workspace-backdrop fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/30 p-4"
-      role="presentation"
+    <Modal
+      open
+      zIndex={80}
+      className="git-workspace-backdrop"
+      ariaLabel={`${project.name} 的 Git 管理`}
     >
       <section
         className="git-workspace-dialog grid max-h-[min(760px,calc(100vh-32px))] w-full max-w-[920px] grid-rows-[auto_minmax(0,1fr)] overflow-hidden rounded-xl border border-slate-200 bg-white shadow-[0_24px_70px_rgb(28_26_23/0.26)]"
@@ -758,6 +761,6 @@ export function RobotGitControl({
           }}
         />
       </section>
-    </div>
+    </Modal>
   )
 }

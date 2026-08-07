@@ -24,6 +24,36 @@ func newTestServer() http.Handler {
 	return NewServer("test", fstest.MapFS{"dist/index.html": &fstest.MapFile{Data: []byte("<!doctype html>")}})
 }
 
+// TestOperationWriterBuffersPartialLines ensures chunked writes that split a
+// newline are only appended as complete lines, matching how a supervised
+// process may emit output in arbitrary chunk sizes.
+func TestOperationWriterBuffersPartialLines(t *testing.T) {
+	s := newStatefulTestServer()
+	s.operations = []operationTask{{ID: "dev-1", Output: ""}}
+	writer := newOperationWriter("dev-1", s)
+
+	// A chunk that splits "hello\n" across writes.
+	if _, err := writer.Write([]byte("hel")); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.operations[0].Output; got != "" {
+		t.Fatalf("partial line leaked before newline: %q", got)
+	}
+	if _, err := writer.Write([]byte("lo\n")); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.operations[0].Output; got != "hello\n" {
+		t.Fatalf("output = %q, want hello\n", got)
+	}
+	// Multiple complete lines in one write.
+	if _, err := writer.Write([]byte("a\nb\n")); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.operations[0].Output; got != "hello\na\nb\n" {
+		t.Fatalf("output = %q, want three lines", got)
+	}
+}
+
 // newStatefulTestServer builds a server whose internal maps are populated so
 // tests can exercise the console, stop and mutual-exclusion paths directly
 // without a real PM2 daemon or a listening listener.
@@ -47,6 +77,33 @@ func writeFixture(t *testing.T, root, name, content string) {
 	}
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestRuntimeProcessOutputPrefersRunningProcess covers the case where both a
+// dev and an app run have history: the currently running one must win, and a
+// fresh dev run after an older foreground run must not be hidden.
+func TestRuntimeProcessOutputPrefersRunningProcess(t *testing.T) {
+	root := t.TempDir()
+	s := newStatefulTestServer()
+	finished := time.Now()
+	s.operations = []operationTask{
+		{ID: "dev-new", Root: root, Action: "dev", Status: "running", Output: "dev live"},
+		{ID: "app-old", Root: root, Action: "app", Status: "completed", Output: "app old", FinishedAt: &finished},
+	}
+	output, status, _, mode := s.runtimeProcessOutput(root)
+	if status != "running" || output != "dev live" || mode != "开发模式" {
+		t.Fatalf("running process not preferred: output=%q status=%q mode=%q", output, status, mode)
+	}
+
+	// No running process: fall back to the newest history (newest-first list).
+	s.operations = []operationTask{
+		{ID: "app-new", Root: root, Action: "app", Status: "completed", Output: "app new", FinishedAt: &finished},
+		{ID: "dev-old", Root: root, Action: "dev", Status: "completed", Output: "dev old", FinishedAt: &finished},
+	}
+	output, status, _, mode = s.runtimeProcessOutput(root)
+	if status != "completed" || output != "app new" || mode != "前台运行" {
+		t.Fatalf("newest history not returned: output=%q status=%q mode=%q", output, status, mode)
 	}
 }
 

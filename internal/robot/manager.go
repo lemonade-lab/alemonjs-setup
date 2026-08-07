@@ -167,15 +167,16 @@ func (m Manager) LocalPackageReadme(root, packageName string) (Result, error) {
 // dashboard's run page. Packages are checked on disk, not only in
 // package.json: declaring a platform is not the same as having installed it.
 type RuntimeOverview struct {
-	Name           string           `json:"name"`
-	Version        string           `json:"version"`
-	PackageManager string           `json:"packageManager"`
-	HasAppScript   bool             `json:"hasAppScript"`
-	HasDevScript   bool             `json:"hasDevScript"`
-	HasBuildScript bool             `json:"hasBuildScript"`
-	HasStartScript bool             `json:"hasStartScript"`
-	PM2Configured  bool             `json:"pm2Configured"`
-	Platforms      []RuntimePackage `json:"platforms"`
+	Name                 string           `json:"name"`
+	Version              string           `json:"version"`
+	PackageManager       string           `json:"packageManager"`
+	HasAppScript         bool             `json:"hasAppScript"`
+	HasDevScript         bool             `json:"hasDevScript"`
+	HasBuildScript       bool             `json:"hasBuildScript"`
+	HasStartScript       bool             `json:"hasStartScript"`
+	PM2Configured        bool             `json:"pm2Configured"`
+	DependenciesComplete bool             `json:"dependenciesComplete"`
+	Platforms            []RuntimePackage `json:"platforms"`
 }
 
 type RuntimePackage struct {
@@ -414,6 +415,9 @@ func (Manager) RuntimeOverview(root string) (RuntimeOverview, error) {
 	overview := RuntimeOverview{Name: manifest.Name, Version: manifest.Version, PackageManager: projectPackageManager(path), HasAppScript: manifest.Scripts["app"] != "", HasDevScript: manifest.Scripts["dev"] != "", HasBuildScript: manifest.Scripts["build"] != "", HasStartScript: manifest.Scripts["start"] != ""}
 	if manifest.PackageManager != "" {
 		overview.PackageManager = strings.Split(manifest.PackageManager, "@")[0]
+	}
+	if missing, err := (Manager{}).RuntimeDependencies(root); err == nil && len(missing) == 0 {
+		overview.DependenciesComplete = true
 	}
 	if _, err := os.Stat(filepath.Join(path, "pm2.config.cjs")); err == nil {
 		overview.PM2Configured = true
@@ -715,6 +719,114 @@ func (Manager) PM2Logs(root string, page int) (PM2LogPage, error) {
 	return paginatePM2LogLines(lines, page), nil
 }
 
+// PM2Process is one process from the local PM2 daemon, surfaced to the UI so
+// the PM2 status panel can render a real table instead of raw CLI text.
+type PM2Process struct {
+	ID        int     `json:"id"`
+	Name      string  `json:"name"`
+	Namespace string  `json:"namespace"`
+	Status    string  `json:"status"`
+	PID       int     `json:"pid"`
+	Memory    int64   `json:"memory"`
+	CPU       float64 `json:"cpu"`
+	Uptime    int64   `json:"uptime"`
+	Restarts  int     `json:"restarts"`
+	Script    string  `json:"script"`
+}
+
+// PM2Processes lists every process managed by the local PM2 daemon. Unlike
+// PM2Status it does not filter by this robot's directory, so the panel can
+// show the full picture; the UI highlights processes for the current root.
+func (Manager) PM2Processes(root string) ([]PM2Process, error) {
+	if _, err := projectPath(root); err != nil {
+		return nil, err
+	}
+	output, err := pm2JList(root)
+	if err != nil {
+		return nil, fmt.Errorf("无法读取 PM2 进程：%w", err)
+	}
+	return parsePM2Processes(output)
+}
+
+// pm2JList reads `pm2 jlist` and tolerates a non-zero exit code: a PM2 daemon
+// version mismatch prints warnings and may exit non-zero even though stdout
+// still carries a valid JSON array. Those banners can be written to stdout as
+// well, so before returning we strip everything before the JSON array so the
+// caller always sees a parseable payload.
+func pm2JList(root string) (string, error) {
+	timeout := commandTimeout("npx", "pm2", "jlist")
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "npx", "--yes", "pm2", "jlist")
+	cmd.Dir = root
+	cmd.Env = os.Environ()
+	HideWindow(cmd)
+	output, err := cmd.Output()
+	text := strings.TrimSpace(string(output))
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return text, fmt.Errorf("操作超时（%s）；请检查网络、登录状态或代理后重试", timeout.Round(time.Second))
+	}
+	if err != nil && text == "" {
+		if commandNotFound(err, text) {
+			return text, missingCommandAdvice("pm2")
+		}
+		return text, fmt.Errorf("pm2 jlist 失败：%w", err)
+	}
+	// Cut any banner/notice that PM2 wrote to stdout ahead of the JSON array
+	// (for example ">>>> In-memory PM2 is out-of-date ...").
+	return stripPM2Banner(text), nil
+}
+
+// stripPM2Banner removes any non-JSON prefix (PM2 banner/notice) so the caller
+// parses only the JSON array or object that follows.
+func stripPM2Banner(text string) string {
+	if start := strings.IndexByte(text, '['); start >= 0 {
+		return text[start:]
+	}
+	if start := strings.IndexByte(text, '{'); start >= 0 {
+		return text[start:]
+	}
+	return text
+}
+
+func parsePM2Processes(output string) ([]PM2Process, error) {
+	var raw []struct {
+		PID      int    `json:"pid"`
+		Name     string `json:"name"`
+		PMID     int    `json:"pm_id"`
+		Status   string `json:"status"`
+		Restarts int    `json:"restart_time"`
+		PM2Env   struct {
+			Script    string `json:"script"`
+			Namespace string `json:"namespace"`
+			Uptime    int64  `json:"pm_uptime"`
+		} `json:"pm2_env"`
+		Monit struct {
+			Memory int64   `json:"memory"`
+			CPU    float64 `json:"cpu"`
+		} `json:"monit"`
+	}
+	if err := json.Unmarshal([]byte(output), &raw); err != nil {
+		return nil, fmt.Errorf("无法解析 PM2 进程：%w", err)
+	}
+	processes := make([]PM2Process, 0, len(raw))
+	for _, p := range raw {
+		processes = append(processes, PM2Process{
+			ID:        p.PMID,
+			Name:      p.Name,
+			Namespace: p.PM2Env.Namespace,
+			Status:    strings.ToLower(p.Status),
+			PID:       p.PID,
+			Memory:    p.Monit.Memory,
+			CPU:       p.Monit.CPU,
+			Uptime:    p.PM2Env.Uptime,
+			Restarts:  p.Restarts,
+			Script:    p.PM2Env.Script,
+		})
+	}
+	return processes, nil
+}
+
 func (Manager) PM2Status(root string) (PM2Status, error) {
 	path, err := projectPath(root)
 	if err != nil {
@@ -726,7 +838,10 @@ func (Manager) PM2Status(root string) (PM2Status, error) {
 		}
 		return PM2Status{}, fmt.Errorf("无法读取 PM2 配置：%w", err)
 	}
-	output, err := run(path, "npx", "--yes", "pm2", "jlist")
+	// pm2 jlist emits a JSON array on stdout; PM2's own warnings (for example
+	// "In-memory PM2 is out-of-date") go to stderr. pm2JList reads stdout only
+	// and tolerates a non-zero exit so banner text cannot corrupt the payload.
+	output, err := pm2JList(path)
 	if err != nil {
 		return PM2Status{}, fmt.Errorf("无法读取 PM2 状态：%w", err)
 	}
@@ -833,12 +948,15 @@ func (Manager) RepairRuntime(root, mode string) (Result, error) {
 		dependencies = map[string]any{}
 		manifest["devDependencies"] = dependencies
 	}
-	main, _ := manifest["main"].(string)
-	entry := runtimeEntryFile(path, main)
+	// The robot's startup script is the top-level index.js (import { start }
+	// from 'alemonjs'; start()). The package.json "main" field points at the
+	// build output (lib/index.js) which start() loads internally after a build.
+	// PM2 and the foreground run must launch index.js, never lib/index.js, and
+	// a repair must not rewrite the build artifact.
+	const entry = "index.js"
 	if mode == "dev" || mode == "app" {
 		// "app" repairs the foreground entry only; "dev" also wires the dev
-		// script to it. Both respect the package's declared main entry so a
-		// TypeScript project is not forced onto node index.js.
+		// script to it. Both launch the robot's index.js.
 		if _, ok := scripts["app"]; !ok {
 			scripts["app"] = "node " + entry
 		}
@@ -854,7 +972,12 @@ func (Manager) RepairRuntime(root, mode string) (Result, error) {
 		dependencies["pm2"] = "^5"
 		dependencies["yaml"] = "^2.6.0"
 		config := filepath.Join(path, "pm2.config.cjs")
-		pm2Config := "const pm2 = globalThis.pm2;\n\nmodule.exports = pm2 || {\n  apps: [\n    {\n      name: 'alemonb',\n      script: 'node " + entry + "',\n      env: {\n        NODE_ENV: 'production'\n      }\n    }\n  ]\n};\n"
+		// PM2 runs the script with its node interpreter by default, so the
+		// config points straight at index.js rather than a "node index.js"
+		// shell wrapper. The pm2 fallback keeps the config usable when loaded
+		// inside a desktop process that already provides globalThis.pm2, while
+		// a bare CLI run sees the default config below.
+		pm2Config := "const pm2 = globalThis.pm2;\n\nmodule.exports = pm2 || {\n  apps: [\n    {\n      name: 'alemonb',\n      script: './" + entry + "',\n      env: {\n        NODE_ENV: 'production'\n      }\n    }\n  ]\n};\n"
 		if err := os.WriteFile(config, []byte(pm2Config), 0644); err != nil {
 			if permissionError(err) {
 				return Result{}, permissionAdvice("保存 PM2 配置")
@@ -882,18 +1005,6 @@ func (Manager) RepairRuntime(root, mode string) (Result, error) {
 		return Result{}, err
 	}
 	return Result{Path: path, Output: "已补齐运行脚本与配置，请安装依赖后重试。"}, nil
-}
-
-// runtimeEntryFile resolves the robot's start entry: the package.json main
-// field when present (stripped of any ./ prefix), otherwise index.js.
-func runtimeEntryFile(path, main string) string {
-	if main = strings.TrimSpace(main); main != "" {
-		main = strings.TrimPrefix(main, "./")
-		if main != "" && !strings.Contains(main, "..") && filepath.Ext(main) != "" {
-			return main
-		}
-	}
-	return "index.js"
 }
 
 func (m Manager) Read(root, name string) (Result, error) {
@@ -1362,6 +1473,10 @@ func nodeVersionGreater(left, right string) bool {
 }
 
 func runWithEnv(root string, values map[string]string, name string, args ...string) (string, error) {
+	return runWithOutput(root, values, true, name, args...)
+}
+
+func runWithOutput(root string, values map[string]string, combined bool, name string, args ...string) (string, error) {
 	timeout := commandTimeout(name, args...)
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
@@ -1382,8 +1497,14 @@ func runWithEnv(root string, values map[string]string, name string, args ...stri
 			cmd.Env = append(cmd.Env, prefix+value)
 		}
 	}
-	output, err := cmd.CombinedOutput()
-	text := strings.TrimSpace(string(output))
+	var raw []byte
+	var err error
+	if combined {
+		raw, err = cmd.CombinedOutput()
+	} else {
+		raw, err = cmd.Output()
+	}
+	text := strings.TrimSpace(string(raw))
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		return text, fmt.Errorf("操作超时（%s）；请检查网络、登录状态或代理后重试", timeout.Round(time.Second))
 	}

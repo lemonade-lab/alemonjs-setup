@@ -63,6 +63,67 @@ func TestDevelopmentTemplatePackagesFollowSelections(t *testing.T) {
 	}
 }
 
+// TestDevelopmentTemplateKeepsOnlyChosenLanguageVariant verifies that after
+// patching, a generated project holds exactly one variant per source file:
+// .js for JS projects and .ts/.tsx for TS projects, with no leftover files
+// that would mix extensions or carry TypeScript syntax into JavaScript.
+func TestDevelopmentTemplateKeepsOnlyChosenLanguageVariant(t *testing.T) {
+	pairs := [][2]string{
+		{"app", "app"},
+		{"lvy.config", "lvy.config"},
+		{"src/index", "src/index"},
+		{"src/expose", "src/expose"},
+		{"src/store", "src/store"},
+		{"src/response/hello", "src/response/hello"},
+		{"src/response/help", "src/response/help"},
+	}
+	run := func(t *testing.T, language string, wantExt string, dropExts []string) {
+		t.Helper()
+		root := t.TempDir()
+		if err := copyTemplate(os.DirFS("../../templates"), "dev", root); err != nil {
+			t.Fatal(err)
+		}
+		config := Config{Template: "dev", Language: language, ImageMode: "react", StyleMode: "css"}
+		if err := patchPackage(root, config); err != nil {
+			t.Fatal(err)
+		}
+		if err := patchDevelopmentSource(root, config); err != nil {
+			t.Fatal(err)
+		}
+		for _, pair := range pairs {
+			path := filepath.Join(root, pair[0]+"."+wantExt)
+			if _, err := os.Stat(path); err != nil {
+				t.Errorf("%s variant missing for %s project: %v", pair[0], language, err)
+			}
+		}
+		for _, dropExt := range dropExts {
+			for _, pair := range pairs {
+				path := filepath.Join(root, pair[0]+"."+dropExt)
+				if _, err := os.Stat(path); !os.IsNotExist(err) {
+					t.Errorf("%s.%s should be removed in %s project", pair[0], dropExt, language)
+				}
+			}
+		}
+	}
+	run(t, "js", "js", []string{"ts"})
+	run(t, "ts", "ts", []string{"js"})
+}
+
+// TestDevelopmentTemplateJSFilesCarryNoTypeScriptSyntax ensures the hand-kept
+// JS variants really are plain JavaScript, so a JS project never parses TS.
+func TestDevelopmentTemplateJSFilesCarryNoTypeScriptSyntax(t *testing.T) {
+	for _, file := range []string{"src/store.js", "src/expose.js"} {
+		data, err := os.ReadFile(filepath.Join("../../templates/dev", file))
+		if err != nil {
+			t.Fatal(err)
+		}
+		content := string(data)
+		if strings.Contains(content, "Map<string") || strings.Contains(content, ": string") {
+			t.Errorf("%s still contains TypeScript syntax:\n%s", file, content)
+		}
+	}
+}
+
 func TestWriteAgentsFileReflectsSelections(t *testing.T) {
 	root := t.TempDir()
 	if err := writeAgentsFile(root, Config{Language: "ts", ESLint: true}); err != nil {

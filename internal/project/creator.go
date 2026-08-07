@@ -134,8 +134,19 @@ func (c *Creator) Create(config Config) (Result, error) {
 	}
 	if config.DownloadSkills {
 		log("正在下载 AlemonJS 开发技能…")
-		if err := run(path, &result.Logs, "git", "clone", "--depth", "1", "https://github.com/lemonade-lab/alemonjs-dev-skill.git", ".skills/alemonjs-dev-skill"); err != nil {
+		// The canonical location is the cross-agent .agents/skills directory
+		// (agentskills.io spec; Codex/OpenCode/Gemini read it natively). Claude
+		// Code only reads .claude/skills, so link the same checkout in there
+		// instead of keeping a second copy. A custom top-level .skills/ is read
+		// by no agent and is therefore useless.
+		if err := run(path, &result.Logs, "git", "clone", "--depth", "1", "https://github.com/lemonade-lab/alemonjs-dev-skill.git", ".agents/skills/alemonjs-dev-skill"); err != nil {
 			return result, fmt.Errorf("下载开发技能失败：%w", err)
+		}
+		if err := os.MkdirAll(filepath.Join(path, ".claude", "skills"), 0755); err != nil {
+			return result, fmt.Errorf("创建 Claude 技能目录失败：%w", err)
+		}
+		if err := os.Symlink(filepath.Join("..", "..", ".agents", "skills", "alemonjs-dev-skill"), filepath.Join(path, ".claude", "skills", "alemonjs-dev-skill")); err != nil {
+			return result, fmt.Errorf("创建 Claude 技能链接失败：%w", err)
 		}
 	}
 	result.Status = "ready"
@@ -345,22 +356,42 @@ func patchDevelopmentSource(root string, config Config) error {
 	extension := "ts"
 	if config.Language == "js" {
 		extension = "js"
-		for _, name := range []string{"app", "src/index", "src/expose", "src/store", "src/response/hello", "src/response/help"} {
-			from, to := filepath.Join(root, name+".ts"), filepath.Join(root, name+".js")
-			if err := os.Rename(from, to); err != nil && !os.IsNotExist(err) {
-				return err
-			}
+	}
+	// Keep only the variant matching the chosen language. The template ships
+	// both app.ts/app.js, src/index.ts/src/index.js, … as hand-maintained
+	// counterparts; the unused one is removed so the generated project never
+	// mixes extensions or keeps TypeScript syntax in a JavaScript project.
+	for _, pair := range [][2]string{
+		{"app.ts", "app.js"},
+		{"lvy.config.ts", "lvy.config.js"},
+		{"jsxp.config.tsx", "jsxp.config.jsx"},
+		{"src/index.ts", "src/index.js"},
+		{"src/expose.ts", "src/expose.js"},
+		{"src/store.ts", "src/store.js"},
+		{"src/response/hello.ts", "src/response/hello.js"},
+		{"src/response/help.ts", "src/response/help.js"},
+		{"src/image/component/Html.tsx", "src/image/component/Html.jsx"},
+		{"src/image/component/help.tsx", "src/image/component/help.jsx"},
+	} {
+		keep, drop := pair[0], pair[1]
+		if config.Language == "js" {
+			keep, drop = pair[1], pair[0]
 		}
+		if err := os.Remove(filepath.Join(root, drop)); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		if _, err := os.Stat(filepath.Join(root, keep)); err != nil {
+			// A non-React project has no jsxp.config / image components; those
+			// pairs are optional and may legitimately be absent after patchPackage.
+			if os.IsNotExist(err) {
+				continue
+			}
+			return err
+		}
+	}
+	// TypeScript-only ambient declarations are not needed by JS projects.
+	if config.Language == "js" {
 		_ = os.Remove(filepath.Join(root, "src", "env.d.ts"))
-	}
-	app := filepath.Join(root, "app."+extension)
-	data, err := os.ReadFile(app)
-	if err != nil {
-		return err
-	}
-	data = []byte(strings.ReplaceAll(string(data), "src/index.ts", "src/index."+extension))
-	if err := os.WriteFile(app, data, 0644); err != nil {
-		return err
 	}
 	if config.ImageMode != "react" {
 		help := "import { Format, useMessage } from 'alemonjs';\n\nexport default async () => {\n  const [message] = useMessage();\n  await message.send({ format: Format.create().addText('AlemonJS 开发机器人已就绪。') });\n};\n"

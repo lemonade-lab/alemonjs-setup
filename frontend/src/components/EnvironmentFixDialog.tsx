@@ -1,4 +1,5 @@
 import { ArrowUpRight, X } from 'lucide-react'
+import { Modal } from './Modal'
 
 type Check = { id: string; name: string; suggestion: string }
 
@@ -39,10 +40,11 @@ const links: Record<
 export function EnvironmentFixDialog({ check, onClose }: Props) {
   const options = links[check.id] ?? []
   return (
-    <div
-      className="fixed inset-0 z-[200] flex items-center justify-center bg-slate-950/35 p-4"
-      role="presentation"
-      onMouseDown={onClose}
+    <Modal
+      open
+      zIndex={200}
+      onClose={onClose}
+      ariaLabel="环境修复"
     >
       <section
         className="relative w-full max-w-[440px] rounded-xl border border-slate-200 bg-white p-6 shadow-[0_24px_60px_rgb(28_26_23_/_0.24)]"
@@ -94,6 +96,6 @@ export function EnvironmentFixDialog({ check, onClose }: Props) {
           </button>
         </footer>
       </section>
-    </div>
+    </Modal>
   )
 }

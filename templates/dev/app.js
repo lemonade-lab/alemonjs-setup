@@ -5,5 +5,5 @@ if (process.argv.includes('--jsxp')) {
   const { createServer } = await import('jsxp');
   void createServer();
 } else {
-  start('src/index.ts');
+  start('src/index.js');
 }
