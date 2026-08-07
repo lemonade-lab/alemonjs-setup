@@ -88,6 +88,104 @@ func TestParsePM2ProcessesMapsJListFields(t *testing.T) {
 	}
 }
 
+// TestAppPortReadsAndSavesServerPort covers the "应用" flow: reading the
+// configured port from alemon.config.yaml, the default fallback, and writing a
+// new port (replacing an existing serverPort or appending one).
+func TestAppPortReadsAndSavesServerPort(t *testing.T) {
+	root := t.TempDir()
+	writeWebViewFixture(t, filepath.Join(root, "package.json"), `{"name":"bot"}`)
+	// No config file yet: default port, not configured.
+	info, err := (Manager{}).AppPort(root)
+	if err != nil || info.Port != defaultAppPort || info.Configured {
+		t.Fatalf("default port = %+v, %v", info, err)
+	}
+	// Save a port then read it back.
+	if _, err := (Manager{}).SaveAppPort(root, 19191); err != nil {
+		t.Fatalf("SaveAppPort: %v", err)
+	}
+	info, _ = (Manager{}).AppPort(root)
+	if info.Port != 19191 || !info.Configured {
+		t.Fatalf("port after save = %+v, want 19191 configured", info)
+	}
+	// Replace an existing serverPort.
+	if _, err := (Manager{}).SaveAppPort(root, 20000); err != nil {
+		t.Fatalf("SaveAppPort replace: %v", err)
+	}
+	info, _ = (Manager{}).AppPort(root)
+	if info.Port != 20000 || !info.Configured {
+		t.Fatalf("port after replace = %+v, want 20000 configured", info)
+	}
+	// Invalid port is rejected.
+	if _, err := (Manager{}).SaveAppPort(root, 70000); err == nil {
+		t.Fatal("invalid port should be rejected")
+	}
+}
+
+// TestSetAppEnabledTogglesLocalPackageInApps covers the backpack 启动/停用
+// flow: adding and removing a local package's npm name in alemon.config.yaml.
+func TestSetAppEnabledTogglesLocalPackageInApps(t *testing.T) {
+	root := t.TempDir()
+	writeWebViewFixture(t, filepath.Join(root, "package.json"), `{"name":"bot"}`)
+	// Initially no apps.
+	apps, err := (Manager{}).EnabledApps(root)
+	if err != nil || len(apps) != 0 {
+		t.Fatalf("initial apps = %v, %v", apps, err)
+	}
+	// Enable a package.
+	if _, err := (Manager{}).SetAppEnabled(root, "alemonjs-load-yunzai", true); err != nil {
+		t.Fatalf("SetAppEnabled(true): %v", err)
+	}
+	apps, _ = (Manager{}).EnabledApps(root)
+	if len(apps) != 1 || apps[0] != "alemonjs-load-yunzai" {
+		t.Fatalf("apps after enable = %v, want [alemonjs-load-yunzai]", apps)
+	}
+	// Disable it.
+	if _, err := (Manager{}).SetAppEnabled(root, "alemonjs-load-yunzai", false); err != nil {
+		t.Fatalf("SetAppEnabled(false): %v", err)
+	}
+	apps, _ = (Manager{}).EnabledApps(root)
+	if len(apps) != 0 {
+		t.Fatalf("apps after disable = %v, want empty", apps)
+	}
+	// Existing serverPort must survive a yaml rewrite.
+	if _, err := (Manager{}).SaveAppPort(root, 19191); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (Manager{}).SetAppEnabled(root, "another", true); err != nil {
+		t.Fatal(err)
+	}
+	info, _ := (Manager{}).AppPort(root)
+	if info.Port != 19191 {
+		t.Fatalf("serverPort lost after apps write, got %d", info.Port)
+	}
+	apps, _ = (Manager{}).EnabledApps(root)
+	if len(apps) != 1 || apps[0] != "another" {
+		t.Fatalf("apps = %v, want [another]", apps)
+	}
+}
+
+// TestAppPortReachableReportsUnreachableWhenPortClosed verifies the probe
+// returns unreachable for a port with no listener (safe in sandboxed CI where
+// binding sockets is not permitted).
+func TestAppPortReachableReportsUnreachableWhenPortClosed(t *testing.T) {
+	root := t.TempDir()
+	writeWebViewFixture(t, filepath.Join(root, "package.json"), `{"name":"bot"}`)
+	// Pick a port that is almost certainly not listening (ephemeral range).
+	if _, err := (Manager{}).SaveAppPort(root, 65530); err != nil {
+		t.Fatal(err)
+	}
+	reachable, port, err := (Manager{}).AppPortReachable(root)
+	if err != nil {
+		t.Fatalf("probe error = %v", err)
+	}
+	if reachable {
+		t.Fatalf("port %d should be unreachable when nothing listens", port)
+	}
+	if port != 65530 {
+		t.Fatalf("probe returned port %d, want 65530", port)
+	}
+}
+
 // TestIsConsoleNoisePathFiltersDependencyDirectories ensures the terminal
 // snapshot hides node_modules and build output so the "目录信息" is about the
 // project, not its dependencies.

@@ -34,6 +34,7 @@ import {
   KeyRound,
   Link,
   MessageSquare,
+  Monitor,
   MoreVertical,
   Network,
   Package,
@@ -93,9 +94,12 @@ import {
   useRobotRuntimeQuery,
   useRobotPM2StatusQuery,
   useRobotPM2ProcessesQuery,
+  useLazyAppPortQuery,
+  useSaveAppPortMutation,
+  useRobotAppsQuery,
+  useSetAppEnabledMutation,
   useRobotTasksQuery,
   useSaveRobotLoginMutation,
-  useRobotWebViewsQuery,
   useSetSetupPluginEnabledMutation,
   useSetupPluginsQuery,
   useStartRobotTaskMutation,
@@ -104,17 +108,11 @@ import {
   type RuntimeOverview,
   type PM2Status,
   type RuntimePreflight,
-  type RobotWebView,
   type SetupPlugin
 } from '../store/workspaceApi'
 import {
   addProjects,
   removeProject as removeWorkspaceProject,
-  clearActiveWebviewTab,
-  activateWebviewTab,
-  closeWebviewTab,
-  openWebviewTab,
-  pruneWebviewTabs,
   selectProject,
   pinProject as pinWorkspaceProject,
   setDeveloperMode,
@@ -689,12 +687,16 @@ export function Dashboard({
     useState(false)
   const [gitDestination, setGitDestination] = useState('')
   const [gitProject, setGitProject] = useState<Project | null>(null)
+  const [appPortDialog, setAppPortDialog] = useState(false)
+  const [appPortValue, setAppPortValue] = useState('')
+  const [appPortBusy, setAppPortBusy] = useState(false)
+  const [appLaunching, setAppLaunching] = useState(false)
+  const [appContentOpen, setAppContentOpen] = useState(false)
   const [invalidDirectory, setInvalidDirectory] = useState('')
   const [pendingBackpackRemoval, setPendingBackpackRemoval] = useState('')
   const [pendingProjectRemoval, setPendingProjectRemoval] = useState<
     string | null
   >(null)
-  const [trackRuntimeTasks, setTrackRuntimeTasks] = useState(false)
   const [aiOpen, setAIOpen] = useState(false)
   const [agentSessions, setAgentSessions] = useState<
     Array<{ id: string; title: string; root: string; updated: string }>
@@ -748,6 +750,7 @@ export function Dashboard({
   }, [])
   const environmentChecked = useRef(false)
   const rootParamHandled = useRef(false)
+  const eventsRef = useRef<EventSource | null>(null)
   const dispatch = useDispatch()
   const rawProjects = useSelector(
     (state: RootState) => state.workspace.projects
@@ -761,21 +764,11 @@ export function Dashboard({
   const activeProjectID = useSelector(
     (state: RootState) => state.workspace.activeProjectID
   )
-  const webviewTabs =
-    useSelector((state: RootState) => state.workspace.webviewTabs) ?? []
-  const activeWebviewTabKey = useSelector(
-    (state: RootState) => state.workspace.activeWebviewTabKey
-  )
   const developerMode = useSelector(
     (state: RootState) => state.workspace.developerMode
   )
   const activeProject = projects.find(item => item.id === activeProjectID)
   const root = activeProject?.path ?? ''
-  const activeWebviewTab = webviewTabs.find(
-    item => item.key === activeWebviewTabKey
-  )
-  const activeWebViewID =
-    activeWebviewTab?.root === root ? activeWebviewTab.entryID : ''
   const draftKey = `${root}:${file}`
   const content = useSelector(
     (state: RootState) => state.workspace.drafts[draftKey] ?? ''
@@ -801,10 +794,6 @@ export function Dashboard({
     error: packagesError,
     refetch: refetchPackages
   } = useLocalPackagesQuery(root, { skip: !root || section !== 'backpack' })
-  const { data: robotWebViews = [], isLoading: webViewsLoading } =
-    useRobotWebViewsQuery(root, {
-      skip: !root
-    })
   const {
     data: runtime,
     isFetching: runtimeLoading,
@@ -831,27 +820,114 @@ export function Dashboard({
   const watchDevelopmentTask = page === 'robot' && section === 'runtime'
   const { data: operationTasks = [] } = useRobotTasksQuery(undefined, {
     skip: !watchDevelopmentTask,
-    pollingInterval: trackRuntimeTasks ? 1200 : 0,
+    // Task state is driven by SSE task events (invalidateTags); no polling.
+    pollingInterval: 0,
     refetchOnMountOrArgChange: true
   })
-  useEffect(() => {
-    setTrackRuntimeTasks(operationTasks.some(item => item.status === 'running'))
-  }, [operationTasks])
   const [readRobotFile] = useLazyRobotFileQuery()
   const [validateRobot, { data: projectValidation }] =
     useLazyRobotProjectQuery()
   const [startRobotTask] = useStartRobotTaskMutation()
+  const [loadAppPort] = useLazyAppPortQuery()
+  const [saveAppPort] = useSaveAppPortMutation()
   const [writeRobotFile] = useWriteRobotFileMutation()
   const [writePackageConfig] = useWritePackageConfigMutation()
   const [saveRobotLogin] = useSaveRobotLoginMutation()
   const [initializeGit] = useInitializeGitMutation()
+  // Plugin list changes arrive over SSE (setup/plugins/events), so the query
+  // only refetches when the registry actually changes instead of polling.
   const { data: setupPlugins = [] } = useSetupPluginsQuery(undefined, {
-    pollingInterval: 3000
+    refetchOnMountOrArgChange: true
   })
   const catalogError = catalogQueryError ? '在线目录暂时无法读取。' : ''
   const showOutput = (message: string, failed = false) => {
     setOutput(message)
     setOutputFailed(failed)
+  }
+  // "应用" = 机器人 + 应用端口。读取 serverPort；未配置则先让用户输入并
+  // 保存，然后启动开发模式，最后在浏览器打开应用地址。
+  const openApp = async () => {
+    if (!root || appLaunching) return
+    setAppLaunching(true)
+    try {
+      const info = await loadAppPort(root, true).unwrap()
+      if (info.configured) {
+        await launchApp(info.port)
+      } else {
+        setAppPortValue(String(info.port))
+        setAppPortDialog(true)
+      }
+    } catch (reason) {
+      showOutput(operationErrorMessage(reason, '无法读取应用端口。'), true)
+    } finally {
+      setAppLaunching(false)
+    }
+  }
+  const confirmAppPort = async () => {
+    if (!root) return
+    const port = Number(appPortValue.trim())
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      showOutput('应用端口应为 1-65535 之间的整数。', true)
+      return
+    }
+    setAppPortBusy(true)
+    try {
+      await saveAppPort({ root, port }).unwrap()
+      setAppPortDialog(false)
+      // Launch happens after the dialog closes; reflect it on the toolbar icon.
+      setAppLaunching(true)
+      await launchApp(port)
+    } catch (reason) {
+      showOutput(operationErrorMessage(reason, '应用端口保存失败。'), true)
+    } finally {
+      setAppPortBusy(false)
+      setAppLaunching(false)
+    }
+  }
+  const launchApp = async (port: number) => {
+    if (!root) return
+    try {
+      // If the app is already serving, render it in-page instead of starting
+      // another dev/app process (which would conflict with the running one).
+      if (await probeAppPort()) {
+        setAppContentOpen(true)
+        return
+      }
+      await api('POST', { root, action: 'dev' })
+      // The app listens on 127.0.0.1:port after the dev process boots. Poll the
+      // backend probe until the service responds; if it never comes up, tell
+      // the user instead of showing a blank page.
+      const reachable = await probeAppPort()
+      if (!reachable) {
+        showOutput(
+          `应用服务尚未启动（端口 ${port} 无响应）。请确认开发模式运行正常后再打开。`,
+          true
+        )
+        return
+      }
+      setAppContentOpen(true)
+    } catch (reason) {
+      showOutput(operationErrorMessage(reason, '应用启动失败。'), true)
+    }
+  }
+  const probeAppPort = async () => {
+    for (let attempt = 0; attempt < 20; attempt++) {
+      try {
+        const response = await fetch(
+          `/api/v1/robot/app-port?${new URLSearchParams({ root, probe: '1' })}`
+        )
+        const data = (await response.json()) as {
+          reachable?: boolean
+          port?: number
+        }
+        if (response.ok && data.reachable) return true
+        if (!response.ok) return false
+      } catch {
+        return false
+      }
+      await new Promise(resolve => window.setTimeout(resolve, 1000))
+    }
+    return false
   }
   const refreshConfigDraft = async () => {
     if (!root) return
@@ -870,6 +946,39 @@ export function Dashboard({
   useEffect(() => {
     if (defaultPage === 'robot') setPage('robot')
   }, [defaultPage])
+  // Subscribe to robot events over SSE. Task events invalidate the operations
+  // cache so the runtime card and operation log update the moment a task ends,
+  // instead of polling; output events are forwarded for the terminal to append.
+  useEffect(() => {
+    if (eventsRef.current) return
+    const source = new EventSource('/api/v1/robot/events')
+    eventsRef.current = source
+    source.onmessage = event => {
+      try {
+        const payload = JSON.parse(event.data) as {
+          type?: string
+          taskId?: string
+          text?: string
+        }
+        if (payload.type === 'task') {
+          dispatch(workspaceApi.util.invalidateTags(['OperationTasks']))
+        } else if (payload.type === 'output' && payload.taskId) {
+          window.dispatchEvent(
+            new CustomEvent('alx:robot-output', {
+              detail: { taskId: payload.taskId, text: payload.text ?? '' }
+            })
+          )
+        }
+      } catch {
+        // Ignore malformed frames.
+      }
+    }
+    return () => {
+      source.close()
+      eventsRef.current = null
+    }
+  }, [dispatch])
+
   // Open /dashboard/robot?root=<path> links by adding that directory (if it is
   // not already listed) and selecting it, restoring the pre-refactor behaviour
   // of the "前往管理机器人" links generated after project creation.
@@ -908,12 +1017,23 @@ export function Dashboard({
   useEffect(() => {
     if (root) void validateRobot(root)
   }, [root, validateRobot])
+  // Plugin list changes stream over SSE; refetch on each "changed" event so the
+  // sidebar keeps its plugin entries fresh without polling the whole list.
   useEffect(() => {
-    if (root && !webViewsLoading)
-      dispatch(
-        pruneWebviewTabs({ root, entryIDs: robotWebViews.map(item => item.id) })
-      )
-  }, [dispatch, robotWebViews, root, webViewsLoading])
+    const source = new EventSource('/api/v1/setup/plugins/events')
+    const onChange = () => {
+      dispatch(workspaceApi.util.invalidateTags(['SetupPlugins']))
+    }
+    source.addEventListener('message', onChange)
+    source.addEventListener('error', () => {
+      // EventSource reconnects automatically; a transient error is fine. Only
+      // refetch on a genuine change event, not on connection loss.
+    })
+    return () => {
+      source.removeEventListener('message', onChange)
+      source.close()
+    }
+  }, [dispatch])
   useEffect(() => {
     if (!root || section !== 'config') return
     void readRobotFile({ root, file: 'alemon.config.yaml' }, true)
@@ -1003,11 +1123,10 @@ export function Dashboard({
         ) {
           // The task mutation invalidates when it starts, which is still too
           // early for a download. Invalidate once it has actually finished so
-          // the backpack and WebView shortcuts update without a page reload.
+          // the backpack updates without a page reload.
           dispatch(
             workspaceApi.util.invalidateTags([
               { type: 'LocalPackages', id: root },
-              { type: 'RobotWebViews', id: root },
               // Installing/uninstalling a connection package changes whether
               // its alemon.config.yaml section can be parsed, so drop any
               // cached PackageConfig for this root.
@@ -1222,11 +1341,10 @@ export function Dashboard({
     setOutput('')
   }
 
-  // AI and an installed plugin WebView are content pages, not overlays. Any
-  // normal navigation must leave them first so the control card always works.
+  // AI is a content page, not an overlay. Any normal navigation must leave it
+  // first so the control card always works.
   function closeTemporaryContentPage() {
     setAIOpen(false)
-    dispatch(clearActiveWebviewTab())
   }
 
   function openSection(nextSection: Section) {
@@ -1536,7 +1654,6 @@ export function Dashboard({
   const invalidProject = Boolean(
     activeProject && projectValidation && !projectValidation.valid
   )
-  const activeWebView = robotWebViews.find(item => item.id === activeWebViewID)
   const workspace =
     systemFeature === 'plugins' ? (
       <SystemPluginCenter
@@ -1554,22 +1671,7 @@ export function Dashboard({
       />
     ) : activeProject ? (
       <>
-        {activeWebView ? (
-          <RobotPluginWebView
-            root={root}
-            entries={robotWebViews}
-            tabs={webviewTabs
-              .filter(tab => tab.root === root)
-              .sort((left, right) =>
-                left.openedAt.localeCompare(right.openedAt)
-              )}
-            activeTabKey={activeWebviewTabKey}
-            onActivate={key => dispatch(activateWebviewTab(key))}
-            onClose={key => dispatch(closeWebviewTab(key))}
-          />
-        ) : (
-          <>
-            {page === 'robot' && robotContent}
+        {page === 'robot' && robotContent}
             {developerMode && page === 'build' && (
               <section className="workspace-content build-page">
                 {buildMode === 'manifest' ? (
@@ -1607,19 +1709,17 @@ export function Dashboard({
                 )}
               </section>
             )}
-            {(page === 'plugins' || page === 'connections') && catalogContent}
-            {page !== 'build' && output && (
-              <OperationLog
-                output={output}
-                failed={outputFailed}
-                onClose={() => {
-                  setOutput('')
-                  setOutputFailed(false)
-                }}
-              />
-            )}
-          </>
-        )}
+          {(page === 'plugins' || page === 'connections') && catalogContent}
+          {page !== 'build' && output && (
+            <OperationLog
+              output={output}
+              failed={outputFailed}
+              onClose={() => {
+                setOutput('')
+                setOutputFailed(false)
+              }}
+            />
+          )}
       </>
     ) : (
       <EmptyWorkspace
@@ -1762,6 +1862,56 @@ export function Dashboard({
             onCancel={() => setPendingProjectRemoval(null)}
             onConfirm={confirmRemoveProject}
           />
+          <Modal
+            open={appPortDialog}
+            zIndex={96}
+            ariaLabel="设置应用端口"
+            // 不点遮罩关闭：端口输入框聚焦/输入时若 backdrop 收到 mousedown 会把
+            // 弹窗误关。用户应通过取消或保存来关闭。
+          >
+            <form
+              className="grid w-full max-w-sm gap-4 rounded-xl border border-slate-200 bg-white p-5 shadow-[0_20px_58px_rgb(28_26_23/0.22)]"
+              onSubmit={event => {
+                event.preventDefault()
+                void confirmAppPort()
+              }}
+              onMouseDown={event => event.stopPropagation()}
+            >
+              <div className="grid gap-1">
+                <strong className="text-sm text-ink-950">配置应用端口</strong>
+                <p className="text-xs leading-5 text-slate-500">
+                  应用是机器人的网页界面，需要 serverPort
+                  端口才能访问。设置后会保存到
+                  alemon.config.yaml，然后启动机器人并打开应用。
+                </p>
+              </div>
+              <label className="grid gap-1.5 text-xs font-medium text-slate-600">
+                应用端口（1-65535）
+                <input
+                  className="h-10 rounded-md border border-slate-300 px-3 text-sm text-slate-800 outline-none focus:border-brand-600 focus:ring-2 focus:ring-brand-100"
+                  value={appPortValue}
+                  onChange={event => setAppPortValue(event.target.value)}
+                  type="number"
+                  min={1}
+                  max={65535}
+                  autoFocus
+                />
+              </label>
+              <footer className="flex justify-end gap-2">
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => setAppPortDialog(false)}
+                  disabled={appPortBusy}
+                >
+                  取消
+                </button>
+                <button className="primary-button" disabled={appPortBusy}>
+                  {appPortBusy ? '保存并启动…' : '保存并启动'}
+                </button>
+              </footer>
+            </form>
+          </Modal>
           <DirectoryPicker
             open={directoryPickerOpen}
             onClose={() => setDirectoryPickerOpen(false)}
@@ -1845,10 +1995,7 @@ export function Dashboard({
               onSelect={id => {
                 dispatch(selectProject(id))
                 // Selecting a robot directory always returns to its runtime.
-                // A plugin WebView is an explicit content page and must not
-                // follow the directory selection.
                 setAIOpen(false)
-                dispatch(clearActiveWebviewTab())
                 setSystemFeature(null)
                 setPage('robot')
                 setSection('runtime')
@@ -1867,25 +2014,11 @@ export function Dashboard({
                   buildMode={buildMode}
                   catalog={catalog}
                   catalogTitle={catalogTitle}
-                  webViews={robotWebViews}
-                  activeWebViewID={activeWebViewID}
                   developerMode={developerMode}
                   onOpenConsole={() => setConsoleOpen(true)}
                   onOpenAI={openAI}
-                  onOpenWebView={id => {
-                    closeTemporaryContentPage()
-                    const entry = robotWebViews.find(item => item.id === id)
-                    if (!entry || !root) return
-                    dispatch(
-                      openWebviewTab({
-                        key: `${root}\u0000${id}`,
-                        root,
-                        entryID: id,
-                        package: entry.package,
-                        title: entry.name
-                      })
-                    )
-                  }}
+                  appLaunching={appLaunching}
+                  onOpenApp={() => void openApp()}
                   onPage={selectPage}
                   onSection={openSection}
                   onBuildMode={mode => {
@@ -1903,6 +2036,9 @@ export function Dashboard({
           </section>
         </section>
       </main>
+      {appContentOpen && (
+        <AppEmbed root={root} onClose={() => setAppContentOpen(false)} />
+      )}
       <ReadonlyConsole
         open={consoleOpen}
         root={root}
@@ -2998,10 +3134,10 @@ function McpControl() {
 }
 function OperationTasksButton({ root }: { root: string }) {
   const [open, setOpen] = useState(false)
-  const [trackTasks, setTrackTasks] = useState(false)
   const { data, isFetching } = useRobotTasksQuery(undefined, {
     skip: !open,
-    pollingInterval: trackTasks ? 1200 : 0,
+    // Task state is driven by SSE task events (invalidateTags); no polling.
+    pollingInterval: 0,
     refetchOnMountOrArgChange: true
   })
   const tasks = (Array.isArray(data) ? data : []).filter(
@@ -3010,9 +3146,6 @@ function OperationTasksButton({ root }: { root: string }) {
   const [selected, setSelected] = useState<string>('')
   const current = tasks.find(item => item.id === selected) ?? tasks[0]
   const running = tasks.filter(item => item.status === 'running').length
-  useEffect(() => {
-    setTrackTasks(running > 0)
-  }, [running])
   useEffect(() => {
     const closeWhenAnotherToolOpens = (event: Event) => {
       if ((event as CustomEvent<string>).detail !== 'tasks') setOpen(false)
@@ -3509,11 +3642,27 @@ function BackpackPanel({
   onReplace: (packageName: string, version: string) => Promise<boolean>
 }) {
   const [selectedName, setSelectedName] = useState('')
+  const [appToggleBusy, setAppToggleBusy] = useState('')
+  const { data: appsData, refetch: refetchApps } = useRobotAppsQuery(root, {
+    skip: !root
+  })
+  const [setAppEnabled] = useSetAppEnabledMutation()
+  const enabledApps = new Set(appsData?.items ?? [])
   useEffect(() => {
     if (selectedName && !items.some(item => item.name === selectedName))
       setSelectedName('')
   }, [items, selectedName])
   const selected = items.find(item => item.name === selectedName)
+  const toggleApp = async (packageName: string, enabled: boolean) => {
+    if (!root) return
+    setAppToggleBusy(packageName)
+    try {
+      await setAppEnabled({ root, package: packageName, enabled }).unwrap()
+      void refetchApps()
+    } finally {
+      setAppToggleBusy('')
+    }
+  }
   if (selected)
     return (
       <BackpackPackageManager
@@ -3596,6 +3745,32 @@ function BackpackPanel({
                   aria-hidden="true"
                 />
               </button>
+              <div className="flex shrink-0 items-center gap-2 border-t border-slate-100 px-3 py-2">
+                {item.valid && (
+                  <button
+                    className={
+                      enabledApps.has(item.name)
+                        ? 'secondary-button'
+                        : 'primary-button'
+                    }
+                    disabled={appToggleBusy === item.name}
+                    onClick={() =>
+                      void toggleApp(item.name, !enabledApps.has(item.name))
+                    }
+                  >
+                    {appToggleBusy === item.name
+                      ? '切换中…'
+                      : enabledApps.has(item.name)
+                        ? '停用'
+                        : '启动'}
+                  </button>
+                )}
+                <span className="text-[11px] text-slate-400">
+                  {enabledApps.has(item.name)
+                    ? '已加入 apps，机器人启动时会加载'
+                    : '未加入 apps'}
+                </span>
+              </div>
             </article>
           ))}
         </div>
@@ -4372,25 +4547,10 @@ function RuntimePanel({
     pending?.execute()
     setPending(null)
   }
-  // A local process and a background PM2 service both start the same robot
-  // directory. Block the second one before the start dialog even opens.
+  // "谁最后启动谁为准": starting a new mode automatically stops the previous
+  // one (the backend stops a running PM2 service before a local start, and a
+  // local process before a background start). No upfront block here.
   const askStart = async (action: string, label: string, note: string) => {
-    const startingLocal = action === 'dev' || action === 'app'
-    const startingPM2 = action === 'pm2' || action === 'pm2-reload'
-    if (startingLocal && pm2LocalRunning) {
-      setValidationTitle('已有进程在运行')
-      setValidationMessage(
-        '当前目录正在后台（PM2）运行；请先在“后台运行”中停止服务，再启动本机进程。'
-      )
-      return
-    }
-    if (startingPM2 && localRunning) {
-      setValidationTitle('已有进程在运行')
-      setValidationMessage(
-        '当前目录正在本机（开发/前台）运行；请先停止本机进程，再启动后台服务。'
-      )
-      return
-    }
     try {
       // Bypass the 1-hour query cache so a just-installed connection package is
       // already reflected when the start dialog opens.
@@ -4862,21 +5022,13 @@ function RuntimePanel({
                         ? 'secondary-button'
                         : 'primary-button'
                     }
-                    disabled={
-                      busy ||
-                      depsMissing ||
-                      developmentRunning ||
-                      foregroundStopping ||
-                      pm2LocalRunning
-                    }
+                    disabled={busy || depsMissing || foregroundStopping}
                     title={
                       depsMissing
                         ? '请先安装依赖。'
-                        : pm2LocalRunning
-                          ? '当前目录正在后台运行，请先停止服务。'
-                          : developmentRunning
-                            ? '当前目录正在开发运行，请先停止。'
-                            : ''
+                        : developmentRunning || pm2LocalRunning
+                          ? '启动会自动停止当前正在运行的进程。'
+                          : ''
                     }
                     onClick={() =>
                       foregroundRunning
@@ -4966,21 +5118,13 @@ function RuntimePanel({
                         ? 'secondary-button'
                         : 'primary-button'
                     }
-                    disabled={
-                      busy ||
-                      depsMissing ||
-                      foregroundRunning ||
-                      developmentStopping ||
-                      pm2LocalRunning
-                    }
+                    disabled={busy || depsMissing || developmentStopping}
                     title={
                       depsMissing
                         ? '请先安装依赖。'
-                        : pm2LocalRunning
-                          ? '当前目录正在后台运行，请先停止服务。'
-                          : foregroundRunning
-                            ? '当前目录正在前台运行，请先停止。'
-                            : ''
+                        : foregroundRunning || pm2LocalRunning
+                          ? '启动会自动停止当前正在运行的进程。'
+                          : ''
                     }
                     onClick={() =>
                       developmentRunning
@@ -5053,12 +5197,12 @@ function RuntimePanel({
             </div>
             <button
               className="primary-button"
-              disabled={busy || depsMissing || !persistentReady || localRunning}
+              disabled={busy || depsMissing || !persistentReady}
               title={
                 depsMissing
                   ? '请先安装依赖。'
                   : localRunning
-                    ? '当前目录正在本机运行，请先停止本机进程。'
+                    ? '启动会自动停止当前正在运行的进程。'
                     : !persistentReady
                       ? '补齐 start 脚本和 PM2 配置后可使用。'
                       : ''
@@ -5171,236 +5315,51 @@ function RuntimePanel({
     </section>
   )
 }
-function RobotPluginWebView({
-  root,
-  entries,
-  tabs,
-  activeTabKey,
-  onActivate,
-  onClose
-}: {
-  root: string
-  entries: RobotWebView[]
-  tabs: Array<{ key: string; entryID: string; title: string; package: string }>
-  activeTabKey: string
-  onActivate: (key: string) => void
-  onClose: (key: string) => void
-}) {
-  const active = tabs.find(tab => tab.key === activeTabKey)
-  return (
-    <section className="workspace-content robot-plugin-webview grid min-h-0 grid-rows-[auto_minmax(0,1fr)]">
-      <header className="flex min-h-12 items-center justify-between gap-3 border-b border-slate-200 px-4">
-        <div className="flex min-w-0 items-center gap-1 overflow-auto">
-          {tabs.map(tab => (
-            <button
-              className={cn(
-                'flex shrink-0 items-center gap-2 rounded-md px-2.5 py-1.5 text-xs font-semibold transition',
-                tab.key === activeTabKey
-                  ? 'bg-brand-50 text-brand-700'
-                  : 'text-slate-500 hover:bg-slate-100'
-              )}
-              key={tab.key}
-              onClick={() => onActivate(tab.key)}
-              title={tab.package}
-            >
-              {tab.title}
-              <span
-                className="text-slate-400 hover:text-slate-800"
-                onClick={event => {
-                  event.stopPropagation()
-                  onClose(tab.key)
-                }}
-              >
-                ×
-              </span>
-            </button>
-          ))}
-        </div>
-        <div className="flex min-w-0 items-center gap-2">
-          <strong className="truncate text-xs font-semibold text-slate-700">
-            {active?.title}
-          </strong>
-        </div>
-      </header>
-      <div className="robot-plugin-webview-frame relative min-h-0 overflow-hidden">
-        {tabs.map(tab => {
-          const entry = entries.find(item => item.id === tab.entryID)
-          return entry ? (
-            <PluginWebViewFrame
-              key={tab.key}
-              root={root}
-              entry={entry}
-              active={tab.key === activeTabKey}
-            />
-          ) : null
-        })}
-      </div>
-    </section>
+// robotAppToken base64url-encodes a robot directory path without padding so it
+// can sit in a URL path segment, matching the backend's robotAppToken.
+function robotAppToken(root: string) {
+  return btoa(
+    Array.from(new TextEncoder().encode(root), byte =>
+      String.fromCharCode(byte)
+    ).join('')
   )
-}
-
-function PluginWebViewFrame({
-  root,
-  entry,
-  active
-}: {
-  root: string
-  entry: RobotWebView
-  active: boolean
-}) {
-  const [reloadKey, setReloadKey] = useState(0)
-  const [loading, setLoading] = useState(true)
-  const [loadError, setLoadError] = useState('')
-  const [apiError, setApiError] = useState('')
-  const frameRef = useRef<HTMLIFrameElement>(null)
-  const loadedRef = useRef(false)
-  const apiErrorRef = useRef('')
-  const rootToken = btoa(String.fromCharCode(...new TextEncoder().encode(root)))
     .replace(/\+/g, '-')
     .replace(/\//g, '_')
-    .replace(/=/g, '')
-  const pluginHost = `r-${rootToken.slice(0, 20).toLowerCase()}.localhost`
-  const source = `${window.location.protocol}//${pluginHost}${window.location.port ? `:${window.location.port}` : ''}/api/v1/robot/webview/${rootToken}/${entry.id}/`
-  useEffect(() => {
-    const origin = new URL(source).origin
-    const forward = (event: MessageEvent) => {
-      if (
-        event.origin !== origin ||
-        event.source !== frameRef.current?.contentWindow
-      )
-        return
-      const message = event.data as {
-        source?: string
-        type?: string
-        value?: { status?: number; message?: string }
-      }
-      if (message?.source !== 'alx-webview') return
-      if (message.type === 'ready') {
-        frameRef.current?.contentWindow?.postMessage(
-          {
-            source: 'alx-parent',
-            value: {
-              type: 'theme',
-              data: document.documentElement.dataset.theme ?? 'light'
-            }
-          },
-          origin
-        )
-        return
-      }
-      if (message.type === 'api-error') {
-        const status = message.value?.status
-        const next =
-          message.value?.message ||
-          (status === 502 || status === 503
-            ? '机器人 API 未连接：请在“运行”中启动机器人后重试。'
-            : `插件接口请求失败${status ? `（${status}）` : ''}。`)
-        if (apiErrorRef.current !== next) {
-          apiErrorRef.current = next
-          setApiError(next)
-        }
-      }
-    }
-    window.addEventListener('message', forward)
-    return () => window.removeEventListener('message', forward)
-  }, [source, reloadKey])
-  useEffect(() => {
-    loadedRef.current = false
-    apiErrorRef.current = ''
-    setLoading(true)
-    setLoadError('')
-    setApiError('')
-    const timer = window.setTimeout(() => {
-      if (!loadedRef.current) {
-        setLoading(false)
-        setLoadError(
-          '页面加载超时。请确认插件正在正常安装，并检查插件的 Web 页面是否完整。'
-        )
-      }
-    }, 15_000)
-    return () => window.clearTimeout(timer)
-  }, [source, reloadKey])
-  const reload = () => {
-    setReloadKey(value => value + 1)
-  }
+    .replace(/=+$/g, '')
+}
+// AppEmbed renders the robot's application service (launchpad and plugin pages)
+// in a full-window modal via the reverse proxy, so it has room to render without
+// squeezing the workspace layout.
+function AppEmbed({ root, onClose }: { root: string; onClose: () => void }) {
+  // The robot root travels as a base64url path token (matching the backend's
+  // robotAppToken) so every in-app navigation keeps it automatically.
+  const src = `/api/v1/robot/app/${robotAppToken(root)}/`
   return (
-    <div
-      className={cn(
-        'robot-plugin-webview-instance absolute inset-0',
-        active ? 'active block' : 'hidden'
-      )}
-    >
-      {loading && active && (
-        <span className="absolute left-1/2 top-1/2 z-10 -translate-x-1/2 -translate-y-1/2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-500 shadow-sm">
-          正在加载 {entry.name}…
-        </span>
-      )}
-      {apiError && active && (
-        <div
-          className="absolute left-3 right-3 top-3 z-20 flex items-center justify-between gap-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800"
-          role="status"
-        >
-          <span>{apiError}</span>
+    <Modal open zIndex={200} ariaLabel="机器人应用" onBackdropClick={onClose}>
+      <section className="grid h-[min(92vh,900px)] w-[min(92vw,1400px)] grid-rows-[auto_minmax(0,1fr)] overflow-hidden rounded-xl border border-slate-200 bg-white shadow-[0_24px_70px_rgb(28_26_23/0.26)]">
+        <header className="flex items-center justify-between gap-3 border-b border-slate-200 px-4 py-2">
+          <div className="flex min-w-0 items-center gap-2">
+            <Monitor className="size-4 shrink-0 text-brand-600 dark:text-brand-200" />
+            <strong className="truncate text-sm font-semibold text-slate-900 dark:text-slate-100">
+              机器人应用
+            </strong>
+          </div>
           <button
-            className="icon-button size-7 p-0"
-            onClick={() => {
-              apiErrorRef.current = ''
-              setApiError('')
-            }}
-            aria-label="关闭接口错误提示"
-            title="关闭"
+            className="inline-flex size-8 items-center justify-center rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-800"
+            onClick={onClose}
+            aria-label="关闭应用"
+            title="关闭应用"
           >
-            <X className="size-3.5" />
+            <X className="size-4" />
           </button>
-        </div>
-      )}
-      {loadError && active && (
-        <div className="absolute left-1/2 top-1/2 z-10 grid -translate-x-1/2 -translate-y-1/2 gap-2 rounded-xl border border-slate-200 bg-white p-5 text-center shadow-lg">
-          <strong className="text-sm font-semibold text-slate-800">
-            无法打开插件页面
-          </strong>
-          <p className="max-w-sm text-xs leading-5 text-slate-500">
-            {loadError}
-          </p>
-          <button
-            className="secondary-button justify-self-center"
-            onClick={reload}
-          >
-            <RefreshCw className="mr-1.5 size-3.5" />
-            重新加载
-          </button>
-        </div>
-      )}
-      <button
-        className="icon-button absolute right-3 top-3 z-10 size-8 p-0"
-        onClick={reload}
-        aria-label="重新加载插件页面"
-        title="重新加载"
-      >
-        <RefreshCw className="size-4" />
-      </button>
-      <iframe
-        className="size-full border-0 bg-white"
-        ref={frameRef}
-        key={reloadKey}
-        src={source}
-        title={`${entry.name} 插件页面`}
-        sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-downloads"
-        referrerPolicy="no-referrer"
-        onLoad={() => {
-          loadedRef.current = true
-          setLoading(false)
-          setLoadError('')
-        }}
-        onError={() => {
-          loadedRef.current = true
-          setLoading(false)
-          setLoadError(
-            '浏览器无法载入此插件页面。请重新加载，或确认插件的 dist 文件已完整安装。'
-          )
-        }}
-      />
-    </div>
+        </header>
+        <iframe
+          className="h-full w-full border-0"
+          src={src}
+          title="机器人应用"
+        />
+      </section>
+    </Modal>
   )
 }
 
@@ -5411,12 +5370,11 @@ function ControlCard({
   buildMode,
   catalog,
   catalogTitle,
-  webViews,
-  activeWebViewID,
   developerMode,
+  appLaunching,
   onOpenConsole,
   onOpenAI,
-  onOpenWebView,
+  onOpenApp,
   onPage,
   onSection,
   onBuildMode,
@@ -5429,12 +5387,11 @@ function ControlCard({
   buildMode: 'manifest' | 'npm' | 'git'
   catalog: CatalogGroup[]
   catalogTitle: string
-  webViews: RobotWebView[]
-  activeWebViewID: string
   developerMode: boolean
+  appLaunching: boolean
   onOpenConsole: () => void
   onOpenAI: () => void
-  onOpenWebView: (id: string) => void
+  onOpenApp: () => void
   onPage: (page: Page) => void
   onSection: (section: Section) => void
   onBuildMode: (mode: 'manifest' | 'npm' | 'git') => void
@@ -5646,6 +5603,23 @@ function ControlCard({
             </button>
             <button
               className="icon-button size-8 p-0"
+              onClick={onOpenApp}
+              disabled={appLaunching}
+              aria-label={appLaunching ? '正在启动应用…' : '打开应用'}
+              title={
+                appLaunching
+                  ? '正在启动应用，请稍候…'
+                  : '打开应用（需配置应用端口并启动机器人）'
+              }
+            >
+              {appLaunching ? (
+                <span className="inline-block size-4 animate-spin rounded-full border-2 border-slate-300 border-t-brand-600" />
+              ) : (
+                <Monitor className="size-4" />
+              )}
+            </button>
+            <button
+              className="icon-button size-8 p-0"
               onClick={onOpenAI}
               aria-label="打开 Agent"
               title="打开 Agent"
@@ -5655,27 +5629,6 @@ function ControlCard({
           </footer>
         )}
       </section>
-      {webViews.length > 0 && (
-        <section className="grid gap-2" aria-label="机器人插件 Web 页面">
-          {webViews.map(item => (
-            <button
-              className={cn(
-                'flex min-h-10 items-center gap-2 rounded-lg border px-3 text-left text-xs font-semibold transition',
-                item.id === activeWebViewID
-                  ? 'border-brand-200 bg-brand-50 text-brand-700'
-                  : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
-              )}
-              key={item.id}
-              onClick={() => onOpenWebView(item.id)}
-              title={item.description || item.package}
-            >
-              <Package className="size-4" />
-              <span className="min-w-0 flex-1 truncate">{item.name}</span>
-              <ChevronRight className="size-4 text-slate-400" />
-            </button>
-          ))}
-        </section>
-      )}
     </aside>
   )
 }
@@ -5728,25 +5681,32 @@ function ReadonlyConsole({
   const outputRef = useRef<HTMLPreElement>(null)
   const followLatest = useRef(true)
   const [showSnapshot, setShowSnapshot] = useState(false)
+  // liveOutput accumulates incremental output pushed over SSE; the initial
+  // load seeds it with the current buffer so the terminal is real-time without
+  // polling. The static snapshot still comes from the query.
+  const [liveOutput, setLiveOutput] = useState('')
   const runError = error
     ? operationErrorMessage(error, '无法读取当前目录的运行终端信息。')
     : ''
   const running = Boolean(data?.running)
-  const message = runError || data?.output || ''
-  // The live output changes frequently; the static project snapshot (pwd,
-  // scripts, git status, node version) barely changes. Poll fast only while a
-  // process is running, and reuse the server-side snapshot cache otherwise.
+  const message = runError || liveOutput
   useEffect(() => {
     if (!open || !root) return
-    void load({ root })
-    const timer = window.setInterval(
-      () => {
-        void load({ root })
-      },
-      running ? 900 : 5000
-    )
-    return () => window.clearInterval(timer)
-  }, [load, open, root, running])
+    void load({ root }).then(result => {
+      if (result.data) setLiveOutput(result.data.output ?? '')
+    })
+    // No polling: output streams in via the SSE robot-output event; the manual
+    // refresh button re-reads the snapshot.
+  }, [load, open, root])
+  useEffect(() => {
+    if (!open) return
+    const handler = (event: Event) => {
+      const detail = (event as CustomEvent<{ text?: string }>).detail
+      if (detail?.text) setLiveOutput(prev => prev + detail.text)
+    }
+    window.addEventListener('alx:robot-output', handler)
+    return () => window.removeEventListener('alx:robot-output', handler)
+  }, [open])
   useEffect(() => {
     if (open) followLatest.current = true
   }, [open])

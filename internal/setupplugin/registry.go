@@ -87,6 +87,29 @@ type Registry struct {
 	revision     uint64
 	loaded       bool
 	lastFingerprint string
+	listeners    map[chan struct{}]struct{}
+}
+
+// Subscribe returns a channel that receives a signal whenever the cached plugin
+// set changes (revision bumps). Consumers that render the plugin list use this
+// to refresh without polling the whole list. The signal is coalesced: a slow
+// consumer may miss intermediate changes but is always woken for the latest.
+func (r *Registry) Subscribe() chan struct{} {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.listeners == nil {
+		r.listeners = map[chan struct{}]struct{}{}
+	}
+	ch := make(chan struct{}, 1)
+	r.listeners[ch] = struct{}{}
+	return ch
+}
+
+// Unsubscribe stops delivering change signals to a channel from Subscribe.
+func (r *Registry) Unsubscribe(ch chan struct{}) {
+	r.mu.Lock()
+	delete(r.listeners, ch)
+	r.mu.Unlock()
 }
 
 func NewRegistry(roots ...string) *Registry {
@@ -203,6 +226,14 @@ func (r *Registry) Rescan() {
 	r.loaded = true
 	if changed {
 		r.revision++
+		// Wake subscribers non-blockingly so a full rescan never blocks on a
+		// slow SSE consumer. The 1-buffer channel coalesces bursts.
+		for ch := range r.listeners {
+			select {
+			case ch <- struct{}{}:
+			default:
+			}
+		}
 	}
 	r.mu.Unlock()
 }

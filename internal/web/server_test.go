@@ -2,6 +2,7 @@ package web
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -19,6 +21,7 @@ import (
 
 	"alemonx/internal/access"
 	"alemonx/internal/robot"
+	"alemonx/internal/setupplugin"
 )
 
 var errInternalTest = errors.New("internal test failure")
@@ -95,6 +98,7 @@ func newStatefulTestServer() *server {
 		consoleCache:  map[string]consoleSnapshot{},
 		pm2Status:     func(string) (robot.PM2Status, error) { return robot.PM2Status{}, nil },
 		directoryRoots: managedDirectoryRoots(),
+		events:        newRobotEventHub(),
 	}
 }
 
@@ -239,12 +243,20 @@ func TestLocalStartNotBlockedWhenPM2Idle(t *testing.T) {
 	if _, blocked := s.localStartBlockedByPM2(root); blocked {
 		t.Fatalf("idle PM2 must not block local start")
 	}
-	// A PM2 status read failure must also never block.
+}
+
+// TestLocalStartBlockedWhenPM2StatusUnreadable is the strict behaviour: a PM2
+// state that cannot be read (daemon mismatch, timeout) must still block a local
+// start, otherwise a running PM2 service would silently share the app port.
+func TestLocalStartBlockedWhenPM2StatusUnreadable(t *testing.T) {
+	root := t.TempDir()
+	s := newStatefulTestServer()
 	s.pm2Status = func(string) (robot.PM2Status, error) {
 		return robot.PM2Status{}, errInternalTest
 	}
-	if _, blocked := s.localStartBlockedByPM2(root); blocked {
-		t.Fatalf("PM2 read error must not block local start")
+	message, blocked := s.localStartBlockedByPM2(root)
+	if !blocked || !strings.Contains(message, "无法读取后台（PM2）服务状态") {
+		t.Fatalf("unreadable PM2 state must block local start, blocked=%v msg=%q", blocked, message)
 	}
 }
 
@@ -431,5 +443,379 @@ func TestRobotWebViewUsesItsOwnFramePolicyAndBypassesManagementLogin(t *testing.
 	}
 	if got := response.Header().Get("X-Frame-Options"); got != "" {
 		t.Fatalf("WebView X-Frame-Options = %q, want empty for cross-loopback frame", got)
+	}
+}
+
+// TestStopPM2ForStartSkipsWhenIdle verifies the "谁最后启动谁为准" helper only
+// attempts a PM2 stop when the service is running or unreadable, not when it is
+// confirmed idle.
+func TestStopPM2ForStartSkipsWhenIdle(t *testing.T) {
+	root := t.TempDir()
+	s := newStatefulTestServer()
+	s.pm2Status = func(string) (robot.PM2Status, error) {
+		return robot.PM2Status{Configured: true, Managed: true, Running: false}, nil
+	}
+	if err := s.stopPM2ForStart(root); err != nil {
+		t.Fatalf("idle PM2 should be skipped, got %v", err)
+	}
+}
+
+// TestStopLocalForStartSkipsWhenNothingRunning verifies a local stop is a no-op
+// when no supervised process exists.
+func TestStopLocalForStartSkipsWhenNothingRunning(t *testing.T) {
+	root := t.TempDir()
+	s := newStatefulTestServer()
+	if err := s.stopLocalForStart(root); err != nil {
+		t.Fatalf("no local process should be a no-op, got %v", err)
+	}
+}
+
+// TestRobotEventHubPublishesOutput verifies appendOperationOutput fans out an
+// incremental output event to SSE subscribers.
+func TestRobotEventHubPublishesOutput(t *testing.T) {
+	s := newStatefulTestServer()
+	s.operations = []operationTask{{ID: "dev-1", Output: ""}}
+	sub := s.events.subscribe()
+	defer s.events.unsubscribe(sub)
+	s.appendOperationOutput("dev-1", "hello line\n")
+	select {
+	case event := <-sub:
+		if event.Type != "output" || event.TaskID != "dev-1" || event.Text != "hello line\n" {
+			t.Fatalf("event = %+v, want output for dev-1", event)
+		}
+	default:
+		t.Fatal("expected an output event")
+	}
+}
+
+// TestIsNumeric validates the PID filter used by forceFreePort.
+func TestIsNumeric(t *testing.T) {
+	for _, ok := range []string{"1234", "0", "99999"} {
+		if !isNumeric(ok) {
+			t.Fatalf("%q should be numeric", ok)
+		}
+	}
+	for _, bad := range []string{"", "12a", "-1", "1.5", "abc"} {
+		if isNumeric(bad) {
+			t.Fatalf("%q should not be numeric", bad)
+		}
+	}
+}
+
+// TestRecordAndForgetProcessPersistsMarker verifies the process marker is
+// written and removed from the persisted store.
+func TestRecordAndForgetProcessPersistsMarker(t *testing.T) {
+	t.Setenv("ALEMONX_PROCESS_FILE", filepath.Join(t.TempDir(), "processes.json"))
+	s := newStatefulTestServer()
+	root := "/robots/bot"
+	s.recordProcess(root, "task-1", 12345, "dev")
+	items := loadPersistedProcesses()
+	found := false
+	for _, item := range items {
+		if item.Root == root && item.TaskID == "task-1" && item.PGID == 12345 {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("persisted marker not found after record")
+	}
+	s.forgetProcess(root, "task-1")
+	items = loadPersistedProcesses()
+	for _, item := range items {
+		if item.Root == root && item.TaskID == "task-1" {
+			t.Fatal("marker not removed after forget")
+		}
+	}
+	savePersistedProcesses(nil)
+}
+
+// TestAppProxyFramePolicy verifies /api/v1/robot/app/ responses are allowed in
+// frames (no X-Frame-Options DENY) so the application service can render inside
+// the workspace iframe, and are exempt from management auth like webviews.
+func TestAppProxyFramePolicy(t *testing.T) {
+	router := gin.New()
+	router.Use((&server{}).ginHeaders())
+	router.Any("/api/v1/robot/app/", func(c *gin.Context) { c.Status(http.StatusOK) })
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/robot/app/?root=%2Frobots%2Fbot", nil)
+	router.ServeHTTP(recorder, request)
+	if got := recorder.Header().Get("X-Frame-Options"); got != "" {
+		t.Fatalf("app proxy X-Frame-Options = %q, want empty so it can be framed", got)
+	}
+}
+
+// TestModifyRobotAppResponse verifies the /api/v1/robot/app/ proxy patches
+// proxied documents so absolute app links (/app/, /apps/x/) and relative assets
+// stay inside the proxy mount (which carries the robot root token) instead of
+// escaping to the management page origin, and that redirects stay within the
+// mount.
+func TestModifyRobotAppResponse(t *testing.T) {
+	target, err := url.Parse("http://127.0.0.1:18110")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const mount = "/api/v1/robot/app/"
+	appPrefix := mount + robotAppToken("/robots/bot") + "/"
+	htmlResponse := func(body string) *http.Response {
+		return &http.Response{
+			StatusCode:    http.StatusOK,
+			Header:        http.Header{"Content-Type": []string{"text/html; charset=utf-8"}},
+			Body:          io.NopCloser(strings.NewReader(body)),
+			ContentLength: int64(len(body)),
+		}
+	}
+
+	navigation := func(path string) *http.Request {
+		request := httptest.NewRequest(http.MethodGet, path, nil)
+		request.Header.Set("Accept", "text/html")
+		return request
+	}
+
+	t.Run("launchpad root", func(t *testing.T) {
+		response := htmlResponse(`<html><head><title>launchpad</title></head><body>` +
+			`<a href="/app/">Main</a><a href="/apps/demo/">Plugin</a>` +
+			`<script src="./assets/app.js"></script>` +
+			`<link rel="icon" href="/favicon.ico"></body></html>`)
+		modifyRobotAppResponse(response, target, appPrefix, appPrefix, navigation(appPrefix))
+		body, _ := io.ReadAll(response.Body)
+		for _, want := range []string{
+			`<base href="` + appPrefix + `">`,
+			`href="` + appPrefix + `app/"`,
+			`href="` + appPrefix + `apps/demo/"`,
+			`href="` + appPrefix + `favicon.ico"`,
+			`src="./assets/app.js"`,
+			`scrollbar-width:none`,
+		} {
+			if !strings.Contains(string(body), want) {
+				t.Errorf("launchpad body missing %q\nbody:\n%s", want, body)
+			}
+		}
+		if strings.Contains(string(body), `href="/app/"`) {
+			t.Errorf("launchpad body still contains un-prefixed /app/ link\nbody:\n%s", body)
+		}
+		if got := response.Header.Get("Content-Length"); got != strconv.Itoa(len(body)) {
+			t.Errorf("Content-Length = %q, want %d", got, len(body))
+		}
+	})
+
+	t.Run("plugin page base", func(t *testing.T) {
+		path := appPrefix + "apps/demo/"
+		response := htmlResponse(`<html><head><title>demo</title><script src="./assets/index.js"></script></head>` +
+			`<body><a href="/config/qq">Config</a></body></html>`)
+		modifyRobotAppResponse(response, target, appPrefix, path, navigation(path))
+		body, _ := io.ReadAll(response.Body)
+		for _, want := range []string{
+			`<base href="` + path + `">`,
+			`src="./assets/index.js"`,
+			`href="` + appPrefix + `config/qq"`,
+		} {
+			if !strings.Contains(string(body), want) {
+				t.Errorf("plugin body missing %q\nbody:\n%s", want, body)
+			}
+		}
+	})
+
+	t.Run("no head falls back to html tag", func(t *testing.T) {
+		response := htmlResponse(`<html><body><a href="/app/">x</a></body></html>`)
+		modifyRobotAppResponse(response, target, appPrefix, appPrefix, navigation(appPrefix))
+		body, _ := io.ReadAll(response.Body)
+		if !strings.Contains(string(body), `<base href="`+appPrefix+`">`) {
+			t.Errorf("missing injected base\nbody:\n%s", body)
+		}
+	})
+
+	t.Run("scheme and protocol-relative URLs untouched", func(t *testing.T) {
+		response := htmlResponse(`<a href="https://example.com/x">a</a><a href="//cdn.example.com/x">b</a>`)
+		modifyRobotAppResponse(response, target, appPrefix, appPrefix, navigation(appPrefix))
+		body, _ := io.ReadAll(response.Body)
+		for _, want := range []string{`href="https://example.com/x"`, `href="//cdn.example.com/x"`} {
+			if !strings.Contains(string(body), want) {
+				t.Errorf("external URL changed: missing %q\nbody:\n%s", want, body)
+			}
+		}
+	})
+
+	t.Run("redirect re-prefixed", func(t *testing.T) {
+		response := &http.Response{
+			StatusCode: http.StatusFound,
+			Header:     http.Header{"Location": []string{"/app/"}},
+			Body:       io.NopCloser(strings.NewReader("")),
+		}
+		modifyRobotAppResponse(response, target, appPrefix, appPrefix+"app", navigation(appPrefix+"app"))
+		if got := response.Header.Get("Location"); got != appPrefix+"app/" {
+			t.Errorf("Location = %q, want %q", got, appPrefix+"app/")
+		}
+	})
+
+	t.Run("full target-host redirect re-prefixed", func(t *testing.T) {
+		response := &http.Response{
+			StatusCode: http.StatusFound,
+			Header:     http.Header{"Location": []string{"http://127.0.0.1:18110/app/?q=1"}},
+			Body:       io.NopCloser(strings.NewReader("")),
+		}
+		modifyRobotAppResponse(response, target, appPrefix, appPrefix+"app", navigation(appPrefix+"app"))
+		if got := response.Header.Get("Location"); got != appPrefix+"app/?q=1" {
+			t.Errorf("Location = %q, want %q", got, appPrefix+"app/?q=1")
+		}
+	})
+
+	t.Run("unmatched page navigation returns to launchpad", func(t *testing.T) {
+		response := &http.Response{
+			StatusCode: http.StatusNotFound,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"code":404}`)),
+		}
+		path := appPrefix + "apps/demo/missing"
+		modifyRobotAppResponse(response, target, appPrefix, path, navigation(path))
+		if response.StatusCode != http.StatusFound {
+			t.Fatalf("status = %d, want 302 redirect to launchpad", response.StatusCode)
+		}
+		if got := response.Header.Get("Location"); got != appPrefix {
+			t.Errorf("Location = %q, want %q", got, appPrefix)
+		}
+		if body, _ := io.ReadAll(response.Body); len(body) != 0 {
+			t.Errorf("redirect body should be empty, got %q", body)
+		}
+	})
+
+	t.Run("unmatched asset request is not redirected", func(t *testing.T) {
+		response := &http.Response{
+			StatusCode: http.StatusNotFound,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"code":404}`)),
+		}
+		path := appPrefix + "apps/demo/assets/missing.js"
+		request := httptest.NewRequest(http.MethodGet, path, nil)
+		request.Header.Set("Accept", "*/*")
+		modifyRobotAppResponse(response, target, appPrefix, path, request)
+		if response.StatusCode != http.StatusNotFound {
+			t.Fatalf("status = %d, want 404 (asset request must pass through)", response.StatusCode)
+		}
+		if got := response.Header.Get("Location"); got != "" {
+			t.Errorf("asset request must not redirect, got Location %q", got)
+		}
+	})
+
+	t.Run("launchpad 404 never redirects to itself", func(t *testing.T) {
+		response := &http.Response{
+			StatusCode: http.StatusNotFound,
+			Header:     http.Header{},
+			Body:       io.NopCloser(strings.NewReader("")),
+		}
+		modifyRobotAppResponse(response, target, appPrefix, appPrefix, navigation(appPrefix))
+		if response.StatusCode != http.StatusNotFound {
+			t.Errorf("launchpad 404 must stay 404, got %d", response.StatusCode)
+		}
+	})
+
+	t.Run("assets and API payloads pass through", func(t *testing.T) {
+		response := htmlResponse(`{"api":"/status"}`)
+		response.Header.Set("Content-Type", "application/json")
+		path := appPrefix + "api/status"
+		request := httptest.NewRequest(http.MethodGet, path, nil)
+		request.Header.Set("Accept", "application/json")
+		modifyRobotAppResponse(response, target, appPrefix, path, request)
+		body, _ := io.ReadAll(response.Body)
+		if string(body) != `{"api":"/status"}` {
+			t.Errorf("JSON body changed: %q", body)
+		}
+	})
+}
+
+// TestRobotAppTokenRoundTrip verifies the root token survives a decode round
+// trip and that the legacy query form still resolves from the handler.
+func TestRobotAppTokenRoundTrip(t *testing.T) {
+	const root = "/Users/lemonade/Desktop/alemonjs-setup/alemonb"
+	token := robotAppToken(root)
+	decoded, raw := robotAppRootFromPath("/api/v1/robot/app/"+token+"/apps/demo/", "/api/v1/robot/app/")
+	if decoded != root || raw != token {
+		t.Fatalf("round trip = (%q, %q), want (%q, %q)", decoded, raw, root, token)
+	}
+	if strings.ContainsAny(token, "+/=") {
+		t.Fatalf("token must be base64url-safe, got %q", token)
+	}
+	// A path whose first segment is not valid base64url must yield no root.
+	if root, _ := robotAppRootFromPath("/api/v1/robot/app/apps/demo/", "/api/v1/robot/app/"); root != "" {
+		t.Fatalf("non-token path decoded root = %q, want empty", root)
+	}
+}
+
+// flushWriter adapts httptest.ResponseRecorder to http.Flusher so the SSE
+// handler can be driven without binding a real port (the test sandbox forbids
+// listen).
+type flushWriter struct {
+	*httptest.ResponseRecorder
+}
+
+func (f flushWriter) Flush() {}
+
+// TestSetupPluginEventsSSE verifies /setup/plugins/events emits a change event
+// when the plugin registry changes and stays quiet otherwise.
+func TestSetupPluginEventsSSE(t *testing.T) {
+	root := t.TempDir()
+	registry := setupplugin.NewRegistry(root)
+	registry.Rescan()
+	s := &server{plugins: registry}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/setup/plugins/events", nil).WithContext(ctx)
+	recorder := flushWriter{httptest.NewRecorder()}
+	done := make(chan struct{})
+	go func() {
+		s.setupPluginEventsHandler(recorder, request)
+		close(done)
+	}()
+
+	// No initial event is emitted.
+	deadline := time.Now().Add(200 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if recorder.Body.Len() > 0 {
+			cancel()
+			t.Fatalf("unexpected early SSE data: %q", recorder.Body.String())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Adding a plugin bumps the revision and must push a change event.
+	directory := filepath.Join(root, "newone")
+	if err := os.MkdirAll(filepath.Join(directory, "web"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	manifest := `{"id":"newone","name":"New","version":"1.0.0","web":{"root":"web"}}`
+	if err := os.WriteFile(filepath.Join(directory, "alx.json"), []byte(manifest), 0644); err != nil {
+		t.Fatal(err)
+	}
+	registry.Rescan()
+
+	waitFor := time.Now().Add(time.Second)
+	for !strings.Contains(recorder.Body.String(), "data: {}") && time.Now().Before(waitFor) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	<-done
+	if !strings.Contains(recorder.Body.String(), "data: {}") {
+		t.Fatalf("SSE stream did not emit a change event, body: %q", recorder.Body.String())
+	}
+	if got := recorder.Header().Get("Content-Type"); got != "text/event-stream" {
+		t.Fatalf("Content-Type = %q, want text/event-stream", got)
+	}
+}
+
+// TestSetupPluginWebEmbeddable verifies setup plugin pages are frame-embeddable
+// (ginHeaders must not add X-Frame-Options DENY), so the management UI can
+// render them in an iframe.
+func TestSetupPluginWebEmbeddable(t *testing.T) {
+	router := gin.New()
+	router.Use((&server{}).ginHeaders())
+	router.Any("/api/v1/setup/plugins/web/", func(c *gin.Context) {
+		c.Status(http.StatusOK)
+	})
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/setup/plugins/web/alemonx-qq/index.html", nil)
+	router.ServeHTTP(recorder, request)
+	if got := recorder.Header().Get("X-Frame-Options"); got != "" {
+		t.Fatalf("setup plugin web X-Frame-Options = %q, want empty", got)
 	}
 }

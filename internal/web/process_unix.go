@@ -21,3 +21,23 @@ func interruptManagedProcess(command *exec.Cmd) error {
 func forceStopManagedProcess(command *exec.Cmd) error {
 	return syscall.Kill(-command.Process.Pid, syscall.SIGKILL)
 }
+
+// processGroupID returns the process-group id for a configured command. The
+// command was started with Setpgid, so the group equals its own pid.
+func processGroupID(command *exec.Cmd) int {
+	if command.Process == nil {
+		return 0
+	}
+	return command.Process.Pid
+}
+
+// processGroupAlive reports whether a process group still exists.
+func processGroupAlive(pgid int) bool {
+	err := syscall.Kill(-pgid, 0)
+	return err == nil || err == syscall.EPERM
+}
+
+// killProcessGroup forcibly terminates every member of a process group.
+func killProcessGroup(pgid int) {
+	_ = syscall.Kill(-pgid, syscall.SIGKILL)
+}

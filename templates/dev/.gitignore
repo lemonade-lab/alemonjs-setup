@@ -1,5 +1,5 @@
 # 依赖
-node_modules/
+node_modules
 .pnp/
 .pnp.js
 
@@ -25,3 +25,5 @@ yarn-error.log*
 # 工具
 .DS_Store
 *.local
+
+/packages

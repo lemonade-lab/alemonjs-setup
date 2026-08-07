@@ -32,8 +32,22 @@ export function Modal({
       role={ariaLabel ? 'dialog' : 'presentation'}
       aria-modal={ariaLabel ? 'true' : undefined}
       aria-label={ariaLabel}
-      onMouseDown={onClose ? () => onClose() : undefined}
-      onClick={onBackdropClick}
+      // Only close when the backdrop itself is clicked; a mousedown on the
+      // dialog content must not bubble up and dismiss the modal.
+      onMouseDown={
+        onClose
+          ? event => {
+              if (event.target === event.currentTarget) onClose()
+            }
+          : undefined
+      }
+      onClick={
+        onBackdropClick
+          ? event => {
+              if (event.target === event.currentTarget) onBackdropClick()
+            }
+          : undefined
+      }
     >
       {children}
     </div>,

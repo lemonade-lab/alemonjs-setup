@@ -22,3 +22,12 @@ func interruptManagedProcess(command *exec.Cmd) error {
 func forceStopManagedProcess(command *exec.Cmd) error {
 	return command.Process.Kill()
 }
+
+// processGroupID returns 0 on Windows; process-group signalling is not used.
+func processGroupID(command *exec.Cmd) int {
+	return 0
+}
+
+func processGroupAlive(_ int) bool { return false }
+
+func killProcessGroup(_ int) {}

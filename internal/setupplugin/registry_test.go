@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+	"time"
 )
 
 func TestRegistryListsValidPluginWithNavigation(t *testing.T) {
@@ -185,5 +186,48 @@ func TestRegistryHotPlugReflectsAddedPlugin(t *testing.T) {
 	}
 	if _, err := registry.Find("newone"); err != nil {
 		t.Fatalf("new plugin must be discoverable after rescan: %v", err)
+	}
+}
+
+func TestRegistrySubscribeSignalsChange(t *testing.T) {
+	root := t.TempDir()
+	registry := NewRegistry(root)
+	registry.Rescan()
+	changes := registry.Subscribe()
+	defer registry.Unsubscribe(changes)
+
+	// A rescan that changes nothing must not wake subscribers.
+	registry.Rescan()
+	select {
+	case <-changes:
+		t.Fatal("unexpected change signal when the plugin set did not change")
+	default:
+	}
+
+	directory := filepath.Join(root, "newone")
+	if err := os.MkdirAll(filepath.Join(directory, "web"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	manifest := `{"id":"newone","name":"New","version":"1.0.0","web":{"root":"web"}}`
+	if err := os.WriteFile(filepath.Join(directory, manifestName), []byte(manifest), 0644); err != nil {
+		t.Fatal(err)
+	}
+	registry.Rescan()
+	select {
+	case <-changes:
+	case <-time.After(time.Second):
+		t.Fatal("expected a change signal after the plugin set changed")
+	}
+
+	// Unsubscribe stops further delivery.
+	registry.Unsubscribe(changes)
+	if err := os.RemoveAll(directory); err != nil {
+		t.Fatal(err)
+	}
+	registry.Rescan()
+	select {
+	case <-changes:
+		t.Fatal("subscriber still receives signals after unsubscribe")
+	default:
 	}
 }

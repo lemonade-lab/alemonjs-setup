@@ -44,31 +44,18 @@ export type WorkspaceProject = {
   name: string
   pinned?: boolean
 }
-export type WorkspaceWebViewTab = {
-  key: string
-  root: string
-  entryID: string
-  package: string
-  title: string
-  openedAt: string
-  lastActiveAt: string
-}
 type WorkspaceState = {
   projects: WorkspaceProject[]
   activeProjectID: string
   drafts: Record<string, string>
   developerMode: boolean
-  webviewTabs: WorkspaceWebViewTab[]
-  activeWebviewTabKey: string
 }
 
 const initialState: WorkspaceState = {
   projects: [],
   activeProjectID: '',
   drafts: {},
-  developerMode: false,
-  webviewTabs: [],
-  activeWebviewTabKey: ''
+  developerMode: false
 }
 const workspaceSlice = createSlice({
   name: 'workspace',
@@ -82,15 +69,6 @@ const workspaceSlice = createSlice({
     },
     selectProject(state, action: PayloadAction<string>) {
       state.activeProjectID = action.payload
-      state.activeWebviewTabKey = ''
-      const root = state.projects.find(item => item.id === action.payload)?.path
-      if (!root) return
-      const recent = state.webviewTabs
-        .filter(item => item.root === root)
-        .sort((left, right) =>
-          right.lastActiveAt.localeCompare(left.lastActiveAt)
-        )[0]
-      state.activeWebviewTabKey = recent?.key ?? ''
     },
     removeProject(state, action: PayloadAction<string>) {
       state.projects = state.projects.filter(item => item.id !== action.payload)
@@ -112,61 +90,6 @@ const workspaceSlice = createSlice({
     },
     setDeveloperMode(state, action: PayloadAction<boolean>) {
       state.developerMode = action.payload
-    },
-    openWebviewTab(
-      state,
-      action: PayloadAction<
-        Omit<WorkspaceWebViewTab, 'openedAt' | 'lastActiveAt'>
-      >
-    ) {
-      const now = new Date().toISOString()
-      const existing = state.webviewTabs.find(
-        item => item.key === action.payload.key
-      )
-      if (existing) existing.lastActiveAt = now
-      else
-        state.webviewTabs.push({
-          ...action.payload,
-          openedAt: now,
-          lastActiveAt: now
-        })
-      state.activeWebviewTabKey = action.payload.key
-    },
-    activateWebviewTab(state, action: PayloadAction<string>) {
-      const tab = state.webviewTabs.find(item => item.key === action.payload)
-      if (!tab) return
-      tab.lastActiveAt = new Date().toISOString()
-      state.activeWebviewTabKey = tab.key
-    },
-    clearActiveWebviewTab(state) {
-      state.activeWebviewTabKey = ''
-    },
-    closeWebviewTab(state, action: PayloadAction<string>) {
-      const index = state.webviewTabs.findIndex(
-        item => item.key === action.payload
-      )
-      if (index < 0) return
-      const active = state.activeWebviewTabKey === action.payload
-      state.webviewTabs.splice(index, 1)
-      if (active)
-        state.activeWebviewTabKey =
-          state.webviewTabs[index]?.key ??
-          state.webviewTabs[index - 1]?.key ??
-          ''
-    },
-    pruneWebviewTabs(
-      state,
-      action: PayloadAction<{ root: string; entryIDs: string[] }>
-    ) {
-      state.webviewTabs = state.webviewTabs.filter(
-        item =>
-          item.root !== action.payload.root ||
-          action.payload.entryIDs.includes(item.entryID)
-      )
-      if (
-        !state.webviewTabs.some(item => item.key === state.activeWebviewTabKey)
-      )
-        state.activeWebviewTabKey = ''
     },
     clearDraft(state, action: PayloadAction<string>) {
       delete state.drafts[action.payload]
@@ -200,9 +123,7 @@ export const persistedWorkspace = persistReducer(
       'projects',
       'activeProjectID',
       'drafts',
-      'developerMode',
-      'webviewTabs',
-      'activeWebviewTabKey'
+      'developerMode'
     ],
     transforms: [privateDraftsTransform],
     // A stored state written by an older release may hold null/undefined for
@@ -211,9 +132,7 @@ export const persistedWorkspace = persistReducer(
     stateReconciler: (inbound, _original, reduced) => {
       const restored = { ...reduced, ...(inbound ?? {}) } as WorkspaceState
       if (!Array.isArray(restored.projects)) restored.projects = []
-      if (!Array.isArray(restored.webviewTabs)) restored.webviewTabs = []
       if (!restored.activeProjectID) restored.activeProjectID = ''
-      if (!restored.activeWebviewTabKey) restored.activeWebviewTabKey = ''
       return restored
     }
   },
@@ -226,10 +145,5 @@ export const {
   pinProject,
   setDraft,
   clearDraft,
-  setDeveloperMode,
-  openWebviewTab,
-  activateWebviewTab,
-  clearActiveWebviewTab,
-  closeWebviewTab,
-  pruneWebviewTabs
+  setDeveloperMode
 } = workspaceSlice.actions

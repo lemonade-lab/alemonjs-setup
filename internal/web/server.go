@@ -4,16 +4,21 @@ package web
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"html"
 	"io"
 	"io/fs"
 	"log"
 	"net/http"
+	"net/http/httputil"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
 	"strconv"
@@ -62,9 +67,109 @@ type operationTask struct {
 	FinishedAt *time.Time `json:"finishedAt,omitempty"`
 }
 
+// robotEvent is pushed to subscribed SSE clients whenever a supervised task
+// changes state or a running process emits output. Type is "task" (full task
+// snapshot) or "output" (incremental text for a task).
+type robotEvent struct {
+	Type   string          `json:"type"`
+	TaskID string          `json:"taskId,omitempty"`
+	Task   *operationTask  `json:"task,omitempty"`
+	Text   string          `json:"text,omitempty"`
+}
+
+// robotEventHub fans events out to open SSE subscribers. A dropped channel is
+// pruned on publish so a slow client cannot block the event loop.
+type robotEventHub struct {
+	mu          sync.Mutex
+	subscribers map[chan robotEvent]struct{}
+}
+
+func newRobotEventHub() *robotEventHub {
+	return &robotEventHub{subscribers: map[chan robotEvent]struct{}{}}
+}
+
+func (h *robotEventHub) subscribe() chan robotEvent {
+	ch := make(chan robotEvent, 64)
+	h.mu.Lock()
+	h.subscribers[ch] = struct{}{}
+	h.mu.Unlock()
+	return ch
+}
+
+func (h *robotEventHub) unsubscribe(ch chan robotEvent) {
+	h.mu.Lock()
+	delete(h.subscribers, ch)
+	h.mu.Unlock()
+}
+
+func (h *robotEventHub) publish(event robotEvent) {
+	h.mu.Lock()
+	for ch := range h.subscribers {
+		select {
+		case ch <- event:
+		default:
+			delete(h.subscribers, ch)
+		}
+	}
+	h.mu.Unlock()
+}
+
 type developmentProcess struct {
 	TaskID  string
 	Command *exec.Cmd
+	// PGID is the process-group id created for the command (unix: its own pid).
+	// Persisted so an orphaned node can be killed even after alx restarts.
+	PGID int
+}
+
+// persistedProcess is the on-disk marker for a supervised robot process. It
+// survives alx restarts so a stray node that kept the port can be found and
+// killed instead of escaping ("端口逃逸").
+type persistedProcess struct {
+	Root      string    `json:"root"`
+	TaskID    string    `json:"taskId"`
+	PGID      int       `json:"pgid"`
+	Action    string    `json:"action"`
+	StartedAt time.Time `json:"startedAt"`
+}
+
+func processesFilePath() string {
+	if override := os.Getenv("ALEMONX_PROCESS_FILE"); override != "" {
+		return override
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".alemonx", "processes.json")
+}
+
+func loadPersistedProcesses() []persistedProcess {
+	path := processesFilePath()
+	if path == "" {
+		return nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var items []persistedProcess
+	if json.Unmarshal(data, &items) != nil {
+		return nil
+	}
+	return items
+}
+
+func savePersistedProcesses(items []persistedProcess) {
+	path := processesFilePath()
+	if path == "" {
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return
+	}
+	data, _ := json.Marshal(items)
+	_ = os.WriteFile(path, data, 0600)
 }
 
 // webViewRuntime is separate from a robot's app/dev process. It hosts
@@ -100,6 +205,19 @@ type server struct {
 	pm2Status      func(string) (robot.PM2Status, error)
 	requestID      atomic.Uint64
 	directoryRoots []string
+	events         *robotEventHub
+}
+
+// cleanupStaleProcesses runs at server startup. It loads the persisted markers
+// for previously supervised processes and kills any that survived an alx
+// restart, so an orphaned node cannot hold the app port forever.
+func cleanupStaleProcesses() {
+	for _, item := range loadPersistedProcesses() {
+		if item.PGID > 0 && processGroupAlive(item.PGID) {
+			killProcessGroup(item.PGID)
+		}
+	}
+	savePersistedProcesses(nil)
 }
 
 // pm2StatusResult carries the outcome of a bounded PM2 status read.
@@ -159,7 +277,10 @@ func NewServerWithAuth(version string, staticFiles fs.FS, identity *access.Manag
 	if err != nil {
 		panic(err)
 	}
-	s := &server{version: version, assets: assets, static: http.FileServer(http.FS(assets)), checker: system.NewChecker(), plugins: setupplugin.NewRegistry(), auth: identity, ai: aiManager, agentSessions: sessionStore, agentConfirms: newAgentConfirmManager(), development: map[string]developmentProcess{}, webviewRuntimes: map[string]*webViewRuntime{}, stopping: map[string]bool{}, consoleCache: map[string]consoleSnapshot{}, directoryRoots: managedDirectoryRoots()}
+	s := &server{version: version, assets: assets, static: http.FileServer(http.FS(assets)), checker: system.NewChecker(), plugins: setupplugin.NewRegistry(), auth: identity, ai: aiManager, agentSessions: sessionStore, agentConfirms: newAgentConfirmManager(), development: map[string]developmentProcess{}, webviewRuntimes: map[string]*webViewRuntime{}, stopping: map[string]bool{}, consoleCache: map[string]consoleSnapshot{}, directoryRoots: managedDirectoryRoots(), events: newRobotEventHub()}
+	// Kill any previously supervised robot process that survived a restart so a
+	// stray node cannot keep the app port occupied.
+	cleanupStaleProcesses()
 	// Poll plugin roots so adding/removing a plugin directory or editing a
 	// manifest is reflected without a restart or manual refresh.
 	s.pluginWatcher = s.plugins.StartWatch(time.Second)
@@ -199,6 +320,7 @@ func NewServerWithAuth(version string, staticFiles fs.FS, identity *access.Manag
 	mux.HandleFunc("/api/v1/catalog/package-config", s.catalogPackageConfigHandler)
 	mux.HandleFunc("/api/v1/setup/plugins", s.setupPluginsHandler)
 	mux.HandleFunc("/api/v1/setup/plugins/revision", s.setupPluginRevisionHandler)
+	mux.HandleFunc("/api/v1/setup/plugins/events", s.setupPluginEventsHandler)
 	mux.HandleFunc("/api/v1/setup/plugins/", s.setupPluginActionHandler)
 	mux.HandleFunc("/api/v1/setup/plugins/web/", s.setupPluginWebHandler)
 	mux.HandleFunc("/api/v1/robot", s.robotHandler)
@@ -207,14 +329,18 @@ func NewServerWithAuth(version string, staticFiles fs.FS, identity *access.Manag
 	mux.HandleFunc("/api/v1/robot/pm2-logs", s.robotPM2LogsHandler)
 	mux.HandleFunc("/api/v1/robot/pm2-status", s.robotPM2StatusHandler)
 	mux.HandleFunc("/api/v1/robot/pm2-processes", s.robotPM2ProcessesHandler)
+	mux.HandleFunc("/api/v1/robot/app-port", s.robotAppPortHandler)
+	mux.HandleFunc("/api/v1/robot/app/", s.robotAppHandler)
 	mux.HandleFunc("/api/v1/robot/runtime", s.robotRuntimeHandler)
 	mux.HandleFunc("/api/v1/robot/runtime/preflight", s.robotRuntimePreflightHandler)
 	mux.HandleFunc("/api/v1/robot/tasks", s.robotTasksHandler)
+	mux.HandleFunc("/api/v1/robot/events", s.robotEventsHandler)
 	mux.HandleFunc("/api/v1/robot/packages", s.robotPackagesHandler)
 	mux.HandleFunc("/api/v1/robot/package-versions", s.robotPackageVersionsHandler)
 	mux.HandleFunc("/api/v1/robot/package-readme", s.robotPackageReadmeHandler)
 	mux.HandleFunc("/api/v1/robot/webviews", s.robotWebViewsHandler)
 	mux.HandleFunc("/api/v1/robot/webview/", s.robotWebViewHandler)
+	mux.HandleFunc("/api/v1/robot/apps", s.robotAppsHandler)
 	mux.HandleFunc("/api/v1/robot/package-config", s.robotPackageConfigHandler)
 	mux.HandleFunc("/api/v1/robot/login", s.robotLoginHandler)
 	mux.HandleFunc("/api/v1/robot/manifest", s.robotManifestHandler)
@@ -525,6 +651,47 @@ func (s *server) setupPluginRevisionHandler(w http.ResponseWriter, r *http.Reque
 	writeJSON(w, http.StatusOK, map[string]any{"revision": s.plugins.Revision()})
 }
 
+// setupPluginEventsHandler streams a "plugins changed" event over SSE whenever
+// the plugin registry revision bumps, so the UI can refresh the plugin list
+// without polling it. The event carries no payload; the client refetches
+// /setup/plugins on receipt.
+func (s *server) setupPluginEventsHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "该操作暂不支持。")
+		return
+	}
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "SSE 不受支持。")
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+	sub := s.plugins.Subscribe()
+	defer s.plugins.Unsubscribe(sub)
+	// Heartbeat keeps proxies from closing the idle connection.
+	heartbeat := time.NewTicker(25 * time.Second)
+	defer heartbeat.Stop()
+	for {
+		select {
+		case <-sub:
+			if _, err := w.Write([]byte("data: {}\n\n")); err != nil {
+				return
+			}
+			flusher.Flush()
+		case <-heartbeat.C:
+			if _, err := w.Write([]byte(": ping\n\n")); err != nil {
+				return
+			}
+			flusher.Flush()
+		case <-r.Context().Done():
+			return
+		}
+	}
+}
+
 func (s *server) setupPluginActionHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "该操作暂不支持。")
@@ -653,9 +820,11 @@ func (s *server) setupPluginWebHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	// Same-origin UI that may call the plugin action API. frame-ancestors keeps
-	// it embeddable only from the loopback management UI.
-	w.Header().Set("Content-Security-Policy", "default-src 'self'; connect-src 'self'; img-src 'self' data: blob: https: http:; style-src 'self' 'unsafe-inline'; frame-ancestors http://localhost:* http://127.0.0.1:*; base-uri 'none'")
+	// Same-origin UI that may call the plugin action API. The shipped plugin
+	// pages (e.g. alemonx-qq) use inline scripts, so script-src must allow
+	// 'unsafe-inline'. frame-ancestors keeps it embeddable only from the
+	// loopback management UI.
+	w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data: blob: https: http:; style-src 'self' 'unsafe-inline'; frame-ancestors http://localhost:* http://127.0.0.1:*; base-uri 'none'")
 	http.ServeFile(w, r, resolved)
 }
 
@@ -1322,6 +1491,84 @@ func (s *server) robotPM2ProcessesHandler(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, map[string]any{"items": result})
 }
 
+func (s *server) robotAppPortHandler(w http.ResponseWriter, r *http.Request) {
+	root := r.URL.Query().Get("root")
+	if root == "" {
+		writeError(w, http.StatusBadRequest, "请选择机器人目录。")
+		return
+	}
+	if r.Method == http.MethodGet {
+		if r.URL.Query().Get("probe") == "1" {
+			reachable, port, err := s.robots.AppPortReachable(root)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"reachable": reachable, "port": port})
+			return
+		}
+		info, err := s.robots.AppPort(root)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, info)
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "该操作暂不支持。")
+		return
+	}
+	var input struct {
+		Port int `json:"port"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		writeError(w, http.StatusBadRequest, "请求内容无法识别。")
+		return
+	}
+	result, err := s.robots.SaveAppPort(root, input.Port)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *server) robotAppsHandler(w http.ResponseWriter, r *http.Request) {
+	root := r.URL.Query().Get("root")
+	if root == "" {
+		writeError(w, http.StatusBadRequest, "请选择机器人目录。")
+		return
+	}
+	if r.Method == http.MethodGet {
+		apps, err := s.robots.EnabledApps(root)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"items": apps})
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "该操作暂不支持。")
+		return
+	}
+	var input struct {
+		Package string `json:"package"`
+		Enabled bool   `json:"enabled"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		writeError(w, http.StatusBadRequest, "请求内容无法识别。")
+		return
+	}
+	result, err := s.robots.SetAppEnabled(root, input.Package, input.Enabled)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
 func (s *server) robotRuntimeHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "该操作暂不支持。")
@@ -1359,6 +1606,49 @@ func (s *server) robotValidateHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"valid": true, "path": result.Path})
+}
+
+// robotEventsHandler streams task-state and process-output events over SSE so
+// the UI can update live without polling robot/tasks and robot/console.
+func (s *server) robotEventsHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "该操作暂不支持。")
+		return
+	}
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "SSE 不受支持。")
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+	sub := s.events.subscribe()
+	defer s.events.unsubscribe(sub)
+	// Heartbeat keeps proxies from closing the idle connection.
+	heartbeat := time.NewTicker(25 * time.Second)
+	defer heartbeat.Stop()
+	for {
+		select {
+		case event := <-sub:
+			data, err := json.Marshal(event)
+			if err != nil {
+				continue
+			}
+			if _, err := w.Write([]byte("data: " + string(data) + "\n\n")); err != nil {
+				return
+			}
+			flusher.Flush()
+		case <-heartbeat.C:
+			if _, err := w.Write([]byte(": ping\n\n")); err != nil {
+				return
+			}
+			flusher.Flush()
+		case <-r.Context().Done():
+			return
+		}
+	}
 }
 
 func (s *server) robotTasksHandler(w http.ResponseWriter, r *http.Request) {
@@ -1459,11 +1749,20 @@ func (s *server) robotTasksHandler(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, "当前目录已有前台或开发进程正在运行；请先停止后再启动。")
 			return
 		}
-		// A local process and a background PM2 service would each start their own
-		// bot instance for the same directory. Block the second one.
-		if message, blocked := s.localStartBlockedByPM2(input.Root); blocked {
-			writeError(w, http.StatusConflict, message)
+		// "谁最后启动谁为准": a running background PM2 service would keep the
+		// app port, so a local start first stops PM2, waits for the port to be
+		// released, then starts the local process.
+		if err := s.stopPM2ForStart(input.Root); err != nil {
+			writeError(w, http.StatusConflict, "停止后台（PM2）服务失败："+err.Error())
 			return
+		}
+		if !s.waitPortFree(input.Root, 0) {
+			// The old process could not release the port gracefully. Kill the
+			// listener outright so the new start always wins the port.
+			if err := s.forceFreePort(input.Root); err != nil {
+				writeError(w, http.StatusConflict, "应用端口仍被占用："+err.Error())
+				return
+			}
 		}
 		command, err := s.robots.DevelopmentCommand(input.Root)
 		if input.Action == "app" {
@@ -1485,7 +1784,7 @@ func (s *server) robotTasksHandler(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "运行启动失败："+err.Error())
 			return
 		}
-		if !s.registerDevelopment(input.Root, created.ID, command) {
+		if !s.registerDevelopment(input.Root, created.ID, input.Action, command, processGroupID(command)) {
 			_ = command.Process.Kill()
 			writeError(w, http.StatusConflict, "当前目录已有前台或开发进程正在运行；请先停止后再启动。")
 			return
@@ -1498,9 +1797,14 @@ func (s *server) robotTasksHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if input.Action == "pm2" || input.Action == "pm2-reload" {
-		if message, blocked := s.pm2StartBlockedByLocal(input.Root); blocked {
-			writeError(w, http.StatusConflict, message)
-			return
+		// "谁最后启动谁为准": a running local process holds the app port, so a
+		// background start first stops the local process and waits for release.
+		s.stopLocalForStart(input.Root)
+		if !s.waitPortFree(input.Root, 0) {
+			if err := s.forceFreePort(input.Root); err != nil {
+				writeError(w, http.StatusConflict, "应用端口仍被占用："+err.Error())
+				return
+			}
 		}
 	}
 	log.Printf("[ROBOT %s] 开始 action=%s root=%q", created.ID, created.Action, created.Root)
@@ -1509,7 +1813,7 @@ func (s *server) robotTasksHandler(w http.ResponseWriter, r *http.Request) {
 		result, err := s.robots.Run(input.Root, input.Action, input.Message, input.Package, input.Version, input.Tag, input.Token, input.Confirm == "true")
 		finished := time.Now()
 		s.mu.Lock()
-		defer s.mu.Unlock()
+		var snapshot operationTask
 		for index := range s.operations {
 			if s.operations[index].ID == created.ID {
 				s.operations[index].Status = "completed"
@@ -1519,8 +1823,13 @@ func (s *server) robotTasksHandler(w http.ResponseWriter, r *http.Request) {
 					s.operations[index].Status = "failed"
 					s.operations[index].Error = err.Error()
 				}
+				snapshot = s.operations[index]
 				break
 			}
+		}
+		s.mu.Unlock()
+		if snapshot.ID != "" {
+			s.events.publish(robotEvent{Type: "task", TaskID: snapshot.ID, Task: &snapshot})
 		}
 		if err != nil {
 			log.Printf("[ROBOT %s] 失败 action=%s root=%q error=%s", created.ID, created.Action, created.Root, err)
@@ -1599,14 +1908,20 @@ func (s *server) pm2StatusWithin(root string, window time.Duration) (robot.PM2St
 	}
 }
 
-// localStartBlockedByPM2 reports whether the background PM2 service is running
-// and therefore blocks starting a local (dev/app) process for the same root.
+// localStartBlockedByPM2 reports whether a local (dev/app) process must not be
+// started for a root. This is strict: when PM2 is configured but its state
+// cannot be read, we block rather than risk a port clash with a running PM2
+// service. Only a PM2Status that definitively reports not running allows a
+// local start.
 func (s *server) localStartBlockedByPM2(root string) (string, bool) {
 	status, err := s.pm2StatusFor(root)
-	if err != nil || !status.Running {
-		return "", false
+	if err != nil {
+		return "无法读取后台（PM2）服务状态；为免端口冲突，请先在“后台运行”中确认服务已停止，再启动本机进程。", true
 	}
-	return "当前目录正在后台（PM2）运行；请先在“后台运行”中停止服务，再启动本机进程。", true
+	if status.Running {
+		return "当前目录正在后台（PM2）运行；请先在“后台运行”中停止服务，再启动本机进程。", true
+	}
+	return "", false
 }
 
 // pm2StartBlockedByLocal reports whether a local process is running and
@@ -1618,6 +1933,106 @@ func (s *server) pm2StartBlockedByLocal(root string) (string, bool) {
 	return "当前目录正在本机（开发/前台）运行；请先停止本机进程，再启动后台服务。", true
 }
 
+// stopPM2ForStart stops the background PM2 service for a root so a new local
+// process can take over the app port ("last one to start wins"). It tolerates
+// a PM2 state read failure: if the config exists we attempt the stop anyway.
+func (s *server) stopPM2ForStart(root string) error {
+	status, err := s.pm2StatusFor(root)
+	if err == nil && !status.Running {
+		return nil
+	}
+	// pm2-delete removes the process entirely, which is more reliable than a
+	// graceful stop for guaranteeing the port is released before a local start.
+	_, stopErr := s.robots.Run(root, "pm2-delete", "", "", "", "", "", false)
+	return stopErr
+}
+
+// stopLocalForStart stops a supervised local (dev/app) process so a new
+// background PM2 service can take over the app port.
+func (s *server) stopLocalForStart(root string) error {
+	if !s.developmentRunning(root) {
+		return nil
+	}
+	s.stopDevelopment(root, "本机进程")
+	return nil
+}
+
+// waitPortFree polls the configured application port until the previous
+// process has released it. It retries for ~12 seconds so a graceful stop that
+// needs its 3-second force-stop fallback has time to finish.
+func (s *server) waitPortFree(root string, attempts int) bool {
+	if attempts <= 0 {
+		attempts = 30
+	}
+	info, err := s.robots.AppPort(root)
+	if err != nil {
+		return true
+	}
+	client := &http.Client{Timeout: 500 * time.Millisecond}
+	for i := 0; i < attempts; i++ {
+		response, err := client.Get("http://127.0.0.1:" + strconv.Itoa(info.Port))
+		if err != nil {
+			return true // connection refused => port free
+		}
+		_ = response.Body.Close()
+		time.Sleep(400 * time.Millisecond)
+	}
+	return false
+}
+
+// forceFreePort kills whatever is listening on the configured application port.
+// This is the final "谁最后启动谁为准" fallback: the old process (PM2, a
+// supervised dev/app, or a stray node) could not release the port gracefully,
+// so we identify the listener and terminate it. Only the robot's configured
+// serverPort is targeted, never an arbitrary port.
+func (s *server) forceFreePort(root string) error {
+	info, err := s.robots.AppPort(root)
+	if err != nil {
+		return err
+	}
+	output, err := s.runCommandForPort("lsof", "-ti", "tcp:"+strconv.Itoa(info.Port))
+	if err != nil || strings.TrimSpace(output) == "" {
+		return fmt.Errorf("未找到占用端口 %d 的进程", info.Port)
+	}
+	for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
+		pid := strings.TrimSpace(line)
+		if pid == "" || !isNumeric(pid) {
+			continue
+		}
+		_, _ = s.runCommandForPort("kill", "-9", pid)
+	}
+	// Re-check after killing.
+	client := &http.Client{Timeout: 500 * time.Millisecond}
+	for i := 0; i < 10; i++ {
+		response, err := client.Get("http://127.0.0.1:" + strconv.Itoa(info.Port))
+		if err != nil {
+			return nil
+		}
+		_ = response.Body.Close()
+		time.Sleep(300 * time.Millisecond)
+	}
+	return fmt.Errorf("端口 %d 仍被占用", info.Port)
+}
+
+// runCommandForPort runs a small helper command without a managed process
+// group; used only by forceFreePort.
+func (s *server) runCommandForPort(name string, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, name, args...)
+	output, err := cmd.Output()
+	return string(output), err
+}
+
+func isNumeric(value string) bool {
+	for _, ch := range value {
+		if ch < '0' || ch > '9' {
+			return false
+		}
+	}
+	return value != ""
+}
+
 func (s *server) developmentRunning(root string) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -1625,14 +2040,44 @@ func (s *server) developmentRunning(root string) bool {
 	return running
 }
 
-func (s *server) registerDevelopment(root, taskID string, command *exec.Cmd) bool {
+func (s *server) registerDevelopment(root, taskID, action string, command *exec.Cmd, pgid int) bool {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if _, running := s.development[root]; running {
+		s.mu.Unlock()
 		return false
 	}
-	s.development[root] = developmentProcess{TaskID: taskID, Command: command}
+	s.development[root] = developmentProcess{TaskID: taskID, Command: command, PGID: pgid}
+	s.mu.Unlock()
+	s.recordProcess(root, taskID, pgid, action)
 	return true
+}
+
+// recordProcess appends a persisted marker for a supervised robot process so a
+// stray node can be located and killed even after an alx restart.
+func (s *server) recordProcess(root, taskID string, pgid int, action string) {
+	if pgid <= 0 {
+		return
+	}
+	s.mu.Lock()
+	items := loadPersistedProcesses()
+	items = append(items, persistedProcess{Root: root, TaskID: taskID, PGID: pgid, Action: action, StartedAt: time.Now()})
+	savePersistedProcesses(items)
+	s.mu.Unlock()
+}
+
+// forgetProcess removes the persisted marker for a process that has exited.
+func (s *server) forgetProcess(root, taskID string) {
+	s.mu.Lock()
+	items := loadPersistedProcesses()
+	kept := items[:0]
+	for _, item := range items {
+		if item.Root == root && item.TaskID == taskID {
+			continue
+		}
+		kept = append(kept, item)
+	}
+	savePersistedProcesses(kept)
+	s.mu.Unlock()
 }
 
 // stopDevelopment requests a graceful stop of the supervised process and
@@ -1677,7 +2122,7 @@ func (s *server) appendOperationOutput(id, output string) {
 	}
 	const maxOutput = 256 * 1024
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	updated := false
 	for index := range s.operations {
 		if s.operations[index].ID != id {
 			continue
@@ -1686,7 +2131,14 @@ func (s *server) appendOperationOutput(id, output string) {
 		if len(s.operations[index].Output) > maxOutput {
 			s.operations[index].Output = "…前面的输出已省略…\n" + s.operations[index].Output[len(s.operations[index].Output)-maxOutput:]
 		}
-		return
+		updated = true
+		break
+	}
+	s.mu.Unlock()
+	if updated {
+		// Fan out the incremental text outside the lock so SSE clients stream
+		// the terminal output without a polling loop.
+		s.events.publish(robotEvent{Type: "output", TaskID: id, Text: output})
 	}
 }
 
@@ -1726,15 +2178,17 @@ func (s *server) watchDevelopmentTask(id, root, action string, command *exec.Cmd
 
 	finished := time.Now()
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	stopped := s.stopping[root]
+	wasManaged := false
 	if current, active := s.development[root]; active && current.TaskID == id {
 		delete(s.development, root)
 		delete(s.stopping, root)
+		wasManaged = true
 	}
 	// A pending stop task only becomes "completed" once the process has really
 	// exited, which is exactly the moment we reach here.
 	s.completePendingStopTasks(root, finished)
+	var snapshot operationTask
 	for index := range s.operations {
 		if s.operations[index].ID != id {
 			continue
@@ -1757,7 +2211,15 @@ func (s *server) watchDevelopmentTask(id, root, action string, command *exec.Cmd
 			s.operations[index].Output += processName + "已正常退出。\n"
 			log.Printf("[ROBOT %s] %s正常退出", id, processName)
 		}
-		return
+		snapshot = s.operations[index]
+		break
+	}
+	s.mu.Unlock()
+	if wasManaged {
+		s.forgetProcess(root, id)
+	}
+	if snapshot.ID != "" {
+		s.events.publish(robotEvent{Type: "task", TaskID: snapshot.ID, Task: &snapshot})
 	}
 }
 
@@ -1941,6 +2403,228 @@ func webViewBridge(entry robot.WebViewEntry) string {
 // proxyRobotWebViewAPI connects a WebView's relative ./api/* requests to the
 // selected robot application. The destination is never supplied by the
 // browser: it is derived from the selected root's configured local app port.
+// robotAppHandler reverse-proxies the robot's application service (the server
+// on serverPort) so its launchpad and plugin pages render inside the alx page
+// instead of relying on the old webview mechanism. All paths under /app/ map to
+// http://127.0.0.1:<port>/..., preserving static assets and API routes.
+//
+// The robot root is carried in the path (a base64url token as the first path
+// segment) rather than a query parameter, so every in-app navigation — links,
+// relative assets, redirects and API calls — inherits the root automatically
+// and never needs to re-send it. Legacy ?root= URLs are still accepted.
+//
+// The app is written against its own origin root, so its documents are adjusted
+// on the way through: a <base href> is injected for relative assets/APIs, and
+// root-relative links (/app/, /apps/x/) and redirects are re-prefixed with the
+// proxy mount so navigation stays inside the iframe instead of escaping to the
+// management page origin.
+func (s *server) robotAppHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodPost && r.Method != http.MethodPut && r.Method != http.MethodPatch && r.Method != http.MethodDelete {
+		writeError(w, http.StatusMethodNotAllowed, "该操作暂不支持。")
+		return
+	}
+	const mount = "/api/v1/robot/app/"
+	root, token := robotAppRootFromPath(r.URL.Path, mount)
+	if root == "" {
+		root = r.URL.Query().Get("root")
+	}
+	if root == "" {
+		writeError(w, http.StatusBadRequest, "请选择机器人目录。")
+		return
+	}
+	if token == "" {
+		token = robotAppToken(root)
+	}
+	info, err := s.robots.AppPort(root)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	target, err := url.Parse("http://127.0.0.1:" + strconv.Itoa(info.Port))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "应用地址无效。")
+		return
+	}
+	// appPrefix is the mount plus the root token, e.g. /api/v1/robot/app/<token>/
+	// Every rewritten link, base href and redirect targets this prefix so the
+	// root travels inside the URL path.
+	appPrefix := mount + token + "/"
+	proxy := &httputil.ReverseProxy{
+		Director: func(request *http.Request) {
+			request.URL.Scheme = target.Scheme
+			request.URL.Host = target.Host
+			// Strip the mount and the root token, keeping the app's own path.
+			rest := strings.TrimPrefix(r.URL.Path, mount)
+			path := "/" + rest
+			if rest == token || strings.HasPrefix(rest, token+"/") {
+				path = strings.TrimPrefix(rest, token)
+				if path == "" {
+					path = "/"
+				}
+			}
+			request.URL.Path = path
+			request.URL.RawPath = ""
+			request.Host = target.Host
+		},
+		ModifyResponse: func(response *http.Response) error {
+			modifyRobotAppResponse(response, target, appPrefix, r.URL.Path, r)
+			return nil
+		},
+		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, _ error) {
+			writeError(w, http.StatusBadGateway, "机器人应用尚未启动或无法连接。请在“运行”中启动开发模式后重试。")
+		},
+	}
+	proxy.ServeHTTP(w, r)
+}
+
+// robotAppToken encodes a robot directory path for embedding in the proxy URL.
+// It uses base64url without padding so the token is safe in a path segment.
+func robotAppToken(root string) string {
+	return base64.RawURLEncoding.EncodeToString([]byte(root))
+}
+
+// robotAppRootFromPath extracts the root token from a proxied path's first
+// segment, returning the decoded root and the raw token. The second return is
+// empty when the path carries no valid token (legacy query-form URLs). Only
+// absolute paths are accepted, so an arbitrary app route like "apps/demo"
+// (whose first segment is coincidentally valid base64url) is never misread as
+// a robot root.
+func robotAppRootFromPath(path, mount string) (root, token string) {
+	rest := strings.TrimPrefix(path, mount)
+	segment, _, _ := strings.Cut(rest, "/")
+	if segment == "" {
+		return "", ""
+	}
+	decoded, err := base64.RawURLEncoding.DecodeString(segment)
+	if err != nil {
+		return "", ""
+	}
+	if len(decoded) == 0 || decoded[0] != '/' {
+		return "", ""
+	}
+	return string(decoded), segment
+}
+
+// modifyRobotAppResponse rewrites a proxied app response so absolute paths stay
+// inside the proxy mount. Redirects are re-prefixed and HTML documents get a
+// <base href> plus rewritten root-relative href/src/action references. Unmatched
+// page navigations (upstream 404) are sent back to the launchpad instead of
+// rendering stray content, so the app frame never nests the management page.
+func modifyRobotAppResponse(response *http.Response, target *url.URL, appPrefix, requestPath string, request *http.Request) {
+	if isRobotAppNavigation(request) && requestPath != appPrefix && response.StatusCode == http.StatusNotFound {
+		response.Header.Set("Location", appPrefix)
+		response.StatusCode = http.StatusFound
+		response.Body = io.NopCloser(bytes.NewReader(nil))
+		response.ContentLength = 0
+		response.Header.Del("Content-Type")
+		response.Header.Set("Content-Length", "0")
+		return
+	}
+	if location := response.Header.Get("Location"); location != "" {
+		if rewritten := rewriteRobotAppLocation(location, target, appPrefix); rewritten != "" {
+			response.Header.Set("Location", rewritten)
+		}
+	}
+	// Only document bodies need rewriting; assets and API payloads pass through.
+	contentType := response.Header.Get("Content-Type")
+	if response.StatusCode != http.StatusOK || !strings.HasPrefix(contentType, "text/html") {
+		return
+	}
+	// Compressed bodies cannot be safely patched; leave them untouched.
+	if encoding := response.Header.Get("Content-Encoding"); encoding != "" && encoding != "identity" {
+		return
+	}
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		return
+	}
+	_ = response.Body.Close()
+	rewritten := rewriteRobotAppHTML(body, appPrefix, requestPath)
+	response.Body = io.NopCloser(bytes.NewReader(rewritten))
+	response.ContentLength = int64(len(rewritten))
+	response.Header.Set("Content-Length", strconv.Itoa(len(rewritten)))
+}
+
+// isRobotAppNavigation reports whether a proxied request is a full-page HTML
+// navigation (as opposed to a script/style/fetch request), so unmatched-route
+// redirects never hijack asset or API responses.
+func isRobotAppNavigation(request *http.Request) bool {
+	return strings.Contains(strings.ToLower(request.Header.Get("Accept")), "text/html")
+}
+
+// rewriteRobotAppLocation re-prefixes a root-relative (or target-host) redirect
+// Location so the browser follows it through the proxy instead of escaping to
+// the management page origin. Absolute external URLs are left alone.
+func rewriteRobotAppLocation(location string, target *url.URL, prefix string) string {
+	if strings.HasPrefix(location, target.Scheme+"://"+target.Host) {
+		if parsed, err := url.Parse(location); err == nil {
+			return prefix + strings.TrimPrefix(parsed.RequestURI(), "/")
+		}
+		return ""
+	}
+	if strings.HasPrefix(location, "/") && !strings.HasPrefix(location, "//") {
+		return prefix + strings.TrimPrefix(location, "/")
+	}
+	return ""
+}
+
+// rewriteRobotAppHTML injects a <base href> for the current document directory
+// (so relative assets like ./assets/... and ./api/... resolve within the mount)
+// and re-prefixes root-relative href/src/action references (like the launchpad's
+// /app/ links) which ignore <base>.
+func rewriteRobotAppHTML(body []byte, prefix, requestPath string) []byte {
+	document := string(body)
+	// Root-relative absolute paths (/app/, /apps/x/, /favicon.ico) bypass <base>.
+	// Protocol-relative (//host) and scheme URLs must stay untouched. This runs
+	// first so the injected <base href> (itself a root-relative path) is not
+	// re-prefixed.
+	document = rewriteRootRelativeAttr(document, prefix)
+	injections := baseHrefFor(requestPath) + robotAppScrollbarStyle
+	if head := regexp.MustCompile(`(?i)<head[^>]*>`).FindString(document); head != "" {
+		document = strings.Replace(document, head, head+injections, 1)
+	} else if htmlTag := regexp.MustCompile(`(?i)<html[^>]*>`).FindString(document); htmlTag != "" {
+		document = strings.Replace(document, htmlTag, htmlTag+"<head>"+injections+"</head>", 1)
+	} else {
+		document = injections + document
+	}
+	return []byte(document)
+}
+
+// robotAppScrollbarStyle hides the app document's scrollbars (Chrome/Edge/Safari
+// via ::-webkit-scrollbar, Firefox via scrollbar-width) so the embedded app does
+// not show a second scrollbar beside the management page's own. Scrolling itself
+// is preserved.
+const robotAppScrollbarStyle = `<style>html,body{scrollbar-width:none;-ms-overflow-style:none}html::-webkit-scrollbar,body::-webkit-scrollbar{width:0;height:0;display:none}</style>`
+
+// baseHrefFor returns the <base href> pointing at the current document's
+// directory within the proxy mount, e.g. /api/v1/robot/app/apps/x/.
+func baseHrefFor(requestPath string) string {
+	directory := requestPath
+	if index := strings.LastIndex(directory, "/"); index >= 0 {
+		directory = directory[:index+1]
+	}
+	return `<base href="` + html.EscapeString(directory) + `">`
+}
+
+// rewriteRootRelativeAttr prefixes root-relative values of href/src/action
+// attributes (and their single-quoted variants) with the proxy mount.
+// Protocol-relative (//host) and scheme URLs are left untouched.
+func rewriteRootRelativeAttr(document, prefix string) string {
+	for _, attr := range []string{"href", "src", "action"} {
+		for _, quote := range []string{`"`, `'`} {
+			pattern := regexp.MustCompile(`(?i)(\b` + attr + `=` + quote + `)(/[^` + quote + `]*)` + quote)
+			document = pattern.ReplaceAllStringFunc(document, func(match string) string {
+				parts := pattern.FindStringSubmatch(match)
+				if strings.HasPrefix(parts[2], "//") {
+					return match
+				}
+				return parts[1] + prefix + strings.TrimPrefix(parts[2], "/") + quote
+			})
+		}
+	}
+	return document
+}
+
 func (s *server) proxyRobotWebViewAPI(w http.ResponseWriter, r *http.Request, root, id, requestPath string) {
 	if r.Method != http.MethodGet && r.Method != http.MethodPost && r.Method != http.MethodPut && r.Method != http.MethodPatch && r.Method != http.MethodDelete {
 		writeError(w, http.StatusMethodNotAllowed, "插件 API 不支持此请求方式。")
@@ -2504,10 +3188,12 @@ func (s *server) ginHeaders() gin.HandlerFunc {
 			}
 		}
 		c.Header("X-Content-Type-Options", "nosniff")
-		// Registered robot WebViews are embedded through the other loopback
-		// hostname, so X-Frame-Options cannot be SAMEORIGIN. Their own CSP
-		// allows only localhost/127.0.0.1 parents. Everything else is denied.
-		if !strings.HasPrefix(c.Request.URL.Path, "/api/v1/robot/webview/") {
+		// Registered robot WebViews, the in-page application service and setup
+		// plugin pages are embedded in frames, so X-Frame-Options cannot be
+		// SAMEORIGIN for them. Their responses carry their own CSP.
+		if !strings.HasPrefix(c.Request.URL.Path, "/api/v1/robot/webview/") &&
+			!strings.HasPrefix(c.Request.URL.Path, "/api/v1/robot/app/") &&
+			!strings.HasPrefix(c.Request.URL.Path, "/api/v1/setup/plugins/web/") {
 			c.Header("X-Frame-Options", "DENY")
 		}
 		c.Next()
@@ -2519,7 +3205,7 @@ func (s *server) ginHeaders() gin.HandlerFunc {
 func (s *server) ginAccess() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		path := c.Request.URL.Path
-		if !strings.HasPrefix(path, "/api/v1/") || path == "/api/v1/auth/status" || path == "/api/v1/auth/setup" || path == "/api/v1/auth/login" || path == "/api/v1/auth/logout" || strings.HasPrefix(path, "/api/v1/robot/webview/") {
+		if !strings.HasPrefix(path, "/api/v1/") || path == "/api/v1/auth/status" || path == "/api/v1/auth/setup" || path == "/api/v1/auth/login" || path == "/api/v1/auth/logout" || strings.HasPrefix(path, "/api/v1/robot/webview/") || strings.HasPrefix(path, "/api/v1/robot/app/") {
 			c.Next()
 			return
 		}

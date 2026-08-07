@@ -55,12 +55,6 @@ type LocalPackageVersions = {
   latest?: string
   versions: string[]
 }
-export type RobotWebView = {
-  id: string
-  package: string
-  name: string
-  description?: string
-}
 export type RuntimeOverview = {
   name: string
   version: string
@@ -160,7 +154,6 @@ export const workspaceApi = createApi({
     'NpmStatus',
     'PackageConfig',
     'LocalPackages',
-    'RobotWebViews',
     'PackageManifest',
     'Runtime',
     'OperationTasks',
@@ -270,12 +263,6 @@ export const workspaceApi = createApi({
       query: ({ root, package: packageName }) =>
         `robot/package-readme?${new URLSearchParams({ root, package: packageName })}`
     }),
-    robotWebViews: build.query<RobotWebView[], string>({
-      query: root => `robot/webviews?${new URLSearchParams({ root })}`,
-      providesTags: (_result, _error, root) => [
-        { type: 'RobotWebViews', id: root }
-      ]
-    }),
     packageManifest: build.query<PackageManifest, string>({
       query: root => `robot/manifest?${new URLSearchParams({ root })}`,
       providesTags: (_result, _error, root) => [
@@ -301,6 +288,42 @@ export const workspaceApi = createApi({
     }),
     robotPM2Processes: build.query<{ items: PM2Process[] }, string>({
       query: root => `robot/pm2-processes?${new URLSearchParams({ root })}`
+    }),
+    appPort: build.query<{ port: number; configured: boolean }, string>({
+      query: root => `robot/app-port?${new URLSearchParams({ root })}`
+    }),
+    robotApps: build.query<{ items: string[] }, string>({
+      query: root => `robot/apps?${new URLSearchParams({ root })}`,
+      providesTags: (_result, _error, root) => [
+        { type: 'RobotFile', id: `${root}:alemon.config.yaml` }
+      ]
+    }),
+    setAppEnabled: build.mutation<
+      RobotResult,
+      { root: string; package: string; enabled: boolean }
+    >({
+      query: ({ root, package: packageName, enabled }) => ({
+        url: `robot/apps?${new URLSearchParams({ root })}`,
+        method: 'POST',
+        body: { package: packageName, enabled }
+      }),
+      invalidatesTags: (_result, _error, body) => [
+        { type: 'RobotFile', id: `${body.root}:alemon.config.yaml` }
+      ]
+    }),
+    saveAppPort: build.mutation<
+      RobotResult,
+      { root: string; port: number }
+    >({
+      query: ({ root, port }) => ({
+        url: `robot/app-port?${new URLSearchParams({ root })}`,
+        method: 'POST',
+        body: { port }
+      }),
+      invalidatesTags: (_result, _error, body) => [
+        { type: 'RobotFile', id: `${body.root}:alemon.config.yaml` },
+        { type: 'Runtime', id: body.root }
+      ]
     }),
     robotRuntimePreflight: build.query<RuntimePreflight, string>({
       query: root => `robot/runtime/preflight?${new URLSearchParams({ root })}`
@@ -348,8 +371,7 @@ export const workspaceApi = createApi({
       invalidatesTags: (_result, _error, body) => [
         { type: 'GitStatus', id: body.root },
         { type: 'NpmStatus', id: body.root },
-        { type: 'LocalPackages', id: body.root },
-        { type: 'RobotWebViews', id: body.root }
+        { type: 'LocalPackages', id: body.root }
       ]
     }),
     gitWorkspaceAction: build.mutation<
@@ -385,7 +407,6 @@ export const workspaceApi = createApi({
       invalidatesTags: (_result, _error, body) => [
         { type: 'GitStatus', id: body.root },
         { type: 'NpmStatus', id: body.root },
-        { type: 'RobotWebViews', id: body.root },
         { type: 'Runtime', id: body.root },
         'OperationTasks'
       ]
@@ -476,13 +497,17 @@ export const {
   useLocalPackagesQuery,
   useLocalPackageVersionsQuery,
   useLocalPackageReadmeQuery,
-  useRobotWebViewsQuery,
   usePackageManifestQuery,
   useRobotTasksQuery,
   useLazyRobotConsoleQuery,
   useRobotRuntimeQuery,
   useRobotPM2StatusQuery,
   useRobotPM2ProcessesQuery,
+  useAppPortQuery,
+  useLazyAppPortQuery,
+  useSaveAppPortMutation,
+  useRobotAppsQuery,
+  useSetAppEnabledMutation,
   useLazyRobotRuntimePreflightQuery,
   useLazyRobotProjectQuery,
   useLazyRobotFileQuery,
