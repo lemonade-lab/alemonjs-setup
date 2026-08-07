@@ -100,7 +100,8 @@ func askApprover(confirms *agentConfirmManager, emit func(agent.Event), confirmI
 		ch, cleanup := confirms.register(id)
 		defer cleanup()
 		if emit != nil {
-			emit(agent.Event{Type: "confirm", Tool: id, Text: call.Name, Output: string(call.Arguments)})
+			diff := editDiff(call.Arguments)
+			emit(agent.Event{Type: "confirm", Tool: id, Text: call.Name, Output: string(call.Arguments), Diff: diff})
 		}
 		select {
 		case decision := <-ch:
@@ -114,4 +115,30 @@ func askApprover(confirms *agentConfirmManager, emit func(agent.Event), confirmI
 			return errors.New("等待确认超时，操作未执行")
 		}
 	}
+}
+
+// editDiff extracts a structured file-change preview from agent_edit_file
+// arguments, so the confirmation dialog can show before/after content instead
+// of raw JSON.
+func editDiff(arguments json.RawMessage) *agent.Diff {
+	var in struct {
+		Path    string `json:"path"`
+		Mode    string `json:"mode"`
+		Content string `json:"content"`
+		Edits   []struct {
+			Old string `json:"old"`
+			New string `json:"new"`
+		} `json:"edits"`
+	}
+	if err := json.Unmarshal(arguments, &in); err != nil || in.Path == "" {
+		return nil
+	}
+	diff := &agent.Diff{Path: in.Path, Mode: in.Mode, Content: in.Content}
+	for _, edit := range in.Edits {
+		diff.Hunks = append(diff.Hunks, struct {
+			Old string `json:"old"`
+			New string `json:"new"`
+		}{Old: edit.Old, New: edit.New})
+	}
+	return diff
 }

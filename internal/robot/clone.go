@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 
 	"alemonx/internal/system"
@@ -114,7 +115,8 @@ func CloneDestination(destination, repository, name string) (CloneTarget, error)
 
 // CloneRepository clones a remote robot repository into an existing parent
 // directory. The destination name and mirror are validated from fixed choices.
-func CloneRepository(destination, repository, branch, name, mirror string) (Result, error) {
+// depth limits how much history is downloaded; 0 means the full repository.
+func CloneRepository(destination, repository, branch, name, mirror string, depth int) (Result, error) {
 	parsed, _, err := cloneRepositoryURL(repository)
 	if err != nil {
 		return Result{}, err
@@ -152,7 +154,10 @@ func CloneRepository(destination, repository, branch, name, mirror string) (Resu
 	default:
 		return Result{}, errors.New("不支持的 Git 镜像")
 	}
-	args := []string{"clone", "--depth", "1"}
+	args := []string{"clone"}
+	if depth > 0 {
+		args = append(args, "--depth", strconv.Itoa(depth))
+	}
 	if branch != "" {
 		args = append(args, "--branch", branch)
 	}
@@ -160,6 +165,12 @@ func CloneRepository(destination, repository, branch, name, mirror string) (Resu
 	output, err := run(destination, "git", args...)
 	if err != nil {
 		return Result{Path: target.Path, Output: output}, fmt.Errorf("克隆仓库失败：%w", err)
+	}
+	// git clone --branch narrows remote.origin.fetch to that single branch, so
+	// later fetches would never learn about the other remote branches. Restore
+	// the full refspec so the whole repository becomes visible after fetch.
+	if _, err := gitRun(target.Path, "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"); err != nil {
+		return Result{Path: target.Path, Output: output}, fmt.Errorf("克隆完成，但无法设置远程分支跟踪：%w", err)
 	}
 	return Result{Path: target.Path, Output: "已克隆到 " + target.Path + "。\n" + output}, nil
 }

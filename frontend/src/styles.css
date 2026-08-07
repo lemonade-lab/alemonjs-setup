@@ -409,7 +409,7 @@
   --theme-accent-contrast: #ffffff;
   /* Semantic */
   --theme-surface-code: #191919;
-  --theme-text-code: #cdcbc4;
+  --theme-text-code: #191919;
   --theme-success: #3f8f5f;
   --theme-success-soft: #edf7f0;
   --theme-success-text: #2c7a4b;
@@ -5173,6 +5173,11 @@ button > svg,
   justify-content: space-between;
   padding: 10px 12px;
 }
+.git-tab-heading:has(> input) {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  justify-content: initial;
+}
 .git-tab-heading > div {
   display: grid;
   gap: 3px;
@@ -5412,23 +5417,36 @@ button > svg,
  * not a pile of log lines.
  * ------------------------------------------------------------------------- */
 .agent-workspace {
-  background: var(--theme-surface-page);
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
-  min-height: 0;
-  /* Positioned ancestor for the absolute confirm overlay. */
+  background: transparent;
+  display: flex;
+  flex-direction: column;
+  /* The thread grows with content so console-page scrolls the whole page;
+     the composer sticks to the visible bottom while scrolling. */
   position: relative;
 }
+.agent-workspace > .agent-body {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+}
 
-/* Header */
+/* Header: floating card, like the robot control card */
 .agent-header {
   align-items: center;
   background: var(--theme-surface-panel);
-  border-bottom: 1px solid var(--theme-border-default);
+  border: 1px solid var(--theme-border-default);
+  border-radius: 14px;
+  box-shadow: var(--theme-shadow-panel);
   display: flex;
   justify-content: space-between;
+  margin: 16px 16px 0;
   min-height: 52px;
   padding: 0 16px;
+  /* Keeps the control header pinned near the visible top of the console-page
+     scroll container while the thread scrolls beneath it. */
+  position: sticky;
+  top: 16px;
+  z-index: 5;
 }
 .agent-header-left {
   align-items: center;
@@ -5488,16 +5506,17 @@ button > svg,
   color: var(--theme-accent-text);
 }
 
-/* Thread: centered conversation column */
+/* Thread: centered conversation column. Grows naturally so the page (the
+   console-page overflow container) handles scrolling, not an inner window. */
 .agent-thread {
   align-content: start;
   display: grid;
   gap: 20px;
   justify-items: center;
+  margin-top: 14px;
   min-height: 0;
-  overflow: auto;
-  padding: 26px 24px 32px;
-  scroll-behavior: smooth;
+  overflow: visible;
+  padding: 0 32px 14px;
 }
 
 /* User message: soft bubble, right aligned */
@@ -5851,6 +5870,16 @@ button > svg,
 .agent-step-args {
   background: var(--theme-surface-raised);
 }
+.agent-step-args-text {
+  color: var(--theme-text-secondary);
+  display: block;
+  font-size: 0.72rem;
+  line-height: 1.6;
+  overflow: hidden;
+  padding: 7px 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .agent-step-args pre {
   color: var(--theme-text-secondary);
 }
@@ -5877,9 +5906,20 @@ button > svg,
 
 /* Composer */
 .agent-composer {
+  background: transparent;
+  padding: 10px 16px 18px;
+}
+.agent-composer > .agent-composer-box {
   background: var(--theme-surface-panel);
-  border-top: 1px solid var(--theme-border-default);
-  padding: 12px 16px 14px;
+  border: 1px solid var(--theme-border-default);
+  border-radius: 14px;
+  box-shadow: var(--theme-shadow-panel);
+  padding: 10px 12px 8px;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.agent-composer > .agent-composer-box:focus-within {
+  border-color: var(--theme-accent);
+  box-shadow: 0 0 0 3px var(--theme-accent-soft);
 }
 .agent-composer-box {
   background: var(--theme-surface-input);
@@ -6175,14 +6215,28 @@ button > svg,
 }
 
 /* Settings form */
+.agent-settings-overlay {
+  align-items: center;
+  background: var(--theme-surface-overlay);
+  display: flex;
+  inset: 0;
+  justify-content: center;
+  padding: 24px;
+  position: absolute;
+  z-index: 60;
+}
 .agent-settings {
   align-content: start;
+  background: var(--theme-surface-panel);
+  border: 1px solid var(--theme-border-default);
+  border-radius: 14px;
+  box-shadow: var(--theme-shadow-pop);
   display: grid;
   gap: 16px;
-  justify-self: center;
+  max-height: calc(100% - 48px);
   max-width: 540px;
   overflow: auto;
-  padding: 28px 24px;
+  padding: 24px;
   width: 100%;
 }
 .agent-settings-head {
@@ -6328,18 +6382,25 @@ button > svg,
 
 /* Agent 会话侧栏 */
 .agent-body {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: minmax(0, 1fr);
+  display: block;
   min-height: 0;
 }
 .agent-body:has(.agent-sessions) {
+  display: grid;
   grid-template-columns: 240px minmax(0, 1fr);
+  align-items: start;
 }
 .agent-main {
-  display: grid;
-  grid-template-rows: minmax(0, 1fr) auto;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
   min-height: 0;
+}
+.agent-main > .agent-composer {
+  margin-top: auto;
+  /* Sticks to the visible bottom of the console-page scroll container. */
+  position: sticky;
+  bottom: 0;
 }
 .agent-sessions {
   background: var(--theme-surface-raised);
@@ -6487,4 +6548,207 @@ button > svg,
 }
 .agent-composer-editbar button:hover {
   color: var(--theme-text-strong);
+}
+
+/* Agent 确认弹窗 diff 预览 */
+.agent-confirm-diff {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+.agent-confirm-diff-path {
+  align-items: center;
+  color: var(--theme-text-secondary);
+  display: flex;
+  font-family: var(--theme-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 0.74rem;
+  gap: 8px;
+  font-weight: 600;
+}
+.agent-confirm-diff-path em {
+  background: var(--theme-accent-soft);
+  border-radius: 4px;
+  color: var(--theme-accent-soft-text);
+  font-size: 0.66rem;
+  font-style: normal;
+  padding: 1px 6px;
+}
+.agent-diff-hunk {
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.agent-diff-removed,
+.agent-diff-added {
+  font-family: var(--theme-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 0.7rem;
+  line-height: 1.6;
+  margin: 0;
+  max-height: 160px;
+  overflow: auto;
+  padding: 8px 10px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.agent-diff-removed {
+  background: var(--theme-danger-soft);
+  border-left: 3px solid var(--theme-danger);
+  color: var(--theme-danger-text);
+}
+.agent-diff-added {
+  background: var(--theme-success-soft);
+  border-left: 3px solid var(--theme-success);
+  color: var(--theme-success-text);
+}
+.agent-diff-hunk .agent-diff-removed {
+  border-bottom: 1px solid var(--theme-border-subtle);
+  border-radius: 8px 8px 0 0;
+}
+.agent-diff-hunk .agent-diff-added {
+  border-radius: 0 0 8px 8px;
+}
+
+/* Agent 工具时间线折叠 */
+.agent-timeline-wrap {
+  display: grid;
+  gap: 6px;
+  justify-self: start;
+  max-width: 82%;
+  width: 100%;
+}
+.agent-timeline-toggle {
+  align-items: center;
+  background: var(--theme-surface-raised);
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: 9px;
+  color: var(--theme-text-secondary);
+  cursor: pointer;
+  display: flex;
+  font-size: 0.72rem;
+  gap: 8px;
+  justify-content: space-between;
+  padding: 7px 11px;
+  transition: background 0.15s ease;
+  width: 100%;
+}
+.agent-timeline-toggle:hover {
+  background: var(--theme-surface-hover);
+}
+.agent-timeline-count {
+  align-items: center;
+  display: flex;
+  gap: 6px;
+}
+
+/* Agent markdown 代码块增强 */
+.agent-codeblock {
+  background: var(--theme-surface-code);
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: 10px;
+  margin: 12px 0;
+  overflow: hidden;
+}
+.agent-codeblock-head {
+  align-items: center;
+  background: color-mix(in srgb, var(--theme-surface-code) 90%, var(--theme-surface-hover) 10%);
+  border-bottom: 1px solid var(--theme-border-subtle);
+  display: flex;
+  justify-content: space-between;
+  padding: 5px 12px;
+}
+.agent-codeblock-lang {
+  color: var(--theme-text-muted);
+  font-family: var(--theme-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+.agent-codeblock-actions {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+}
+.agent-codeblock-streaming {
+  align-items: center;
+  color: var(--theme-accent-text);
+  display: inline-flex;
+  font-size: 0.66rem;
+  gap: 5px;
+}
+.agent-codeblock-streaming::before {
+  animation: agent-pulse 1.2s ease-in-out infinite;
+  background: var(--theme-accent);
+  border-radius: 50%;
+  content: '';
+  height: 6px;
+  width: 6px;
+}
+@keyframes agent-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+.agent-codeblock-copy {
+  align-items: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--theme-text-muted);
+  cursor: pointer;
+  display: inline-flex;
+  font-size: 0.66rem;
+  gap: 4px;
+  padding: 2px 7px;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.agent-codeblock-copy:hover {
+  background: var(--theme-surface-hover);
+  color: var(--theme-text-strong);
+}
+.agent-codeblock > pre {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  margin: 0;
+  max-height: 480px;
+  overflow: auto;
+  padding: 12px 15px;
+}
+.agent-codeblock > pre code {
+  background: transparent;
+  font-size: inherit;
+  padding: 0;
+}
+
+/* Agent 语法高亮 token */
+.agent-codeblock .tok-keyword {
+  color: #c678dd;
+}
+.agent-codeblock .tok-string {
+  color: #98c379;
+}
+.agent-codeblock .tok-comment {
+  color: #7f848e;
+  font-style: italic;
+}
+.agent-codeblock .tok-number {
+  color: #d19a66;
+}
+.agent-codeblock .tok-function {
+  color: #61afef;
+}
+[data-theme='dark'] .agent-codeblock .tok-keyword {
+  color: #c678dd;
+}
+[data-theme='dark'] .agent-codeblock .tok-string {
+  color: #98c379;
+}
+[data-theme='dark'] .agent-codeblock .tok-comment {
+  color: #7f848e;
+}
+[data-theme='dark'] .agent-codeblock .tok-number {
+  color: #d19a66;
+}
+[data-theme='dark'] .agent-codeblock .tok-function {
+  color: #61afef;
 }

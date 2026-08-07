@@ -16,6 +16,8 @@ import (
 type FileService interface {
 	ReadFile(root, path string) (string, error)
 	WriteFile(root, path, content string) error
+	CreateFile(root, path, content string) error
+	DeleteFile(root, path string) error
 	ListFiles(root string) ([]string, error)
 }
 
@@ -43,7 +45,8 @@ func ProjectTools(root string, files FileService, commands CommandRunner) *Regis
 	}, func(ctx context.Context, arguments json.RawMessage) (string, error) {
 		list, err := files.ListFiles(root)
 		if err != nil {
-			return "", err
+			// 大项目超过列表上限时，不返回硬错误，而是引导模型改用搜索。
+			return "项目文件过多，无法一次性列出；请用 agent_search 按关键词定位需要的文件。", nil
 		}
 		data, _ := json.Marshal(list)
 		return string(data), nil
@@ -72,40 +75,74 @@ func ProjectTools(root string, files FileService, commands CommandRunner) *Regis
 	})
 
 	registry.AddWrite(Tool{
-		Name:        "agent_edit_file",
-		Description: "精确替换项目文件中的一段文本。old 必须是文件中唯一匹配的文本；不匹配或匹配多次时不会修改文件，请调整后重试。用于针对性修改而非整文件覆盖。",
+		Name: "agent_edit_file",
+		Description: "结构化修改项目文件，三种模式：edit（多 hunk 精确替换）、create（新建文件）、delete（删除文件）。" +
+			"edit 模式：edits 数组每项 {old,new}，old 必须是文件中唯一匹配的文本；全部 hunk 应用后才写入，任一失败则不修改。",
 		Parameters: objectSchema(map[string]any{
-			"path": stringParam("相对于项目根目录的文件路径。"),
-			"old":  stringParam("文件中要替换的现有文本，必须唯一匹配。"),
-			"new":  stringParam("替换后的新文本。"),
-		}, "path", "old", "new"),
+			"path":    stringParam("相对于项目根目录的文件路径。"),
+			"mode":    stringParam("edit（默认，替换）/ create（新建）/ delete（删除）。"),
+			"content": stringParam("create 模式的新文件内容。"),
+			"edits": map[string]any{"type": "array", "items": map[string]any{
+				"type": "object", "properties": map[string]any{
+					"old": stringParam("要替换的现有文本，必须唯一匹配。"),
+					"new": stringParam("替换后的新文本。"),
+				}, "required": []string{"old", "new"},
+			}, "description": "edit 模式的替换列表，按顺序应用。"},
+		}, "path"),
 	}, func(ctx context.Context, arguments json.RawMessage) (string, error) {
 		var in struct {
-			Path string `json:"path"`
-			Old  string `json:"old"`
-			New  string `json:"new"`
+			Path    string `json:"path"`
+			Mode    string `json:"mode"`
+			Content string `json:"content"`
+			Edits   []struct {
+				Old string `json:"old"`
+				New string `json:"new"`
+			} `json:"edits"`
 		}
 		if err := json.Unmarshal(arguments, &in); err != nil {
 			return "", fmt.Errorf("参数无效：%v", err)
+		}
+		switch in.Mode {
+		case "create":
+			if in.Content == "" {
+				return "", fmt.Errorf("create 模式需要 content")
+			}
+			if err := files.CreateFile(root, in.Path, in.Content); err != nil {
+				return "", err
+			}
+			return fmt.Sprintf("已创建 %s", in.Path), nil
+		case "delete":
+			if err := files.DeleteFile(root, in.Path); err != nil {
+				return "", err
+			}
+			return fmt.Sprintf("已删除 %s", in.Path), nil
 		}
 		content, err := files.ReadFile(root, in.Path)
 		if err != nil {
 			return "", err
 		}
-		occurrences := strings.Count(content, in.Old)
-		switch {
-		case in.Old == "":
-			return "", fmt.Errorf("old 不能为空")
-		case occurrences == 0:
-			return "", fmt.Errorf("文件中没有匹配 old 的文本；请提供准确上下文")
-		case occurrences > 1:
-			return "", fmt.Errorf("old 在文件中出现 %d 次；请包含更多周围代码使匹配唯一", occurrences)
+		// 先验证所有 hunk 再写入，任一失败则整体回滚。
+		work := content
+		for index, edit := range in.Edits {
+			if edit.Old == "" {
+				return "", fmt.Errorf("第 %d 个 hunk 的 old 不能为空", index+1)
+			}
+			occurrences := strings.Count(work, edit.Old)
+			switch {
+			case occurrences == 0:
+				return "", fmt.Errorf("第 %d 个 hunk 在文件中没有匹配；请提供准确上下文", index+1)
+			case occurrences > 1:
+				return "", fmt.Errorf("第 %d 个 hunk 在文件中出现 %d 次；请包含更多周围代码使匹配唯一", index+1, occurrences)
+			}
+			work = strings.Replace(work, edit.Old, edit.New, 1)
 		}
-		updated := strings.Replace(content, in.Old, in.New, 1)
-		if err := files.WriteFile(root, in.Path, updated); err != nil {
+		if len(in.Edits) == 0 {
+			return "", fmt.Errorf("edit 模式需要至少一个 hunk")
+		}
+		if err := files.WriteFile(root, in.Path, work); err != nil {
 			return "", err
 		}
-		return fmt.Sprintf("已更新 %s", in.Path), nil
+		return fmt.Sprintf("已更新 %s（%d 处）", in.Path, len(in.Edits)), nil
 	})
 
 	registry.Add(Tool{

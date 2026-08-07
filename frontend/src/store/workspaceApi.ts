@@ -136,6 +136,7 @@ export type SetupPlugin = {
     label: string
     description?: string
     confirm?: boolean
+    advanced?: boolean
     page?: string
     fields?: Array<{
       key: string
@@ -143,6 +144,7 @@ export type SetupPlugin = {
       type: 'select' | 'number' | 'text'
       default?: string
       options?: Array<{ label: string; value: string }>
+      help?: string
     }>
   }>
   runnable: boolean
@@ -390,9 +392,18 @@ export const workspaceApi = createApi({
       { root: string; file: string; content: string }
     >({
       query: body => ({ url: 'robot', method: 'PUT', body }),
-      invalidatesTags: (_result, _error, body) => [
-        { type: 'RobotFile', id: `${body.root}:${body.file}` }
-      ]
+      invalidatesTags: (_result, _error, body) => {
+        const tags: (
+          | { type: 'RobotFile'; id: string }
+          | { type: 'PackageConfig'; id?: string }
+        )[] = [{ type: 'RobotFile', id: `${body.root}:${body.file}` }]
+        // Saving alemon.config.yaml changes every structured config view
+        // (current project config, connection package config, start dialog),
+        // so drop all cached PackageConfig entries along with the file tag.
+        if (body.file === 'alemon.config.yaml')
+          tags.push({ type: 'PackageConfig' })
+        return tags
+      }
     }),
     writePackageManifest: build.mutation<
       RobotResult,
@@ -411,7 +422,9 @@ export const workspaceApi = createApi({
     >({
       query: body => ({ url: 'robot/package-config', method: 'PUT', body }),
       invalidatesTags: (_result, _error, body) => [
-        { type: 'PackageConfig', id: `${body.root}:${body.package}` },
+        // The whole file changed, so every structured view (current project,
+        // connection package, start dialog) must re-parse it.
+        { type: 'PackageConfig' },
         { type: 'RobotFile', id: `${body.root}:alemon.config.yaml` }
       ]
     }),
@@ -422,7 +435,7 @@ export const workspaceApi = createApi({
       query: body => ({ url: 'robot/login', method: 'POST', body }),
       invalidatesTags: (_result, _error, body) => [
         { type: 'RobotFile', id: `${body.root}:alemon.config.yaml` },
-        { type: 'PackageConfig', id: `${body.root}:${body.package ?? ''}` }
+        { type: 'PackageConfig' }
       ]
     }),
     initializeGit: build.mutation<

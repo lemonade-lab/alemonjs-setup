@@ -17,10 +17,11 @@ import {
   Terminal,
   Trash2,
   Unlock,
-  X
+  X,
 } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import Markdown from 'markdown-to-jsx'
+import { AgentMarkdown } from './AgentMarkdown'
+import cn from 'classnames'
 
 type Provider = {
   ID: string
@@ -71,6 +72,44 @@ const PROMPT_EXAMPLES: Array<[string, string]> = [
   ['修复最近的报错', '查看最近改动，修复导致的报错。']
 ]
 
+// formatToolArgs renders a tool's JSON arguments as a short friendly line, so
+// the timeline shows "读取 src/index.ts" instead of raw `{"path":"..."}`.
+function formatToolArgs(tool: string, rawArgs: string): string {
+  if (!rawArgs) return ''
+  try {
+    const args = JSON.parse(rawArgs) as Record<string, unknown>
+    const path = typeof args.path === 'string' ? args.path : ''
+    switch (tool) {
+      case 'read_project_file':
+        return path ? `读取 ${path}` : rawArgs
+      case 'list_project_files':
+        return '列出项目文件'
+      case 'agent_search': {
+        const pattern = typeof args.pattern === 'string' ? args.pattern : ''
+        return pattern ? `搜索 ${pattern}` : rawArgs
+      }
+      case 'agent_edit_file': {
+        const mode = typeof args.mode === 'string' ? args.mode : 'edit'
+        if (mode === 'create') return `新建 ${path}`
+        if (mode === 'delete') return `删除 ${path}`
+        const hunks = Array.isArray(args.edits) ? args.edits.length : 0
+        return `编辑 ${path}${hunks > 0 ? `（${hunks} 处）` : ''}`
+      }
+      case 'agent_run_command': {
+        const command = typeof args.command === 'string' ? args.command : ''
+        const sub = Array.isArray(args.args) ? (args.args as string[]).join(' ') : ''
+        return `运行 ${command}${sub ? ` ${sub}` : ''}`
+      }
+      case 'agent_verify':
+        return '运行验证'
+      default:
+        return rawArgs
+    }
+  } catch {
+    return rawArgs
+  }
+}
+
 // formatUpdated renders an ISO timestamp as a short relative time in Chinese.
 function formatUpdated(iso: string): string {
   if (!iso) return ''
@@ -84,6 +123,36 @@ function formatUpdated(iso: string): string {
   if (diff < hour) return `${Math.floor(diff / minute)} 分钟前`
   if (diff < day) return `${Math.floor(diff / hour)} 小时前`
   return `${Math.floor(diff / day)} 天前`
+}
+
+// sessionToMessages keeps only the plain conversation turns when resuming a
+// history. The persisted transcript also carries role="tool" result payloads
+// (raw JSON / command output) and empty assistant tool-call frames; neither
+// belongs in the chat timeline. Adjacent duplicate user turns are collapsed
+// too: older transcripts once wrote the same user message twice.
+function sessionToMessages(
+  messages: Array<{ role: string; content?: string }>
+): ChatMessage[] {
+  const out: ChatMessage[] = []
+  for (const message of messages) {
+    if (
+      (message.role !== 'user' && message.role !== 'assistant') ||
+      !message.content
+    ) {
+      continue
+    }
+    const prev = out[out.length - 1]
+    if (
+      message.role === 'user' &&
+      prev &&
+      prev.role === 'user' &&
+      prev.content === message.content
+    ) {
+      continue
+    }
+    out.push({ role: message.role, content: message.content })
+  }
+  return out
 }
 
 function ToolIcon({ name }: { name: string }) {
@@ -153,10 +222,12 @@ export function AgentChatPage({
   const promptRef = useRef<HTMLTextAreaElement | null>(null)
   const threadRef = useRef<HTMLElement | null>(null)
   const [access, setAccess] = useState<'ask' | 'auto' | 'full'>('ask')
+  const [timelineOpen, setTimelineOpen] = useState(false)
   const [pendingConfirm, setPendingConfirm] = useState<{
     id: string
     tool: string
     args: string
+    diff?: { path: string; mode?: string; content?: string; hunks?: Array<{ old: string; new: string }> } | null
   } | null>(null)
   const [sessions, setSessions] = useState<SessionMeta[]>([])
   const [sessionId, setSessionId] = useState('')
@@ -177,7 +248,16 @@ export function AgentChatPage({
         )
         if (!response.ok) return
         const data = (await response.json()) as { models?: string[] }
-        setModels(data.models ?? [])
+        const list = data.models ?? []
+        setModels(list)
+        // 若当前 model 不在该 provider 的模型列表里（例如旧配置残留了
+        // 别的服务商模型），回退到列表第一个，避免把脏模型发给后端。
+        if (list.length > 0) {
+          setModel(currentModel => {
+            const stale = !list.includes(currentModel)
+            return stale ? list[0] : currentModel
+          })
+        }
       } catch {
         // 模型列表加载失败不阻塞
       }
@@ -220,10 +300,17 @@ export function AgentChatPage({
   }, [loadSessions])
 
   // When opened from the directory session tree, load that conversation.
-  const initialLoaded = useRef(false)
+  // Track the last loaded id so a repeated id is not re-fetched, while a new id
+  // (switching records after starting a fresh session) loads every time.
+  const lastLoadedSessionId = useRef('')
   useEffect(() => {
-    if (!initialSessionId || initialLoaded.current) return
-    initialLoaded.current = true
+    if (
+      !initialSessionId ||
+      typeof initialSessionId !== 'string' ||
+      initialSessionId === lastLoadedSessionId.current
+    )
+      return
+    lastLoadedSessionId.current = initialSessionId
     void (async () => {
       try {
         const response = await fetch(`/api/v1/agent/sessions/${initialSessionId}`)
@@ -233,11 +320,7 @@ export function AgentChatPage({
           messages: Array<{ role: string; content: string }>
         }
         setSessionId(data.session.id)
-        setMessages(
-          data.messages.filter(
-            message => message.content && message.role !== 'system'
-          ) as ChatMessage[]
-        )
+        setMessages(sessionToMessages(data.messages))
         setActivity([])
       } catch {
         setNotice('加载会话失败。')
@@ -251,10 +334,19 @@ export function AgentChatPage({
     setMessages([])
     setActivity([])
     setSessionOpen(false)
+    // 清除已加载记录，让之后点开同一记录仍能重新加载；并通知 Dashboard
+    // 清空 agentSessionId，否则重开同一条记录时 prop 不变、不触发加载。
+    lastLoadedSessionId.current = ''
+    window.dispatchEvent(new CustomEvent('alx:agent-new-session'))
   }
 
   const openSession = async (id: string) => {
     if (busy || id === sessionId) return
+    if (typeof id !== 'string' || !id.startsWith('s')) {
+      console.warn('openSession 收到非法会话 ID：', id)
+      setNotice('无法打开该对话记录。')
+      return
+    }
     try {
       const response = await fetch(`/api/v1/agent/sessions/${id}`)
       if (!response.ok) return
@@ -263,11 +355,7 @@ export function AgentChatPage({
         messages: Array<{ role: string; content: string }>
       }
       setSessionId(data.session.id)
-      setMessages(
-        data.messages.filter(
-          message => message.content && message.role !== 'system'
-        ) as ChatMessage[]
-      )
+      setMessages(sessionToMessages(data.messages))
       setActivity([])
       setSessionOpen(false)
     } catch {
@@ -277,6 +365,10 @@ export function AgentChatPage({
 
   const deleteSession = async (id: string) => {
     if (busy) return
+    if (typeof id !== 'string' || !id.startsWith('s')) {
+      console.warn('deleteSession 收到非法会话 ID：', id)
+      return
+    }
     try {
       await fetch(`/api/v1/agent/sessions/${id}`, { method: 'DELETE' })
       if (id === sessionId) newSession()
@@ -292,6 +384,7 @@ export function AgentChatPage({
       text?: string
       tool?: string
       output?: string
+      diff?: { path: string; mode?: string; content?: string; hunks?: Array<{ old: string; new: string }> } | null
     }) => {
       switch (event.type) {
         case 'tool':
@@ -327,6 +420,7 @@ export function AgentChatPage({
           break
         case 'done':
           setActivity([])
+          setTimelineOpen(false)
           setMessages(value => [
             ...value,
             { role: 'assistant', content: event.text || '完成。' }
@@ -334,18 +428,22 @@ export function AgentChatPage({
           setNotice('')
           break
         case 'error':
+          setTimelineOpen(false)
           setNotice(event.text || 'Agent 执行出错。')
           break
         case 'confirm':
           setPendingConfirm({
             id: event.tool || '',
             tool: event.text || '',
-            args: event.output || ''
+            args: event.output || '',
+            diff: event.diff ?? null
           })
           break
         case 'session':
           setSessionId(event.tool || '')
           void loadSessions()
+          // 通知 Dashboard 刷新左侧"记录"里的会话列表，让新建的对话立即可见。
+          window.dispatchEvent(new CustomEvent('alx:agent-session-created'))
           break
       }
     },
@@ -375,12 +473,20 @@ export function AgentChatPage({
     setPrompt('')
     setEditingIndex(-1)
     setActivity([])
+    setTimelineOpen(false)
     setNotice('Agent 正在执行…')
     setBusy(true)
     const controller = new AbortController()
     streamRef.current = controller
+    // SSE 流式请求绕过 Vite 代理直连后端：开发模式下 Vite 的 http-proxy
+    // 会破坏 chunked 的 text/event-stream（"Invalid character in chunk
+    // size"）。后端对 5173 来源加了 dev CORS。生产环境前端与后端同源。
+    const streamURL = import.meta.env.DEV
+      ? 'http://localhost:17390/api/v1/agent/chat?stream=1'
+      : '/api/v1/agent/chat?stream=1'
     try {
-      const response = await fetch('/api/v1/agent/chat?stream=1', {
+      console.log('[agent] streamURL =', streamURL, 'DEV =', import.meta.env.DEV)
+      const response = await fetch(streamURL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -425,6 +531,7 @@ export function AgentChatPage({
       if (!(reason instanceof DOMException && reason.name === 'AbortError')) {
         const message =
           reason instanceof Error ? reason.message : 'Agent 请求失败。'
+        console.error('[agent] 请求错误：', reason, 'streamURL =', streamURL)
         setMessages(value => [
           ...value,
           { role: 'assistant', content: '⚠ ' + message }
@@ -526,21 +633,14 @@ export function AgentChatPage({
           </div>
         </div>
         <div className="agent-header-actions">
-          {busy && (
-            <span className="agent-status-pill">
-              <Loader2 className="spinner size-3 animate-spin" /> 执行中
-            </span>
-          )}
-          {busy && (
-            <button
-              className="icon-button size-8 p-0"
-              onClick={cancel}
-              title="停止"
-              aria-label="停止执行"
-            >
-              <X className="size-4" />
-            </button>
-          )}
+          <button
+            className="icon-button size-8 p-0"
+            onClick={newSession}
+            title="新增对话"
+            aria-label="新增对话"
+          >
+            <Plus className="size-4" />
+          </button>
           <button
             className="icon-button size-8 p-0"
             onClick={() => setSettings(value => !value)}
@@ -553,81 +653,6 @@ export function AgentChatPage({
       </header>
 
       <div className="agent-body">
-      {settings ? (
-        <section className="agent-settings">
-          <header className="agent-settings-head">
-            <div>
-              <h3>AI 接口配置</h3>
-              <p>
-                密钥仅保存在本机；Agent 会在所选项目中读取文件、搜索代码并运行白名单命令。
-              </p>
-            </div>
-            <button
-              className="icon-button size-8 p-0"
-              onClick={() => setSettings(false)}
-              aria-label="关闭设置"
-              title="关闭"
-            >
-              <X className="size-4" />
-            </button>
-          </header>
-          <label className="agent-settings-label">
-            服务商
-            <div className="agent-provider-grid">
-              {providers.map(item => (
-                <button
-                  className={
-                    provider === item.ID
-                      ? 'agent-provider-chip active'
-                      : 'agent-provider-chip'
-                  }
-                  key={item.ID}
-                  onClick={() => {
-                    setProvider(item.ID)
-                    setBaseURL(item.BaseURL)
-                    setAPIKey('')
-                  }}
-                >
-                  {item.Name}
-                  {item.HasKey && <small>已配置</small>}
-                </button>
-              ))}
-            </div>
-          </label>
-          <label className="agent-settings-label">
-            接口地址
-            <input
-              value={baseURL}
-              onChange={event => setBaseURL(event.target.value)}
-              placeholder="https://api.example.com/v1"
-            />
-          </label>
-          <label className="agent-settings-label">
-            API Key
-            <input
-              type="password"
-              value={apiKey}
-              onChange={event => setAPIKey(event.target.value)}
-              placeholder={current?.HasKey ? '重新填写以更新密钥' : '填写 API Key'}
-            />
-          </label>
-          <footer className="agent-settings-actions">
-            <button
-              className="secondary-button"
-              onClick={() => setSettings(false)}
-            >
-              返回
-            </button>
-            <button
-              className="primary-button"
-              disabled={!apiKey}
-              onClick={() => void saveSettings()}
-            >
-              保存
-            </button>
-          </footer>
-        </section>
-      ) : (
         <div className="agent-main">
           <section className="agent-thread" ref={threadRef}>
             {messages.length === 0 && !busy && (
@@ -672,30 +697,34 @@ export function AgentChatPage({
                   </span>
                   <div className="agent-message-body">
                     <span className="agent-message-label">Agent</span>
-                    <div className="agent-markdown">
-                      <Markdown
-                        options={{
-                          forceBlock: true,
-                          overrides: {
-                            a: {
-                              component: ({ href, children, ...rest }) => (
-                                <a href={href} target="_blank" rel="noreferrer" {...rest}>
-                                  {children}
-                                </a>
-                              )
-                            }
-                          }
-                        }}
-                      >
-                        {item.content}
-                      </Markdown>
-                    </div>
+                    <AgentMarkdown
+                      content={item.content}
+                      streaming={busy && index === messages.length - 1}
+                    />
                   </div>
                 </article>
               )
             )}
             {activity.length > 0 && (
-              <div className="agent-timeline">
+              <div className="agent-timeline-wrap">
+                <button
+                  className="agent-timeline-toggle"
+                  onClick={() => setTimelineOpen(value => !value)}
+                >
+                  <span className="agent-timeline-count">
+                    {activity.length} 个工具操作
+                    {activity.some(item => item.status === 'running') &&
+                      ' · 进行中'}
+                  </span>
+                  <ChevronDown
+                    className={cn(
+                      'size-3.5 transition-transform',
+                      timelineOpen && 'rotate-180'
+                    )}
+                  />
+                </button>
+                {timelineOpen && (
+                <div className="agent-timeline">
                 {activity.map((item, index) => (
                   <div
                     className="agent-step"
@@ -721,10 +750,11 @@ export function AgentChatPage({
                         </span>
                       </div>
                       {item.args && (
-                        <details className="agent-step-args" open={item.status === 'running'}>
-                          <summary>查看参数</summary>
-                          <pre>{item.args}</pre>
-                        </details>
+                        <div className="agent-step-args">
+                          <span className="agent-step-args-text">
+                            {formatToolArgs(item.tool, item.args)}
+                          </span>
+                        </div>
                       )}
                       {item.output && (
                         <details className="agent-step-output" open={item.status === 'error'}>
@@ -737,6 +767,8 @@ export function AgentChatPage({
                     </div>
                   </div>
                 ))}
+              </div>
+                )}
               </div>
             )}
             {busy && activity.length === 0 && messages.length > 0 && (
@@ -926,6 +958,84 @@ export function AgentChatPage({
             </div>
           </footer>
         </div>
+      </div>
+
+      {settings && (
+        <div className="agent-settings-overlay">
+          <section className="agent-settings">
+            <header className="agent-settings-head">
+              <div>
+                <h3>AI 接口配置</h3>
+                <p>
+                  密钥仅保存在本机；Agent 会在所选项目中读取文件、搜索代码并运行白名单命令。
+                </p>
+              </div>
+              <button
+                className="icon-button size-8 p-0"
+                onClick={() => setSettings(false)}
+                aria-label="关闭设置"
+                title="关闭"
+              >
+                <X className="size-4" />
+              </button>
+            </header>
+            <label className="agent-settings-label">
+              服务商
+              <div className="agent-provider-grid">
+                {providers.map(item => (
+                  <button
+                    className={
+                      provider === item.ID
+                        ? 'agent-provider-chip active'
+                        : 'agent-provider-chip'
+                    }
+                    key={item.ID}
+                    onClick={() => {
+                      setProvider(item.ID)
+                      setBaseURL(item.BaseURL)
+                      setAPIKey('')
+                    }}
+                  >
+                    {item.Name}
+                    {item.HasKey && <small>已配置</small>}
+                  </button>
+                ))}
+              </div>
+            </label>
+            <label className="agent-settings-label">
+              接口地址
+              <input
+                value={baseURL}
+                onChange={event => setBaseURL(event.target.value)}
+                placeholder="https://api.example.com/v1"
+              />
+            </label>
+            <label className="agent-settings-label">
+              API Key
+              <input
+                type="password"
+                value={apiKey}
+                onChange={event => setAPIKey(event.target.value)}
+                placeholder={current?.HasKey ? '重新填写以更新密钥' : '填写 API Key'}
+              />
+            </label>
+            <footer className="agent-settings-actions">
+              <button
+                className="secondary-button"
+                onClick={() => setSettings(false)}
+              >
+                返回
+              </button>
+              <button
+                className="primary-button"
+                disabled={!apiKey}
+                onClick={() => void saveSettings()}
+              >
+                保存
+              </button>
+            </footer>
+          </section>
+        </div>
       )}
 
       {sessionOpen && (
@@ -974,7 +1084,6 @@ export function AgentChatPage({
           </div>
         </aside>
       )}
-      </div>
 
       {pendingConfirm && (
         <div className="agent-confirm-overlay">
@@ -986,8 +1095,35 @@ export function AgentChatPage({
             <p>
               工具 <code>{pendingConfirm.tool}</code> 想要修改项目文件。确认后才会写入。
             </p>
-            {pendingConfirm.args && (
-              <pre className="agent-confirm-args">{pendingConfirm.args}</pre>
+            {pendingConfirm.diff ? (
+              <div className="agent-confirm-diff">
+                <div className="agent-confirm-diff-path">
+                  {pendingConfirm.diff.path}
+                  {pendingConfirm.diff.mode === 'create' && (
+                    <em>新建</em>
+                  )}
+                  {pendingConfirm.diff.mode === 'delete' && (
+                    <em>删除</em>
+                  )}
+                </div>
+                {pendingConfirm.diff.mode === 'create' && (
+                  <pre className="agent-diff-added">{pendingConfirm.diff.content}</pre>
+                )}
+                {pendingConfirm.diff.mode === 'delete' && (
+                  <pre className="agent-diff-removed">（将删除此文件）</pre>
+                )}
+                {!pendingConfirm.diff.mode &&
+                  (pendingConfirm.diff.hunks ?? []).map((hunk, index) => (
+                    <div className="agent-diff-hunk" key={index}>
+                      <pre className="agent-diff-removed">{hunk.old}</pre>
+                      <pre className="agent-diff-added">{hunk.new}</pre>
+                    </div>
+                  ))}
+              </div>
+            ) : (
+              pendingConfirm.args && (
+                <pre className="agent-confirm-args">{pendingConfirm.args}</pre>
+              )
             )}
             <footer>
               <button

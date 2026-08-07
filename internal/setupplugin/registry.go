@@ -42,11 +42,14 @@ type Navigation struct {
 
 // Action is a user-visible operation supplied by a Setup plugin. Dangerous
 // actions always require a second explicit confirmation from the UI/API.
+// Advanced marks the action as a lower-frequency power feature so the UI can
+// fold it away from the default view; it is optional and default false.
 type Action struct {
 	ID          string  `json:"id"`
 	Label       string  `json:"label"`
 	Description string  `json:"description,omitempty"`
 	Confirm     bool    `json:"confirm,omitempty"`
+	Advanced    bool    `json:"advanced,omitempty"`
 	Page        string  `json:"page,omitempty"`
 	Fields      []Field `json:"fields,omitempty"`
 }
@@ -57,6 +60,8 @@ type Field struct {
 	Type    string   `json:"type"`
 	Options []Option `json:"options,omitempty"`
 	Default string   `json:"default,omitempty"`
+	// Help is a short beginner-friendly explanation shown under the input.
+	Help string `json:"help,omitempty"`
 }
 
 type Option struct {

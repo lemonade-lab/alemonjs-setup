@@ -48,3 +48,9 @@ pnpm-lock.yaml
 
 /alemonb
 /plugins
+
+# ai gent
+/.claude
+/.openai
+/.agent
+/*-preview.html

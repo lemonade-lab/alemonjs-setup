@@ -113,9 +113,21 @@ func packageConfigFromManifest(path string, data []byte, subject string) (Packag
 	if manifest.Name == "" || len(manifest.Alemonjs.Config) == 0 {
 		return PackageConfig{}, errors.New(subject + "没有声明 alemonjs.config")
 	}
+	// The connection's YAML section is keyed by its short platform name (for
+	// example onebot), not the scoped package name (@alemonjs/onebot). Older
+	// packages declared the full package name in platform.value, newer ones
+	// leave it empty; both must resolve to the short name when it is a valid
+	// YAML key and matches this package.
+	baseName := manifest.Name
+	if slash := strings.LastIndex(baseName, "/"); slash >= 0 {
+		baseName = baseName[slash+1:]
+	}
 	namespace := manifest.Name
 	for _, platform := range manifest.Alemonjs.Desktop.Platform {
-		if platform.Value == manifest.Name && yamlNamePattern.MatchString(platform.Name) {
+		if !yamlNamePattern.MatchString(platform.Name) {
+			continue
+		}
+		if platform.Value == "" || platform.Value == manifest.Name || platform.Value == baseName {
 			namespace = platform.Name
 			break
 		}
@@ -124,7 +136,13 @@ func packageConfigFromManifest(path string, data []byte, subject string) (Packag
 	if err != nil && !os.IsNotExist(err) {
 		return PackageConfig{}, fmt.Errorf("无法读取机器人运行配置：%w", err)
 	}
-	return PackageConfig{Package: manifest.Name, Namespace: namespace, Fields: manifest.Alemonjs.Config, Values: readConfigValues(string(content), namespace)}, nil
+	// Prefer the short connection key but keep reading the legacy scoped-package
+	// key ('@alemonjs/onebot') so existing values survive the migration.
+	candidates := []string{namespace}
+	if namespace != manifest.Name {
+		candidates = append(candidates, manifest.Name)
+	}
+	return PackageConfig{Package: manifest.Name, Namespace: namespace, Fields: manifest.Alemonjs.Config, Values: readConfigValuesForNamespaces(string(content), candidates)}, nil
 }
 
 func (m Manager) SavePackageConfig(root, name string, values map[string]string) (Result, error) {
@@ -153,7 +171,11 @@ func (m Manager) savePackageConfigDefinition(root string, definition PackageConf
 	if err == nil {
 		content = current.Output
 	}
-	updated := mergeConfigValues(content, definition.Namespace, definition.Fields, values)
+	legacy := ""
+	if definition.Namespace != definition.Package {
+		legacy = definition.Package
+	}
+	updated := mergeConfigValuesWithLegacy(content, definition.Namespace, legacy, definition.Fields, values)
 	return m.Write(root, "alemon.config.yaml", updated)
 }
 
@@ -225,48 +247,77 @@ func (m Manager) SaveLogin(root, login, packageName string) (Result, error) {
 }
 
 func readConfigValues(content, namespace string) map[string]string {
+	return readConfigValuesForNamespaces(content, []string{namespace})
+}
+
+// readConfigValuesForNamespaces parses values from every top-level YAML section
+// whose key matches one of the candidates. The namespace usually resolves to
+// the short connection name (onebot), but files saved before that fix may still
+// carry the scoped package key ('@alemonjs/onebot'). Accepting both lets an
+// existing configuration keep its values while the write path migrates to the
+// short key.
+func readConfigValuesForNamespaces(content string, namespaces []string) map[string]string {
+	target := map[string]bool{}
+	for _, ns := range namespaces {
+		target[yamlKey(ns)+":"] = true
+	}
 	values := map[string]string{}
 	lines := strings.Split(content, "\n")
-	section := false
+	inSection := false
 	for _, line := range lines {
-		if strings.TrimSpace(line) == yamlKey(namespace)+":" {
-			section = true
+		trimmed := strings.TrimSpace(line)
+		if inSection {
+			// A non-indented line ends the current section.
+			if len(line) > 0 && line[0] != ' ' && line[0] != '\t' {
+				if target[trimmed] {
+					inSection = true // the next section also matches
+					continue
+				}
+				inSection = false
+				continue
+			}
+			parts := strings.SplitN(trimmed, ":", 2)
+			if len(parts) != 2 || !yamlNamePattern.MatchString(parts[0]) {
+				continue
+			}
+			values[parts[0]] = strings.Trim(strings.TrimSpace(parts[1]), "\"'")
 			continue
 		}
-		if section && len(line) > 0 && line[0] != ' ' && line[0] != '\t' {
-			break
+		if target[trimmed] {
+			inSection = true
 		}
-		if !section {
-			continue
-		}
-		parts := strings.SplitN(strings.TrimSpace(line), ":", 2)
-		if len(parts) != 2 || !yamlNamePattern.MatchString(parts[0]) {
-			continue
-		}
-		values[parts[0]] = strings.Trim(strings.TrimSpace(parts[1]), "\"'")
 	}
 	return values
 }
 
 func mergeConfigValues(content, namespace string, fields []PackageConfigField, values map[string]string) string {
+	return mergeConfigValuesWithLegacy(content, namespace, "", fields, values)
+}
+
+// mergeConfigValuesWithLegacy writes the short connection key and, when a file
+// still carries the old scoped-package key ('@alemonjs/onebot'), migrates its
+// section into the new key instead of leaving a stale duplicate.
+func mergeConfigValuesWithLegacy(content, namespace, legacyNamespace string, fields []PackageConfigField, values map[string]string) string {
 	lines := strings.Split(strings.TrimRight(content, "\n"), "\n")
 	if len(lines) == 1 && lines[0] == "" {
 		lines = nil
 	}
-	start, end := -1, len(lines)
-	for index, line := range lines {
-		if strings.TrimSpace(line) == yamlKey(namespace)+":" {
-			start = index
-			continue
+	// Capture the legacy scoped-package block before removing it: when the file
+	// has no short key yet, its values migrate into the new section so nothing
+	// is lost.
+	legacySection := []string{}
+	if legacyNamespace != "" {
+		if legacyStart, legacyEnd := findYAMLSection(lines, yamlKey(legacyNamespace)+":"); legacyStart >= 0 {
+			legacySection = append(legacySection, lines[legacyStart+1:legacyEnd]...)
 		}
-		if start >= 0 && len(line) > 0 && line[0] != ' ' && line[0] != '\t' {
-			end = index
-			break
-		}
+		lines = removeYAMLSection(lines, yamlKey(legacyNamespace)+":")
 	}
+	start, end := findYAMLSection(lines, yamlKey(namespace)+":")
 	section := []string{}
 	if start >= 0 {
 		section = append(section, lines[start+1:end]...)
+	} else {
+		section = append(section, legacySection...)
 	}
 	for _, field := range fields {
 		value, ok := values[field.Name]
@@ -301,6 +352,36 @@ func mergeConfigValues(content, namespace string, fields []PackageConfigField, v
 		result = append(result, lines[end:]...)
 	}
 	return strings.Join(result, "\n") + "\n"
+}
+
+// findYAMLSection returns the start and end line indices of the top-level
+// section whose key matches. start is -1 when absent; end is len(lines).
+func findYAMLSection(lines []string, key string) (int, int) {
+	start, end := -1, len(lines)
+	for index, line := range lines {
+		if strings.TrimSpace(line) == key {
+			start = index
+			continue
+		}
+		if start >= 0 && len(line) > 0 && line[0] != ' ' && line[0] != '\t' {
+			end = index
+			break
+		}
+	}
+	return start, end
+}
+
+// removeYAMLSection drops the top-level section matching key, preserving every
+// other line.
+func removeYAMLSection(lines []string, key string) []string {
+	start, end := findYAMLSection(lines, key)
+	if start < 0 {
+		return lines
+	}
+	out := make([]string, 0, len(lines)-(end-start))
+	out = append(out, lines[:start]...)
+	out = append(out, lines[end:]...)
+	return out
 }
 
 func yamlKey(value string) string {

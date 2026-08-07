@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   ChevronDown,
   CloudDownload,
@@ -12,7 +12,6 @@ import {
   RefreshCw,
   Tags,
   Trash2,
-  Upload,
   X
 } from 'lucide-react'
 import { ConfirmDialog } from './ConfirmDialog'
@@ -176,14 +175,23 @@ export function RobotGitControl({
 }) {
   const root = project?.path ?? ''
   const [tab, setTab] = useState<Tab>('commit')
+  const gitQueryArgs = useMemo(() => ({ root, view: tab }), [root, tab])
   const {
     data,
     isLoading: isInitialLoading,
     isFetching,
     error,
     refetch
-  } = useGitWorkspaceQuery({ root, view: tab }, { skip: !root })
+  } = useGitWorkspaceQuery(gitQueryArgs, { skip: !root })
   const [run, { isLoading }] = useGitWorkspaceActionMutation()
+  const fetchedBranchView = useRef(false)
+  useEffect(() => {
+    if (tab !== 'branch' || fetchedBranchView.current || !root) return
+    fetchedBranchView.current = true
+    void run({ root, action: 'fetch' })
+      .then(() => refetch())
+      .catch(() => {})
+  }, [refetch, root, run, tab])
   const [pending, setPending] = useState<Pending>(null)
   const [output, setOutput] = useState('')
   const [commitMessage, setCommitMessage] = useState('')
@@ -222,40 +230,35 @@ export function RobotGitControl({
 
   const commitPanel = (
     <section className="git-tab-panel grid content-start gap-3 rounded-lg border border-slate-200 bg-white p-4">
-      <div className="git-tab-heading flex flex-wrap items-end justify-between gap-3 border-b border-slate-200 pb-3">
-        <div className="grid gap-1">
+      <div className="git-tab-heading grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 border-b border-slate-200 pb-3">
+        <label className="grid gap-0.5">
           <strong className="text-sm font-semibold text-slate-800">
-            工作区变更
+            提交说明
           </strong>
-          <span className="text-xs text-slate-500">
-            确认文件后，在右侧填写说明并提交。
-          </span>
-        </div>
-        <div className="flex flex-wrap items-end gap-2">
-          <small className="text-xs text-slate-400">
+          <small className="text-xs text-slate-500">
             {changes.length} 项待提交
           </small>
-          <input
-            className="h-9 min-w-52 rounded-md border border-slate-300 bg-white px-2.5 text-xs text-slate-800 outline-none focus:border-brand-600 focus:ring-2 focus:ring-brand-100"
-            value={commitMessage}
-            onChange={event => setCommitMessage(event.target.value)}
-            placeholder="提交说明，例如：修复登录配置"
-          />
-          <button
-            className="primary-button"
-            disabled={isLoading || !changes.length || !commitMessage.trim()}
-            onClick={() => request('commit', undefined, commitMessage)}
-            title={
-              !changes.length
-                ? '工作区没有变更可提交'
-                : !commitMessage.trim()
-                  ? '请先填写提交说明'
-                  : '提交全部变更'
-            }
-          >
-            提交全部变更
-          </button>
-        </div>
+        </label>
+        <input
+          className="h-9 min-w-0 rounded-md border border-slate-300 bg-white px-2.5 text-xs text-slate-800 outline-none focus:border-brand-600 focus:ring-2 focus:ring-brand-100"
+          value={commitMessage}
+          onChange={event => setCommitMessage(event.target.value)}
+          placeholder="例如：修复登录配置"
+        />
+        <button
+          className="primary-button shrink-0"
+          disabled={isLoading || !changes.length || !commitMessage.trim()}
+          onClick={() => request('commit', undefined, commitMessage)}
+          title={
+            !changes.length
+              ? '工作区没有变更可提交'
+              : !commitMessage.trim()
+                ? '请先填写提交说明'
+                : '提交全部变更'
+          }
+        >
+          提交全部变更
+        </button>
       </div>
       {changes.length ? (
         <ChangeTree nodes={changeTree} />
@@ -395,50 +398,23 @@ export function RobotGitControl({
     </section>
   )
 
+  const remoteOnlyBranches = (data?.remoteBranches ?? []).filter(
+    item => !(data?.branches ?? []).some(branch => branch.name === item.branch)
+  )
   const branchPanel = (
     <section className="grid gap-3 rounded-lg border border-slate-200 bg-white p-4">
-      <div className="flex flex-wrap items-end justify-between gap-3 border-b border-slate-200 pb-3">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 pb-3">
         <div className="grid gap-1">
           <strong className="text-sm font-semibold text-slate-800">
             分支管理
           </strong>
-          <span className="text-xs text-slate-500">
-            先获取远程分支，再选择要在本机打开的工作分支。
-          </span>
+          <small className="text-xs text-slate-500">
+            打开页面时会自动同步远程分支。
+          </small>
         </div>
-        <small className="text-xs text-slate-400">
-          本地 {data?.branches.length ?? 0} · 远程{' '}
-          {data?.remoteBranches.length ?? 0}
-        </small>
-      </div>
-      <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-200 bg-slate-50 p-3">
-        <div className="grid gap-1">
-          <strong className="text-xs font-semibold text-slate-700">
-            获取远程分支
-          </strong>
-          <span className="text-[11px] text-slate-500">
-            读取 origin 的全部分支和标签，不会修改代码。
-          </span>
-        </div>
-        <button
-          className="secondary-button"
-          disabled={isLoading || !data?.remotes.length}
-          onClick={() => request('fetch')}
-        >
-          <CloudDownload className="mr-1.5 size-3.5" />
-          拉取远程
-        </button>
-      </div>
-      <div className="grid gap-2">
-        <header className="flex items-center justify-between gap-2">
-          <strong className="text-sm font-semibold text-slate-700">
-            本地分支
-          </strong>
-          <span className="text-xs text-slate-400">创建后立即切换</span>
-        </header>
-        <div className="flex gap-2">
+        <div className="flex min-w-0 flex-1 items-center gap-2">
           <input
-            className="h-9 min-w-0 flex-1 rounded-md border border-slate-300 px-2.5 text-xs outline-none focus:border-brand-600 focus:ring-2 focus:ring-brand-100"
+            className="h-9 min-w-0 flex-1 rounded-md border border-slate-300 bg-white px-2.5 text-xs outline-none focus:border-brand-600 focus:ring-2 focus:ring-brand-100"
             value={branchName}
             onChange={event => setBranchName(event.target.value)}
             placeholder="新分支名称，例如 feat/login"
@@ -451,8 +427,10 @@ export function RobotGitControl({
             创建并切换
           </button>
         </div>
+      </div>
+      {data?.branches.length || remoteOnlyBranches.length ? (
         <ul className="grid gap-1">
-          {data?.branches.map(item => (
+          {(data?.branches ?? []).map(item => (
             <li
               className="flex flex-wrap items-center gap-3 border-b border-slate-100 px-2 py-2 last:border-0"
               key={item.name}
@@ -466,17 +444,14 @@ export function RobotGitControl({
               >
                 {item.name}
               </code>
-              <span className="grid min-w-0 flex-1 gap-1">
+              <span className="grid min-w-0 flex-1 gap-0.5">
                 <strong className="text-xs font-semibold text-slate-700">
                   {item.current
                     ? '当前正在使用'
                     : item.upstream
-                      ? `跟踪 ${item.upstream}`
-                      : '仅在本机'}
+                      ? '已同步到远程'
+                      : '仅在本机，尚未推送'}
                 </strong>
-                <small className="text-[11px] text-slate-400">
-                  {item.current ? '可在远程中推送' : '可切换后继续开发'}
-                </small>
               </span>
               <div className="flex items-center gap-1">
                 {!item.current && (
@@ -500,135 +475,141 @@ export function RobotGitControl({
               </div>
             </li>
           ))}
-        </ul>
-      </div>
-      <div className="grid gap-2">
-        <header className="flex items-center justify-between gap-2">
-          <strong className="text-sm font-semibold text-slate-700">
-            远程分支
-          </strong>
-          <span className="text-xs text-slate-400">打开后会自动跟踪远程</span>
-        </header>
-        {data?.remoteBranches.length ? (
-          <ul className="grid gap-1">
-            {data.remoteBranches.map(item => (
-              <li
-                className="flex flex-wrap items-center gap-3 border-b border-slate-100 px-2 py-2 last:border-0"
-                key={item.name}
+          {remoteOnlyBranches.map(item => (
+            <li
+              className="flex flex-wrap items-center gap-3 border-b border-slate-100 px-2 py-2 last:border-0"
+              key={item.name}
+            >
+              <code className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-600">
+                {item.branch}
+              </code>
+              <span className="grid min-w-0 flex-1 gap-0.5">
+                <strong className="text-xs font-semibold text-slate-700">
+                  远程 {item.remote} 上的分支，本机尚未打开
+                </strong>
+              </span>
+              <button
+                className="text-button"
+                disabled={isLoading}
+                onClick={() => request('branch-track', item.name)}
               >
-                <code className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-600">
-                  {item.name}
-                </code>
-                <span className="grid min-w-0 flex-1 gap-1">
-                  <strong className="text-xs font-semibold text-slate-700">
-                    {item.remote} 上的 {item.branch}
-                  </strong>
-                  <small className="text-[11px] text-slate-400">
-                    尚未在本机检出
-                  </small>
-                </span>
-                <button
-                  className="secondary-button"
-                  disabled={isLoading}
-                  onClick={() => request('branch-track', item.name)}
-                >
-                  在本机打开
-                </button>
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <p className="grid min-h-20 place-items-center text-xs text-slate-500">
-            还没有远程分支信息，请先拉取远程。
-          </p>
-        )}
-      </div>
+                在本机打开
+              </button>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="grid min-h-24 place-items-center text-xs text-slate-500">
+          还没有分支。在顶部输入名称，创建你的第一个分支。
+        </p>
+      )}
     </section>
   )
 
   const remotePanel = (
     <section className="grid gap-3 rounded-lg border border-slate-200 bg-white p-4">
-      <header className="flex flex-wrap items-end justify-between gap-3 border-b border-slate-200 pb-3">
-        <div className="grid gap-1">
-          <strong className="text-sm font-semibold text-slate-800">
-            远程仓库
-          </strong>
-          <span className="text-xs text-slate-500">
-            {syncText}。同步不会自动处理冲突。
-          </span>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <button
-            className="secondary-button"
-            disabled={isLoading || !data?.remotes.length}
-            onClick={() => request('fetch')}
-            title={
-              data?.remotes.length
-                ? '读取远程仓库的最新状态'
-                : '还没有配置远程仓库，无法拉取'
-            }
-          >
-            <CloudDownload className="mr-1.5 size-3.5" />
-            拉取远程
-          </button>
-          <button
-            className="secondary-button"
-            disabled={isLoading || !data?.upstream || !data.behind}
-            onClick={() => request('pull')}
-            title={
-              !data?.remotes.length
-                ? '还没有配置远程仓库，无法同步'
-                : !data?.upstream
-                  ? '当前分支尚未关联远程分支，无法同步'
-                  : !data.behind
-                    ? '没有落后于远程，无需同步'
-                    : '把远程的新提交合并到本机'
-            }
-          >
-            <RefreshCw className="mr-1.5 size-3.5" />
-            同步
-          </button>
-          <button
-            className="primary-button"
-            disabled={isLoading || !data?.remotes.length}
-            onClick={() => request('push')}
-            title={
-              data?.remotes.length
-                ? '把本机提交上传到远程仓库'
-                : '还没有配置远程仓库，无法推送'
-            }
-          >
-            <Upload className="mr-1.5 size-3.5" />
-            推送当前分支
-          </button>
-        </div>
-      </header>
-      <div className="grid gap-4 lg:grid-cols-[1.2fr_.8fr]">
-        <section className="grid gap-2">
+      <div className="grid gap-3">
+        <section
+          className="grid content-start gap-2 rounded-lg border border-slate-200 bg-slate-50 p-3"
+          aria-label="添加或修改远程仓库"
+        >
           <strong className="text-sm font-semibold text-slate-700">
-            已配置远程
+            添加或修改远程仓库
           </strong>
+          <div className="flex flex-wrap items-center gap-2">
+            <input
+              className="h-9 w-36 rounded-md border border-slate-300 bg-white px-2.5 text-xs outline-none focus:border-brand-600 focus:ring-2 focus:ring-brand-100"
+              value={remoteName}
+              onChange={event => setRemoteName(event.target.value)}
+              placeholder="名称，如 origin"
+              aria-label="远程仓库名称"
+            />
+            <input
+              className="h-9 min-w-0 flex-1 rounded-md border border-slate-300 bg-white px-2.5 text-xs outline-none focus:border-brand-600 focus:ring-2 focus:ring-brand-100"
+              value={remoteURL}
+              onChange={event => setRemoteURL(event.target.value)}
+              placeholder="仓库地址，如 git@github.com:org/repo.git"
+              aria-label="远程仓库地址"
+            />
+            <div className="flex shrink-0 gap-2">
+              <button
+                className="primary-button"
+                disabled={isLoading || !remoteName.trim() || !remoteURL.trim()}
+                onClick={() => request('remote-add', remoteName, remoteURL)}
+              >
+                <Plus className="mr-1 size-3.5" />
+                添加
+              </button>
+              <button
+                className="secondary-button"
+                disabled={isLoading || !remoteName.trim() || !remoteURL.trim()}
+                onClick={() => request('remote-set-url', remoteName, remoteURL)}
+              >
+                更新地址
+              </button>
+            </div>
+          </div>
+        </section>
+        <section className="grid gap-2">
+          <header className="flex items-center justify-between gap-2">
+            <strong className="text-sm font-semibold text-slate-700">
+              已配置远程
+            </strong>
+            <div className="flex items-center gap-2">
+              <span className="text-[11px] text-slate-400">
+                {syncText}
+              </span>
+              <button
+                className="secondary-button"
+                disabled={isLoading || !data?.remotes.length}
+                onClick={() => request('fetch')}
+                title={
+                  data?.remotes.length
+                    ? '读取远程仓库的最新状态'
+                    : '还没有配置远程仓库，无法拉取'
+                }
+              >
+                <CloudDownload className="mr-1.5 size-3.5" />
+                拉取远程
+              </button>
+              <button
+                className="secondary-button"
+                disabled={isLoading || !data?.upstream || !data.behind}
+                onClick={() => request('pull')}
+                title={
+                  !data?.remotes.length
+                    ? '还没有配置远程仓库，无法同步'
+                    : !data?.upstream
+                      ? '当前分支尚未关联远程分支，无法同步'
+                      : !data.behind
+                        ? '没有落后于远程，无需同步'
+                        : '把远程的新提交合并到本机'
+                }
+              >
+                <RefreshCw className="mr-1.5 size-3.5" />
+                同步
+              </button>
+            </div>
+          </header>
           {data?.remotes.length ? (
             <ul className="grid gap-1">
               {data.remotes.map(item => (
                 <li
-                  className="flex items-center gap-3 border-b border-slate-100 px-2 py-2 last:border-0"
+                  className="flex items-center gap-3 rounded-md border border-slate-100 bg-slate-50/50 px-3 py-2"
                   key={item.name}
                 >
-                  <code className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-600">
+                  <code className="shrink-0 rounded bg-slate-100 px-2 py-1 text-[11px] font-semibold text-slate-700">
                     {item.name}
                   </code>
-                  <span className="grid min-w-0 flex-1 gap-1">
+                  <span className="grid min-w-0 flex-1 gap-0.5">
                     <strong
-                      className="truncate text-xs font-semibold text-slate-700"
+                      className="truncate text-xs font-medium text-slate-700"
                       title={item.url}
                     >
                       {item.url}
                     </strong>
-                    <small className="text-[11px] text-slate-400">
-                      {item.name === 'origin'
-                        ? '默认远程仓库'
-                        : '已配置远程仓库'}
+                    <small className="text-[10px] text-slate-400">
+                      {item.name === 'origin' ? '默认远程仓库' : '远程仓库'}
                     </small>
                   </span>
                   <button
@@ -644,48 +625,9 @@ export function RobotGitControl({
             </ul>
           ) : (
             <p className="grid min-h-20 place-items-center text-xs text-slate-500">
-              尚未配置远程仓库。
+              还没有配置远程仓库。在上方填写名称和地址后添加。
             </p>
           )}
-        </section>
-        <section
-          className="grid content-start gap-2 rounded-lg border border-slate-200 bg-slate-50 p-3"
-          aria-label="编辑远程仓库"
-        >
-          <strong className="text-sm font-semibold text-slate-700">
-            添加或修改
-          </strong>
-          <input
-            className="h-9 rounded-md border border-slate-300 bg-white px-2.5 text-xs outline-none focus:border-brand-600 focus:ring-2 focus:ring-brand-100"
-            value={remoteName}
-            onChange={event => setRemoteName(event.target.value)}
-            placeholder="名称，如 origin"
-            aria-label="远程仓库名称"
-          />
-          <input
-            className="h-9 rounded-md border border-slate-300 bg-white px-2.5 text-xs outline-none focus:border-brand-600 focus:ring-2 focus:ring-brand-100"
-            value={remoteURL}
-            onChange={event => setRemoteURL(event.target.value)}
-            placeholder="仓库地址，如 git@github.com:org/repo.git"
-            aria-label="远程仓库地址"
-          />
-          <div className="flex flex-wrap justify-end gap-2">
-            <button
-              className="primary-button"
-              disabled={isLoading || !remoteName.trim() || !remoteURL.trim()}
-              onClick={() => request('remote-add', remoteName, remoteURL)}
-            >
-              <Plus className="mr-1 size-3.5" />
-              添加
-            </button>
-            <button
-              className="secondary-button"
-              disabled={isLoading || !remoteName.trim() || !remoteURL.trim()}
-              onClick={() => request('remote-set-url', remoteName, remoteURL)}
-            >
-              更新地址
-            </button>
-          </div>
         </section>
       </div>
     </section>

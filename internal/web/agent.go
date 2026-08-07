@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"alemonx/internal/agent"
@@ -92,11 +93,14 @@ func (s *server) agentChatHandler(w http.ResponseWriter, r *http.Request) {
 	files := robotFileService{manager: robot.Manager{}}
 	registry := agent.ProjectTools(input.Root, files, agent.NewCommandRunner())
 	systemPrompt := agent.BuildSystemPrompt(input.Root, files, agentBasePrompt())
-	loop := agent.NewLoop(cfg, registry, systemPrompt, 20)
+	loop := agent.NewLoop(cfg, registry, systemPrompt, 40)
+	loop.WithContextBudget(120 * 1024)
 
 	stream := r.URL.Query().Get("stream") == "1"
+	var emit func(agent.Event)
 	if stream {
-		loop.WithObserver(agentObserver(w, sessionID))
+		emit = agentObserver(w, sessionID, r.Context())
+		loop.WithObserver(emit)
 	}
 
 	// Permission model:
@@ -106,7 +110,6 @@ func (s *server) agentChatHandler(w http.ResponseWriter, r *http.Request) {
 	switch access {
 	case "ask":
 		if stream {
-			emit := agentObserver(w, sessionID)
 			loop.WithApprover(askApprover(s.agentConfirms, emit, sessionID))
 		} else {
 			// Non-streaming cannot surface an interactive prompt; fall back to
@@ -122,6 +125,12 @@ func (s *server) agentChatHandler(w http.ResponseWriter, r *http.Request) {
 	result, err := loop.Run(r.Context(), messages)
 	s.logAgentRun(input.Root, len(messages), time.Since(start), err)
 	if err != nil {
+		if stream && emit != nil {
+			// stream 出错时先向 SSE 写 error 事件再关闭，避免浏览器只看到
+			// 连接重置而报 "network error"。
+			emit(agent.Event{Type: "error", Text: err.Error()})
+			return
+		}
 		if stream {
 			return
 		}
@@ -129,9 +138,11 @@ func (s *server) agentChatHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// 只有运行成功时 result 非 nil；出错时 result 为 nil，不能遍历。
+	// The user message was already persisted above; skipping it here avoids
+	// duplicating the first turn in the transcript.
 	if sessionID != "" && result != nil {
 		for _, message := range result.Messages {
-			if message.Role == "system" {
+			if message.Role == "system" || message.Role == "user" {
 				continue
 			}
 			_ = s.agentSessions.Append(sessionID, message)
@@ -146,8 +157,10 @@ func (s *server) agentChatHandler(w http.ResponseWriter, r *http.Request) {
 // agentObserver writes each agent event as a flushed SSE frame. It runs on the
 // same goroutine as the loop, so it can write to the response directly. The
 // sessionId is attached to the done event so a streaming client learns which
-// conversation to resume.
-func agentObserver(w http.ResponseWriter, sessionID string) func(agent.Event) {
+// conversation to resume. A background heartbeat keeps the stream alive during
+// long tool/model waits, preventing proxies and browsers from treating a quiet
+// stream as a dead connection ("network error").
+func agentObserver(w http.ResponseWriter, sessionID string, ctx context.Context) func(agent.Event) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		// The loop still runs to completion; events are simply not surfaced.
@@ -155,18 +168,46 @@ func agentObserver(w http.ResponseWriter, sessionID string) func(agent.Event) {
 	}
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
+	// 不要设 Connection: keep-alive：它会与 http-proxy 的 chunked 透传冲突
+	// 并触发 "Expected LF after chunk data"。SSE 依赖 Transfer-Encoding:
+	// chunked，由 Go 自动处理。
+	// 立即发送 headers 和一个 start 事件，让客户端立刻知道连接已建立，
+	// 而不是在首次模型响应前一直空等。
+	startData, _ := json.Marshal(agent.Event{Type: "start", Text: "Agent 已开始执行"})
+	_, _ = w.Write([]byte("data: " + string(startData) + "\n\n"))
+	flusher.Flush()
+	// http.ResponseWriter 不是并发安全的：心跳 goroutine 与主事件写入必须
+	// 串行，否则并发写会破坏 chunked 流（ERR_INVALID_CHUNKED_ENCODING）。
+	var writeMu sync.Mutex
+	write := func(payload string) {
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		_, _ = w.Write([]byte(payload))
+		flusher.Flush()
+	}
+	// 心跳：每 15 秒写一个 SSE 注释行（客户端忽略），保持连接不被超时断开。
+	// 连接关闭（ctx done）即停止。
+	go func() {
+		ticker := time.NewTicker(15 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				write(": keepalive\n\n")
+			}
+		}
+	}()
 	return func(event agent.Event) {
 		data, err := json.Marshal(event)
 		if err != nil {
 			return
 		}
-		_, _ = w.Write([]byte("data: " + string(data) + "\n\n"))
-		flusher.Flush()
+		write("data: " + string(data) + "\n\n")
 		if event.Type == "done" && sessionID != "" {
 			sessionEvent, _ := json.Marshal(agent.Event{Type: "session", Tool: sessionID})
-			_, _ = w.Write([]byte("data: " + string(sessionEvent) + "\n\n"))
-			flusher.Flush()
+			write("data: " + string(sessionEvent) + "\n\n")
 		}
 	}
 }
@@ -184,6 +225,16 @@ func (f robotFileService) ReadFile(root, path string) (string, error) {
 
 func (f robotFileService) WriteFile(root, path, content string) error {
 	_, err := f.manager.WriteProjectFile(root, path, content)
+	return err
+}
+
+func (f robotFileService) CreateFile(root, path, content string) error {
+	_, err := f.manager.CreateProjectFile(root, path, content)
+	return err
+}
+
+func (f robotFileService) DeleteFile(root, path string) error {
+	_, err := f.manager.DeleteProjectFile(root, path)
 	return err
 }
 
@@ -216,8 +267,13 @@ func (s *server) agentLog(format string, args ...any) {
 // grounding (AGENTS.md, manifest, structure) is appended by the agent package.
 func agentBasePrompt() string {
 	return "你是一个运行在本机机器人管理台中的 AI 助手，正在协助管理 AlemonJS 机器人项目。\n" +
-		"你可以调用工具读取、搜索、精确编辑项目文件，或在项目根目录运行白名单命令（tsgo/tsc/eslint 验证、package.json 中声明的脚本）。\n" +
-		"修改文件前先读取确认目标；一次只改一个文件的一段代码，保持项目现有风格；改完用 agent_run_command 运行项目的验证命令（如 tsgo、eslint）检查结果，失败必须修复后再交付。"
+		"工具：读取、搜索、精确编辑项目文件，运行白名单命令（tsgo/tsc/eslint 验证、package.json 中声明的脚本）。\n" +
+		"工作方式：\n" +
+		"- 目标导向：只做用户要求的事，达成目标后立即停止，不要继续读取或探索无关内容。\n" +
+		"- 少即是多：一次只读取完成任务所需的最小文件集；能用搜索定位就别读整个文件。\n" +
+		"- 并行工具调用：需要读取多个相关文件时，在同一轮里同时调用 read_project_file，不要一次读一个。\n" +
+		"- 修改前先读准目标；一次只改一个文件的一段代码，保持项目现有风格。\n" +
+		"- 每次修改后用 agent_run_command 跑验证；失败必须修复，通过即停止，不要重复验证。"
 }
 
 // titleFromMessage derives a short session title from the first user message.

@@ -184,7 +184,7 @@ docs/        设计与 MCP 文档
 - 机器人目录必须是包含 `package.json` 的本地 Node.js 项目。
 - 安装插件与连接包经过后端白名单，不开放浏览器任意命令执行。
 - 系统插件与机器人插件必须隔离：系统插件增强 Setup，机器人插件只影响选中的项目。
-- 开发与接入 Setup 系统插件请参阅 [系统插件开发文档](docs/setup-plugin-development.md)。
+- 开发与接入 Setup 系统插件请参阅 [系统插件开发文档](docs/plugin-development.md)。
 - 修改前端后运行 `yarn --cwd frontend lint && yarn --cwd frontend build`；修改 Go 后运行 `go test ./internal/... && go vet ./internal/...`。
 
 推送 `v*` 标签会触发 GitHub Actions，构建 Windows、macOS（Apple Silicon / Intel）和 Linux 压缩包，并创建 GitHub Release：

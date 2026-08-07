@@ -28,6 +28,12 @@ func (osFiles) ReadFile(root, path string) (string, error) {
 func (osFiles) WriteFile(root, path, content string) error {
 	return os.WriteFile(filepath.Join(root, path), []byte(content), 0o644)
 }
+func (osFiles) CreateFile(root, path, content string) error {
+	return os.WriteFile(filepath.Join(root, path), []byte(content), 0o644)
+}
+func (osFiles) DeleteFile(root, path string) error {
+	return os.Remove(filepath.Join(root, path))
+}
 func (osFiles) ListFiles(root string) ([]string, error) {
 	var files []string
 	err := filepath.WalkDir(root, func(current string, entry os.DirEntry, walkErr error) error {

@@ -7,7 +7,9 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"alemonx/internal/ai"
 )
@@ -448,5 +450,156 @@ func TestLoopSkipsApproverForReadTools(t *testing.T) {
 	}
 	if result.Answer != "读到了" {
 		t.Errorf("Answer 错误：%q", result.Answer)
+	}
+}
+
+func TestCompressIfOverBudget(t *testing.T) {
+	// 大 content 消息使总量远超 budget。
+	messages := []Message{
+		{Role: "user", Content: "问题"},
+		{Role: "assistant", ToolCalls: []ToolCall{{ID: "t1", Name: "read_project_file", Arguments: nil}}},
+		{Role: "tool", ToolCallID: "t1", Content: strings.Repeat("a", 50000)},
+		{Role: "assistant", Content: "继续"},
+		{Role: "tool", ToolCallID: "t1", Content: "最近结果"},
+	}
+	compressed := compressIfOverBudget(messages, 1000)
+	if len(compressed) >= len(messages) {
+		t.Errorf("应压缩消息，原 %d 条 → %d 条", len(messages), len(compressed))
+	}
+	// 折叠标记应存在。
+	foundNote := false
+	for _, message := range compressed {
+		if message.Role == "user" && strings.Contains(message.Content, "已折叠") {
+			foundNote = true
+			break
+		}
+	}
+	if !foundNote {
+		t.Errorf("压缩后应含折叠标记：%+v", compressed)
+	}
+	// 最近的消息应保留；末尾的孤立 tool（无前置 tool_calls）会被清除。
+	last := compressed[len(compressed)-1]
+	if last.Role != "assistant" || last.Content != "继续" {
+		t.Errorf("最近合法消息应保留：%+v", last)
+	}
+}
+
+func TestCompressIfOverBudgetDisabled(t *testing.T) {
+	messages := []Message{{Role: "user", Content: strings.Repeat("x", 5000)}}
+	if got := compressIfOverBudget(messages, 0); len(got) != len(messages) {
+		t.Error("budget=0 时不应压缩")
+	}
+}
+
+func TestCompressIfOverBudgetUnderLimit(t *testing.T) {
+	messages := []Message{{Role: "user", Content: "短"}}
+	if got := compressIfOverBudget(messages, 10000); len(got) != 1 {
+		t.Error("未超限时不应压缩")
+	}
+}
+
+func TestPruneOrphanTools(t *testing.T) {
+	// 孤立 tool（无前置 tool_calls）应被删除。
+	messages := []Message{
+		{Role: "tool", ToolCallID: "orphan", Content: "没有对应声明"},
+		{Role: "user", Content: "问题"},
+		{Role: "assistant", ToolCalls: []ToolCall{{ID: "t1", Name: "read_project_file", Arguments: nil}}},
+		{Role: "tool", ToolCallID: "t1", Content: "结果"},
+	}
+	pruned := pruneOrphanTools(messages)
+	if len(pruned) != 3 {
+		t.Fatalf("应删除孤立 tool，保留 3 条，实际 %d：%+v", len(pruned), pruned)
+	}
+	if pruned[0].Role != "user" {
+		t.Errorf("第一个应为 user：%+v", pruned[0])
+	}
+}
+
+// 压缩后若边界切开 tool_calls/tool 配对，孤立 tool 应被删除。
+func TestCompressDropsOrphanedTools(t *testing.T) {
+	// 大 output 使总超限；让 assistant(tool_calls) 在折叠边界外。
+	messages := []Message{
+		{Role: "user", Content: "q"},
+		{Role: "assistant", ToolCalls: []ToolCall{{ID: "t1", Name: "read_project_file", Arguments: nil}}},
+		{Role: "tool", ToolCallID: "t1", Content: strings.Repeat("x", 50000)},
+		{Role: "user", Content: "继续"},
+	}
+	compressed := compressIfOverBudget(messages, 500)
+	for _, message := range compressed {
+		if message.Role == "tool" {
+			t.Fatalf("不应存在孤立 tool 消息：%+v", message)
+		}
+	}
+}
+
+// TestParallelReadTools verifies read-only tools in one round run concurrently
+// (not serially), cutting latency when the model asks for multiple reads.
+func TestParallelReadTools(t *testing.T) {
+	// 第一轮返回两个只读调用，第二轮停止。
+	calls := 0
+	withTransport(t, func(req *http.Request) (*http.Response, error) {
+		calls++
+		if calls == 1 {
+			return jsonResponse(t, req, `{"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{"id":"a","type":"function","function":{"name":"read_project_file","arguments":"{}"}},{"id":"b","type":"function","function":{"name":"read_project_file","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`)
+		}
+		return jsonResponse(t, req, `{"choices":[{"message":{"role":"assistant","content":"完成"},"finish_reason":"stop"}]}`)
+	})
+	active := 0
+	var mu sync.Mutex
+	var maxActive int
+	registry := NewRegistry()
+	registry.Add(Tool{Name: "read_project_file", Description: "读", Parameters: map[string]any{"type": "object"}}, func(ctx context.Context, args json.RawMessage) (string, error) {
+		mu.Lock()
+		active++
+		if active > maxActive {
+			maxActive = active
+		}
+		mu.Unlock()
+		// 阻塞模拟耗时读。
+		select {
+		case <-ctx.Done():
+			return "取消", ctx.Err()
+		case <-time.After(50 * time.Millisecond):
+		}
+		mu.Lock()
+		active--
+		mu.Unlock()
+		return "内容", nil
+	})
+	cfg := ai.Resolved{BaseURL: "https://provider.test", Model: "m", APIKey: "k"}
+	loop := NewLoop(cfg, registry, "", 3)
+	if _, err := loop.Run(context.Background(), []Message{{Role: "user", Content: "读两个文件"}}); err != nil {
+		t.Fatal(err)
+	}
+	if maxActive < 2 {
+		t.Errorf("两个只读工具应并发执行，maxActive=%d", maxActive)
+	}
+}
+
+// TestLoopMessagesIncludeFinalAnswer ensures the returned transcript contains
+// the final assistant answer, so session persistence can restore it.
+func TestLoopMessagesIncludeFinalAnswer(t *testing.T) {
+	withTransport(t, func(req *http.Request) (*http.Response, error) {
+		return jsonResponse(t, req, `{"choices":[{"message":{"role":"assistant","content":"最终总结"},"finish_reason":"stop"}]}`)
+	})
+	registry := NewRegistry()
+	cfg := ai.Resolved{BaseURL: "https://provider.test", Model: "m", APIKey: "k"}
+	loop := NewLoop(cfg, registry, "", 10)
+	result, err := loop.Run(context.Background(), messageFixture())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Answer != "最终总结" {
+		t.Errorf("Answer 错误：%q", result.Answer)
+	}
+	found := false
+	for _, message := range result.Messages {
+		if message.Role == "assistant" && message.Content == "最终总结" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("transcript 应包含最终 assistant 回答：%+v", rolesOf(result.Messages))
 	}
 }

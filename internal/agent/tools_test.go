@@ -32,6 +32,18 @@ func (f *fakeFiles) WriteFile(root, path, content string) error {
 	return nil
 }
 
+func (f *fakeFiles) CreateFile(root, path, content string) error {
+	f.files[path] = content
+	f.loaded = append(f.loaded, path)
+	return nil
+}
+
+func (f *fakeFiles) DeleteFile(root, path string) error {
+	delete(f.files, path)
+	f.loaded = append(f.loaded, path)
+	return nil
+}
+
 func (f *fakeFiles) ListFiles(root string) ([]string, error) {
 	out := make([]string, 0, len(f.files))
 	for path := range f.files {
@@ -57,8 +69,9 @@ func TestEditFileReplacesUniquely(t *testing.T) {
 
 	out, err := callTool(t, registry, "agent_edit_file", map[string]any{
 		"path": "src/index.js",
-		"old":  "const b = 2",
-		"new":  "const b = 3",
+		"edits": []map[string]any{
+			{"old": "const b = 2", "new": "const b = 3"},
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -77,7 +90,9 @@ func TestEditFileRejectsAmbiguousOld(t *testing.T) {
 	registry := ProjectTools("/p", files, NewCommandRunner())
 
 	if _, err := callTool(t, registry, "agent_edit_file", map[string]any{
-		"path": "src/index.js", "old": "const x = 1", "new": "const y = 1",
+		"path": "src/index.js", "edits": []map[string]any{
+			{"old": "const x = 1", "new": "const y = 1"},
+		},
 	}); err == nil || !strings.Contains(err.Error(), "出现 2 次") {
 		t.Fatalf("应拒绝歧义匹配，实际：%v", err)
 	}
@@ -92,7 +107,9 @@ func TestEditFileRejectsMissingOld(t *testing.T) {
 	registry := ProjectTools("/p", files, NewCommandRunner())
 
 	if _, err := callTool(t, registry, "agent_edit_file", map[string]any{
-		"path": "src/index.js", "old": "const zzz = 9", "new": "x",
+		"path": "src/index.js", "edits": []map[string]any{
+			{"old": "const zzz = 9", "new": "x"},
+		},
 	}); err == nil {
 		t.Fatal("应拒绝不存在的 old")
 	}
@@ -164,5 +181,86 @@ func TestProjectToolsSchemasAreValid(t *testing.T) {
 		if string(schema.Properties) == "" {
 			t.Errorf("工具 %s 缺少 properties 字段", tool.Name)
 		}
+	}
+}
+
+func TestEditFileMultiHunk(t *testing.T) {
+	files := newFakeFiles("/p")
+	files.files["src/a.ts"] = "const a = 1\nconst b = 2\nconst c = 3\n"
+	registry := ProjectTools("/p", files, NewCommandRunner())
+
+	out, err := callTool(t, registry, "agent_edit_file", map[string]any{
+		"path": "src/a.ts",
+		"edits": []map[string]any{
+			{"old": "const a = 1", "new": "const a = 10"},
+			{"old": "const c = 3", "new": "const c = 30"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "2 处") {
+		t.Errorf("应报告 2 处修改：%q", out)
+	}
+	if got := files.files["src/a.ts"]; got != "const a = 10\nconst b = 2\nconst c = 30\n" {
+		t.Errorf("多 hunk 修改错误：%q", got)
+	}
+}
+
+// TestEditFileAtomicRollback: 第二个 hunk 不匹配时，第一个 hunk 不应被写入。
+func TestEditFileAtomicRollback(t *testing.T) {
+	files := newFakeFiles("/p")
+	files.files["src/a.ts"] = "const a = 1\nconst b = 2\n"
+	registry := ProjectTools("/p", files, NewCommandRunner())
+
+	_, err := callTool(t, registry, "agent_edit_file", map[string]any{
+		"path": "src/a.ts",
+		"edits": []map[string]any{
+			{"old": "const a = 1", "new": "const a = 10"},
+			{"old": "不存在的文本", "new": "x"},
+		},
+	})
+	if err == nil {
+		t.Fatal("应拒绝失败的 hunk")
+	}
+	if got := files.files["src/a.ts"]; got != "const a = 1\nconst b = 2\n" {
+		t.Errorf("hunk 失败时不应写入任何修改：%q", got)
+	}
+}
+
+func TestEditFileCreate(t *testing.T) {
+	files := newFakeFiles("/p")
+	registry := ProjectTools("/p", files, NewCommandRunner())
+
+	out, err := callTool(t, registry, "agent_edit_file", map[string]any{
+		"path": "src/new.ts", "mode": "create", "content": "export const x = 1\n",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "已创建") {
+		t.Errorf("应提示创建：%q", out)
+	}
+	if files.files["src/new.ts"] != "export const x = 1\n" {
+		t.Errorf("新文件内容错误：%q", files.files["src/new.ts"])
+	}
+}
+
+func TestEditFileDelete(t *testing.T) {
+	files := newFakeFiles("/p")
+	files.files["src/old.ts"] = "export const x = 1\n"
+	registry := ProjectTools("/p", files, NewCommandRunner())
+
+	out, err := callTool(t, registry, "agent_edit_file", map[string]any{
+		"path": "src/old.ts", "mode": "delete",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "已删除") {
+		t.Errorf("应提示删除：%q", out)
+	}
+	if _, ok := files.files["src/old.ts"]; ok {
+		t.Error("文件应已被删除")
 	}
 }

@@ -303,6 +303,63 @@ func (Manager) WriteProjectFile(root, name, content string) (Result, error) {
 	return Result{Path: path, Output: "已保存。"}, nil
 }
 
+// CreateProjectFile creates a new source file within a managed project. It
+// rejects files that already exist and inherits the same path, size and
+// sensitivity checks as WriteProjectFile.
+func (Manager) CreateProjectFile(root, name, content string) (Result, error) {
+	if len(content) > maxMCPFileSize {
+		return Result{}, errors.New("文件内容超过 1 MiB，MCP 不会写入")
+	}
+	path, err := managedProjectFile(root, name)
+	if err != nil {
+		return Result{}, err
+	}
+	if _, err := os.Stat(filepath.Dir(path)); err != nil {
+		if permissionError(err) {
+			return Result{}, permissionAdvice("访问 " + filepath.Dir(name))
+		}
+		return Result{}, errors.New("目标目录不存在；MCP 不会自动创建目录")
+	}
+	if _, err := os.Lstat(path); err == nil {
+		return Result{}, errors.New("目标文件已存在；如需修改请用 edit 模式")
+	} else if !os.IsNotExist(err) {
+		return Result{}, fmt.Errorf("无法检查目标文件：%w", err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		if permissionError(err) {
+			return Result{}, permissionAdvice("创建 " + filepath.Base(path))
+		}
+		return Result{}, fmt.Errorf("创建失败：%w", err)
+	}
+	return Result{Path: path, Output: "已创建。"}, nil
+}
+
+// DeleteProjectFile removes a non-sensitive source file within a managed
+// project. It rejects symlinks and refuses to delete directories.
+func (Manager) DeleteProjectFile(root, name string) (Result, error) {
+	path, err := managedProjectFile(root, name)
+	if err != nil {
+		return Result{}, err
+	}
+	info, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return Result{}, errors.New("目标文件不存在")
+	}
+	if err != nil {
+		return Result{}, fmt.Errorf("无法检查目标文件：%w", err)
+	}
+	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+		return Result{}, errors.New("只能删除普通项目文件")
+	}
+	if err := os.Remove(path); err != nil {
+		if permissionError(err) {
+			return Result{}, permissionAdvice("删除 " + filepath.Base(path))
+		}
+		return Result{}, fmt.Errorf("删除失败：%w", err)
+	}
+	return Result{Path: path, Output: "已删除。"}, nil
+}
+
 func (Manager) LocalPackages(root string) ([]LocalPackage, error) {
 	path, err := projectPath(root)
 	if err != nil {

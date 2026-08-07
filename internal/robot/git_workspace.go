@@ -171,7 +171,17 @@ func GitWorkspaceAction(root, action, value, message string) (Result, error) {
 	}
 	switch action {
 	case "fetch":
-		output, err := gitRun(path, "fetch", "--prune", "--tags", "origin")
+		// A shallow clone (--depth 1) only carries the branch that was cloned.
+		// Convert it to a full history first, then fetch every remote branch
+		// explicitly; --unshallow alone only fills the current branch's history
+		// and never discovers the other refs. Without this, later fetch/pull
+		// keep seeing a single branch and a truncated log.
+		if shallow, err := gitRun(path, "rev-parse", "--is-shallow-repository"); err == nil && strings.TrimSpace(shallow) == "true" {
+			if unshallow, err := gitRun(path, "fetch", "--unshallow", "origin"); err != nil {
+				return Result{Path: path, Output: unshallow}, err
+			}
+		}
+		output, err := gitRun(path, "fetch", "--prune", "--tags", "origin", "+refs/heads/*:refs/remotes/origin/*")
 		return Result{Path: path, Output: output}, err
 	case "pull":
 		output, err := gitRun(path, "pull", "--ff-only")

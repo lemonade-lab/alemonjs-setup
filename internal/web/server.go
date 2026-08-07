@@ -2185,6 +2185,7 @@ func (s *server) robotGitCloneHandler(w http.ResponseWriter, r *http.Request) {
 		Branch      string `json:"branch"`
 		Name        string `json:"name"`
 		Mirror      string `json:"mirror"`
+		Depth       int    `json:"depth"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 		writeError(w, http.StatusBadRequest, "Git 信息无法识别。")
@@ -2213,7 +2214,7 @@ func (s *server) robotGitCloneHandler(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		s.updateOperation(created.ID, 35, "正在连接远程仓库…", "", false)
 		s.updateOperation(created.ID, 60, "正在下载仓库文件…", "", false)
-		result, err := robot.CloneRepository(destination, input.Repository, input.Branch, input.Name, input.Mirror)
+		result, err := robot.CloneRepository(destination, input.Repository, input.Branch, input.Name, input.Mirror, input.Depth)
 		if err != nil {
 			s.updateOperation(created.ID, 100, result.Output, err.Error(), true)
 			return
@@ -2359,6 +2360,18 @@ func findGoal(id string) (goal, bool) {
 
 func (s *server) ginHeaders() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		// 开发模式下前端 Vite（localhost:5173）的 SSE 流式请求绕过代理直连
+		// 后端，需要跨域许可。仅对 5173 本地来源放行，其余一律不加。
+		origin := c.GetHeader("Origin")
+		if origin == "http://localhost:5173" || origin == "http://127.0.0.1:5173" {
+			c.Header("Access-Control-Allow-Origin", origin)
+			c.Header("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
+			c.Header("Access-Control-Allow-Headers", "Content-Type")
+			if c.Request.Method == http.MethodOptions {
+				c.AbortWithStatus(http.StatusNoContent)
+				return
+			}
+		}
 		c.Header("X-Content-Type-Options", "nosniff")
 		// Registered robot WebViews are embedded through the other loopback
 		// hostname, so X-Frame-Options cannot be SAMEORIGIN. Their own CSP

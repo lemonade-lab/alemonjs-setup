@@ -84,3 +84,34 @@ func TestTitleFromMessage(t *testing.T) {
 		}
 	}
 }
+
+// TestCORSDevOrigin validates the preflight response for the Vite dev origin,
+// which the SSE direct-connect path relies on.
+func TestCORSDevOrigin(t *testing.T) {
+	request := httptest.NewRequest(http.MethodOptions, "/api/v1/agent/chat?stream=1", nil)
+	request.Header.Set("Origin", "http://localhost:5173")
+	request.Header.Set("Access-Control-Request-Method", "POST")
+	request.Header.Set("Access-Control-Request-Headers", "content-type")
+	response := httptest.NewRecorder()
+	newTestServer().ServeHTTP(response, request)
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("预检状态码 = %d，应为 204", response.Code)
+	}
+	if got := response.Header().Get("Access-Control-Allow-Origin"); got != "http://localhost:5173" {
+		t.Errorf("Access-Control-Allow-Origin = %q", got)
+	}
+	if got := response.Header().Get("Access-Control-Allow-Methods"); got == "" {
+		t.Error("缺少 Access-Control-Allow-Methods")
+	}
+}
+
+// TestCORSUnknownOriginRejected ensures non-dev origins get no CORS headers.
+func TestCORSUnknownOriginRejected(t *testing.T) {
+	request := httptest.NewRequest(http.MethodOptions, "/api/v1/agent/chat?stream=1", nil)
+	request.Header.Set("Origin", "https://evil.example")
+	response := httptest.NewRecorder()
+	newTestServer().ServeHTTP(response, request)
+	if got := response.Header().Get("Access-Control-Allow-Origin"); got != "" {
+		t.Errorf("未知 origin 不应有 CORS 头：%q", got)
+	}
+}

@@ -13,10 +13,11 @@ import cn from 'classnames'
 import Markdown from 'markdown-to-jsx'
 import {
   Archive,
-  Bot,
   ArrowLeft,
-  Pencil,
   ArrowRight,
+  ArrowRightLeft,
+  Bot,
+  Cable,
   Check,
   ChevronDown,
   ChevronRight,
@@ -25,9 +26,10 @@ import {
   Eye,
   EyeOff,
   Folder,
-  HardDrive,
   GitBranch,
+  Globe,
   Globe2,
+  HardDrive,
   History,
   KeyRound,
   Link,
@@ -35,17 +37,26 @@ import {
   MoreVertical,
   Network,
   Package,
+  Pencil,
   Pin,
   Play,
   Plug,
   Plus,
+  Radio,
   RefreshCw,
+  Route,
+  ScanSearch,
   Search,
   Send,
   Settings,
+  Shield,
   Terminal,
   Trash2,
-  X
+  TriangleAlert,
+  Waypoints,
+  Wifi,
+  X,
+  type LucideIcon
 } from 'lucide-react'
 import { RobotConfigForm } from './RobotConfigForm'
 import { ThemeToggle } from './ThemeToggle'
@@ -59,6 +70,7 @@ import { SetupUpdateButton } from './SetupUpdateButton'
 import { AgentChatPage } from './AgentChat'
 import { ErrorNotice } from './ErrorNotice'
 import { ConfirmDialog } from './ConfirmDialog'
+import { SetupPluginResult } from './SetupPluginResult'
 import { AuthControl } from './AuthControl'
 import { RobotGitControl } from './RobotGitControl'
 import { SSHControl } from './SSHControl'
@@ -177,8 +189,29 @@ const emptyGitBranches: Array<{
   commits: typeof emptyGitCommits
 }> = []
 
+const setupPluginIconMap: Record<string, LucideIcon> = {
+  network: Network,
+  forward: ArrowRightLeft,
+  forwarding: ArrowRightLeft,
+  interface: Radio,
+  lan: Radio,
+  wifi: Wifi,
+  route: Route,
+  dns: Globe,
+  mirror: Globe,
+  proxy: Globe,
+  firewall: Shield,
+  shield: Shield,
+  port: Cable,
+  traffic: Waypoints
+}
+
 function setupPluginIcon(icon?: string) {
-  return icon === 'network' ? <Network /> : <Plug />
+  const Icon = icon ? setupPluginIconMap[icon] : undefined
+  if (Icon) return <Icon />
+  if (icon && icon.length === 1)
+    return <span className="inline-block leading-none">{icon}</span>
+  return <Plug />
 }
 
 function projectName(path: string) {
@@ -692,6 +725,20 @@ export function Dashboard({
     void loadAgentSessions()
   }, [loadAgentSessions])
   useEffect(() => {
+    const refresh = () => {
+      void loadAgentSessions()
+    }
+    const clearSession = () => {
+      setAgentSessionId('')
+    }
+    window.addEventListener('alx:agent-session-created', refresh)
+    window.addEventListener('alx:agent-new-session', clearSession)
+    return () => {
+      window.removeEventListener('alx:agent-session-created', refresh)
+      window.removeEventListener('alx:agent-new-session', clearSession)
+    }
+  }, [loadAgentSessions])
+  useEffect(() => {
     const closeWhenAnotherToolOpens = (event: Event) => {
       if ((event as CustomEvent<string>).detail !== 'environment')
         setEnvironmentOpen(false)
@@ -923,7 +970,12 @@ export function Dashboard({
           dispatch(
             workspaceApi.util.invalidateTags([
               { type: 'LocalPackages', id: root },
-              { type: 'RobotWebViews', id: root }
+              { type: 'RobotWebViews', id: root },
+              // Installing/uninstalling a connection package changes whether
+              // its alemon.config.yaml section can be parsed, so drop any
+              // cached PackageConfig for this root.
+              { type: 'PackageConfig', id: root },
+              { type: 'PackageConfig', id: `${root}:${data.package ?? ''}` }
             ])
           )
         }
@@ -1058,7 +1110,8 @@ export function Dashboard({
     repository: string,
     branch: string,
     name: string,
-    mirror: string
+    mirror: string,
+    depth: number
   ) {
     if (!gitDestination) return
     setBusy(true)
@@ -1072,7 +1125,8 @@ export function Dashboard({
           repository,
           branch,
           name,
-          mirror
+          mirror,
+          depth
         })
       })
       const data = (await response.json()) as {
@@ -1166,14 +1220,15 @@ export function Dashboard({
     closeTemporaryContentPage()
     setSystemFeature(null)
     setPage('robot')
+    if (typeof sessionID === 'object' && sessionID !== null) {
+      console.warn('openAI 收到对象参数，已忽略：', sessionID)
+      sessionID = ''
+    }
     setAgentSessionId(sessionID ?? '')
     setAIOpen(true)
     setOutput('')
-  }
-  // 新增对话直接打开干净页；首个问题发出时后端自动生成标题。
-  function openNewSession() {
-    if (!activeProject) return
-    openAI()
+    // 每次进入 Agent 都刷新会话列表，确保"记录"能看到新建的对话。
+    void loadAgentSessions()
   }
   function requestRename(id: string, title: string) {
     setRenameTarget({ id, title })
@@ -1360,11 +1415,29 @@ export function Dashboard({
               root,
               action,
               ...(packageName ? { package: packageName } : {})
-            }).then(success => {
-              void refetchRuntime()
+            }).then(async success => {
+              if (success) {
+                // Refresh before the caller continues (e.g. installing a
+                // connection package) so the runtime overview's per-platform
+                // "installed" flag is already fresh. A failed refresh must not
+                // reject the original operation result.
+                try {
+                  await refetchRuntime().unwrap()
+                  if (runtime?.pm2Configured) void refetchPM2Status()
+                } catch {
+                  // Keep the original result; the overview refetches on next poll.
+                }
+              }
               return success
             })
           }
+          onRefreshOverview={async () => {
+            try {
+              return await refetchRuntime().unwrap()
+            } catch {
+              return runtime
+            }
+          }}
           pm2Running={Boolean(pm2Status?.running)}
           onSaveLogin={saveRuntimeLogin}
           onSavePackageConfig={savePackageConfig}
@@ -1721,7 +1794,6 @@ export function Dashboard({
               onFeature={selectSystemFeature}
               onOpenAgent={openAI}
               onPinProject={pinProject}
-              onNewSession={openNewSession}
               onRenameSession={requestRename}
               onArchiveSession={archiveSession}
               onAdd={chooseDirectories}
@@ -1829,7 +1901,6 @@ function ProjectRail({
   onRemove,
   onOpenAgent,
   onPinProject,
-  onNewSession,
   onRenameSession,
   onArchiveSession
 }: {
@@ -1845,7 +1916,6 @@ function ProjectRail({
   onRemove: (id: string) => void
   onOpenAgent: (sessionID?: string) => void
   onPinProject: (id: string) => void
-  onNewSession: () => void
   onRenameSession: (id: string, title: string) => void
   onArchiveSession: (id: string) => void
 }) {
@@ -1949,7 +2019,6 @@ function ProjectRail({
               onRemove={onRemove}
               onOpenAgent={onOpenAgent}
               onPin={onPinProject}
-              onNewSession={onNewSession}
               onRename={onRenameSession}
               onArchive={onArchiveSession}
             />
@@ -1984,7 +2053,8 @@ function GitCloneDialog({
     repository: string,
     branch: string,
     name: string,
-    mirror: string
+    mirror: string,
+    depth: number
   ) => Promise<void>
 }) {
   const [repository, setRepository] = useState('')
@@ -1993,6 +2063,7 @@ function GitCloneDialog({
   const [branchesLoading, setBranchesLoading] = useState(false)
   const [name, setName] = useState('')
   const [mirror, setMirror] = useState('official')
+  const [depth, setDepth] = useState(1)
   const [connection, setConnection] = useState<'ssh' | 'https'>('https')
   const [sshKeys, setSSHKeys] = useState<Array<{ name: string }>>([])
   const [sshLoading, setSSHLoading] = useState(false)
@@ -2009,6 +2080,7 @@ function GitCloneDialog({
       setBranchesLoading(false)
       setName('')
       setMirror('official')
+      setDepth(1)
       setConnection('https')
       setSSHKeys([])
       setTarget(null)
@@ -2268,6 +2340,22 @@ function GitCloneDialog({
                   <option value="ghproxy-net">GitHub 加速 · ghproxy.net</option>
                 </select>
               </label>
+              <label className="grid gap-1 text-xs font-semibold text-slate-600">
+                克隆深度
+                <select
+                  className="h-9 rounded-md border border-slate-300 bg-white px-2.5 text-sm font-normal text-slate-800 outline-none focus:border-brand-600 focus:ring-2 focus:ring-brand-100"
+                  value={depth}
+                  onChange={event => setDepth(Number(event.target.value))}
+                >
+                  <option value={1}>仅最新提交（推荐）</option>
+                  <option value={50}>最近 50 条提交</option>
+                  <option value={200}>最近 200 条提交</option>
+                  <option value={0}>完整历史</option>
+                </select>
+                <small className="font-normal text-slate-400">
+                  深度越浅下载越快；想看到其他分支的提交历史请选完整历史。
+                </small>
+              </label>
             </div>
           </section>
           <section className="grid gap-3 sm:grid-cols-2">
@@ -2336,7 +2424,8 @@ function GitCloneDialog({
                 repository.trim(),
                 branch.trim(),
                 name.trim(),
-                mirror
+                mirror,
+                depth
               )
             }
           >
@@ -2480,7 +2569,6 @@ function ProjectItem({
   onRemove,
   onOpenAgent,
   onPin,
-  onNewSession,
   onRename,
   onArchive
 }: {
@@ -2491,7 +2579,6 @@ function ProjectItem({
   onRemove: (id: string) => void
   onOpenAgent: (sessionID?: string) => void
   onPin: (id: string) => void
-  onNewSession: () => void
   onRename: (id: string, title: string) => void
   onArchive: (id: string) => void
 }) {
@@ -2593,16 +2680,6 @@ function ProjectItem({
                 置顶
               </button>
               <button
-                className="flex min-h-8 items-center gap-2 rounded px-2 text-left text-xs text-slate-600 transition hover:bg-slate-100"
-                onClick={() => {
-                  onNewSession()
-                  setMoreOpen(false)
-                }}
-              >
-                <Plus className="size-3.5 text-slate-400" />
-                新增对话
-              </button>
-              <button
                 className="flex min-h-8 items-center gap-2 rounded px-2 text-left text-xs text-red-600 transition hover:bg-red-50"
                 onClick={() => {
                   onRemove(project.id)
@@ -2618,13 +2695,6 @@ function ProjectItem({
       </div>
       {recordsOpen && (
         <div className="mt-2 grid gap-0.5 border-t border-slate-200 pt-2">
-          <button
-            className="flex min-h-7 items-center gap-1.5 rounded px-1.5 text-left text-[11px] text-slate-500 transition hover:bg-slate-100 hover:text-slate-700"
-            onClick={onNewSession}
-          >
-            <Plus className="size-3" />
-            新增对话
-          </button>
           {ownSessions.length === 0 ? (
             <p className="px-1.5 py-1 text-[11px] text-slate-400">
               还没有对话记录
@@ -3333,6 +3403,8 @@ function SetupPluginCenter({ plugin }: { plugin: SetupPlugin }) {
   const visibleActions = (plugin.actions ?? []).filter(
     action => !action.page || action.page === current?.id
   )
+  const basicActions = visibleActions.filter(action => !action.advanced)
+  const advancedActions = visibleActions.filter(action => action.advanced)
 
   useEffect(() => {
     setPage(plugin.pages[0]?.id ?? 'overview')
@@ -3416,153 +3488,49 @@ function SetupPluginCenter({ plugin }: { plugin: SetupPlugin }) {
                 : '当前系统缺少此插件的执行器。'}
             </p>
           )}
-          {visibleActions.length > 0 && (
+          {basicActions.length > 0 && (
             <div className="setup-plugin-actions grid overflow-hidden rounded-xl border border-slate-200 dark:border-slate-700">
-              {visibleActions.map(action => {
-                const needsEditor = Boolean(
-                  action.confirm || action.fields?.length
-                )
-                if (!needsEditor)
-                  return (
-                    <section
-                      className="setup-plugin-action border-b border-slate-100 last:border-b-0 dark:border-slate-800"
-                      key={action.id}
-                    >
-                      <div className="setup-plugin-action-row flex min-h-14 items-center justify-between gap-3 px-3 py-2">
-                        <span className="grid min-w-0 gap-0.5">
-                          <strong className="text-sm font-semibold text-slate-800 dark:text-slate-100">
-                            {action.label}
-                          </strong>
-                          {action.description && (
-                            <small className="text-xs leading-5 text-slate-400">
-                              {action.description}
-                            </small>
-                          )}
-                        </span>
-                        <button
-                          className="inline-flex min-h-8 shrink-0 items-center justify-center rounded-lg bg-brand-600 px-3 text-xs font-semibold text-white transition hover:bg-brand-700 disabled:cursor-not-allowed disabled:opacity-50"
-                          disabled={!plugin.runnable || isLoading}
-                          onClick={() => void run(action)}
-                        >
-                          {isLoading ? '启动中…' : action.label}
-                        </button>
-                      </div>
-                    </section>
-                  )
-                return (
-                  <section
-                    className={cn(
-                      'setup-plugin-action border-b border-slate-100 last:border-b-0 dark:border-slate-800',
-                      activeAction === action.id &&
-                        'bg-brand-50/40 dark:bg-brand-100/20'
-                    )}
-                    key={action.id}
-                  >
-                    <button
-                      className="setup-plugin-action-choice flex min-h-14 w-full items-center justify-between gap-3 bg-transparent px-3 py-2 text-left transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50 dark:hover:bg-slate-800"
-                      disabled={!plugin.runnable}
-                      onClick={() =>
-                        setActiveAction(
-                          activeAction === action.id ? '' : action.id
-                        )
-                      }
-                    >
-                      <span>
-                        <strong className="text-sm font-semibold text-slate-800 dark:text-slate-100">
-                          {action.label}
-                        </strong>
-                        {action.description && (
-                          <small className="text-xs leading-5 text-slate-400">
-                            {action.description}
-                          </small>
-                        )}
-                      </span>
-                      <b className="text-lg font-normal text-brand-600 dark:text-brand-200">
-                        {activeAction === action.id ? '−' : '+'}
-                      </b>
-                    </button>
-                    {activeAction === action.id && (
-                      <div className="setup-plugin-action-editor grid gap-3 border-t border-slate-200 px-3 py-3 dark:border-slate-700">
-                        {action.fields?.length ? (
-                          <div className="setup-plugin-fields flex flex-wrap gap-3">
-                            {action.fields.map(field => (
-                              <label
-                                className="grid min-w-[150px] flex-1 gap-1 text-xs font-semibold text-slate-500"
-                                key={field.key}
-                              >
-                                {field.label}
-                                {field.type === 'select' ? (
-                                  <select
-                                    className="min-h-9 rounded-lg border border-slate-200 bg-white px-2 text-sm font-normal text-slate-700 outline-none focus:border-brand-600 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-200"
-                                    value={
-                                      values[`${action.id}:${field.key}`] ??
-                                      field.default ??
-                                      ''
-                                    }
-                                    onChange={event =>
-                                      setValues({
-                                        ...values,
-                                        [`${action.id}:${field.key}`]:
-                                          event.target.value
-                                      })
-                                    }
-                                  >
-                                    {(field.options ?? []).map(option => (
-                                      <option
-                                        key={option.value}
-                                        value={option.value}
-                                      >
-                                        {option.label}
-                                      </option>
-                                    ))}
-                                  </select>
-                                ) : (
-                                  <input
-                                    className="min-h-9 rounded-lg border border-slate-200 bg-white px-2 text-sm font-normal text-slate-700 outline-none focus:border-brand-600 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-200"
-                                    type={field.type}
-                                    value={
-                                      values[`${action.id}:${field.key}`] ?? ''
-                                    }
-                                    onChange={event =>
-                                      setValues({
-                                        ...values,
-                                        [`${action.id}:${field.key}`]:
-                                          event.target.value
-                                      })
-                                    }
-                                    placeholder={field.label}
-                                  />
-                                )}
-                              </label>
-                            ))}
-                          </div>
-                        ) : null}
-                        <footer className="flex items-center justify-end gap-2">
-                          {action.confirm && (
-                            <small className="mr-auto text-xs text-amber-700 dark:text-amber-300">
-                              此操作会修改本机系统设置。
-                            </small>
-                          )}
-                          <button
-                            className="inline-flex min-h-8 items-center justify-center rounded-lg border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-600 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-300"
-                            onClick={() => setActiveAction('')}
-                          >
-                            取消
-                          </button>
-                          <button
-                            className="inline-flex min-h-8 items-center justify-center rounded-lg bg-brand-600 px-3 text-xs font-semibold text-white transition hover:bg-brand-700 disabled:opacity-50"
-                            disabled={isLoading}
-                            onClick={() => void run(action)}
-                          >
-                            {isLoading ? '启动中…' : '确认执行'}
-                          </button>
-                        </footer>
-                      </div>
-                    )}
-                  </section>
-                )
-              })}
+              {basicActions.map(action => (
+                <SetupPluginActionItem
+                  key={action.id}
+                  action={action}
+                  runnable={plugin.runnable}
+                  isLoading={isLoading}
+                  activeAction={activeAction}
+                  values={values}
+                  onToggle={id =>
+                    setActiveAction(activeAction === id ? '' : id)
+                  }
+                  onValues={setValues}
+                  onRun={run}
+                />
+              ))}
             </div>
+          )}
+          {advancedActions.length > 0 && (
+            <details className="setup-plugin-advanced group overflow-hidden rounded-xl border border-slate-200 dark:border-slate-700">
+              <summary className="flex min-h-11 cursor-pointer list-none select-none items-center justify-between gap-3 bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-600 transition hover:bg-slate-100 dark:bg-slate-900 dark:text-slate-300 dark:hover:bg-slate-800 [&::-webkit-details-marker]:hidden">
+                高级操作
+                <ChevronDown className="size-4 shrink-0 transition-transform group-open:rotate-180" />
+              </summary>
+              <div className="setup-plugin-advanced-actions grid border-t border-slate-200 dark:border-slate-700">
+                {advancedActions.map(action => (
+                  <SetupPluginActionItem
+                    key={action.id}
+                    action={action}
+                    runnable={plugin.runnable}
+                    isLoading={isLoading}
+                    activeAction={activeAction}
+                    values={values}
+                    onToggle={id =>
+                      setActiveAction(activeAction === id ? '' : id)
+                    }
+                    onValues={setValues}
+                    onRun={run}
+                  />
+                ))}
+              </div>
+            </details>
           )}
           {message && (
             <p className="setup-plugin-message rounded-lg border border-brand-200 bg-brand-50 px-3 py-2 text-xs text-brand-600 dark:border-brand-200 dark:bg-brand-100/40 dark:text-brand-200">
@@ -3570,42 +3538,191 @@ function SetupPluginCenter({ plugin }: { plugin: SetupPlugin }) {
             </p>
           )}
           {pluginTask && (
-            <section
-              className={cn(
-                'grid gap-2 rounded-xl border p-3 text-xs',
-                pluginTask.status === 'failed'
-                  ? 'border-rose-200 bg-rose-50 text-rose-800 dark:border-rose-900 dark:bg-rose-950/30 dark:text-rose-200'
-                  : pluginTask.status === 'completed'
-                    ? 'border-brand-200 bg-brand-50 text-brand-700 dark:border-brand-200 dark:bg-brand-100/30 dark:text-brand-200'
-                    : 'border-sky-200 bg-sky-50 text-sky-800 dark:border-sky-900 dark:bg-sky-950/30 dark:text-sky-200'
-              )}
-            >
-              <header className="flex items-center justify-between gap-3">
-                <strong>
-                  {pluginTask.status === 'running'
-                    ? '正在执行诊断…'
-                    : pluginTask.status === 'failed'
-                      ? '操作未完成'
-                      : '检查完成'}
-                </strong>
-                {pluginTask.status !== 'running' && (
-                  <button
-                    className="text-xs font-semibold underline underline-offset-2"
-                    onClick={() => setTaskID('')}
-                  >
-                    收起
-                  </button>
-                )}
-              </header>
-              <pre className="m-0 max-h-72 overflow-auto whitespace-pre-wrap rounded-lg bg-white/70 p-2 text-[11px] leading-5 text-slate-700 dark:bg-slate-950/50 dark:text-slate-200">
-                {pluginTask.status === 'failed'
-                  ? pluginTask.error || '插件操作失败。'
-                  : pluginTask.output || '正在等待插件返回结果…'}
-              </pre>
-            </section>
+            <SetupPluginResult
+              status={pluginTask.status}
+              output={pluginTask.output}
+              error={pluginTask.error}
+              onDismiss={() => setTaskID('')}
+            />
           )}
         </section>
       </div>
+    </section>
+  )
+}
+
+// A single action row: read-only actions render an inline check button,
+// confirm/field actions render as an expandable editor.
+function SetupPluginActionItem({
+  action,
+  runnable,
+  isLoading,
+  activeAction,
+  values,
+  onToggle,
+  onValues,
+  onRun
+}: {
+  action: NonNullable<SetupPlugin['actions']>[number]
+  runnable: boolean
+  isLoading: boolean
+  activeAction: string
+  values: Record<string, string>
+  onToggle: (id: string) => void
+  onValues: (values: Record<string, string>) => void
+  onRun: (action: NonNullable<SetupPlugin['actions']>[number]) => void
+}) {
+  const needsEditor = Boolean(action.confirm || action.fields?.length)
+  const inputClass =
+    'min-h-9 rounded-lg border border-slate-200 bg-white px-2 text-sm font-normal text-slate-700 outline-none focus:border-brand-600 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-200'
+
+  if (!needsEditor)
+    return (
+      <section className="setup-plugin-action border-b border-slate-100 last:border-b-0 dark:border-slate-800">
+        <div className="setup-plugin-action-row flex min-h-14 items-center justify-between gap-3 px-3 py-2">
+          <span className="grid min-w-0 gap-0.5">
+            <strong className="text-sm font-semibold text-slate-800 dark:text-slate-100">
+              {action.label}
+            </strong>
+            {action.description && (
+              <small className="text-xs leading-5 text-slate-400">
+                {action.description}
+              </small>
+            )}
+          </span>
+          <button
+            className="inline-flex min-h-8 shrink-0 items-center justify-center gap-1.5 rounded-lg border border-sky-200 bg-sky-50 px-3 text-xs font-semibold text-sky-700 transition hover:bg-sky-100 hover:text-sky-800 disabled:cursor-not-allowed disabled:opacity-50 dark:border-sky-900 dark:bg-sky-950/40 dark:text-sky-300 dark:hover:bg-sky-950"
+            disabled={!runnable || isLoading}
+            onClick={() => void onRun(action)}
+          >
+            {isLoading ? (
+              '启动中…'
+            ) : (
+              <>
+                <ScanSearch className="size-3.5" />
+                {action.label}
+              </>
+            )}
+          </button>
+        </div>
+      </section>
+    )
+
+  const open = activeAction === action.id
+  return (
+    <section
+      className={cn(
+        'setup-plugin-action border-b border-slate-100 last:border-b-0 dark:border-slate-800',
+        open && 'bg-brand-50/40 dark:bg-brand-100/20'
+      )}
+    >
+      <button
+        className="setup-plugin-action-choice flex min-h-14 w-full items-center justify-between gap-3 bg-transparent px-3 py-2 text-left transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50 dark:hover:bg-slate-800"
+        disabled={!runnable}
+        onClick={() => onToggle(action.id)}
+      >
+        <span>
+          <strong className="flex items-center gap-1.5 text-sm font-semibold text-slate-800 dark:text-slate-100">
+            {action.label}
+            {action.confirm && (
+              <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-700 dark:bg-amber-950/60 dark:text-amber-300">
+                <TriangleAlert className="size-3" />
+                需确认
+              </span>
+            )}
+          </strong>
+          {action.description && (
+            <small className="text-xs leading-5 text-slate-400">
+              {action.description}
+            </small>
+          )}
+        </span>
+        <b className="text-lg font-normal text-brand-600 dark:text-brand-200">
+          {open ? '−' : '+'}
+        </b>
+      </button>
+      {open && (
+        <div className="setup-plugin-action-editor grid gap-3 border-t border-slate-200 px-3 py-3 dark:border-slate-700">
+          {action.fields?.length ? (
+            <div className="setup-plugin-fields flex flex-wrap gap-3">
+              {action.fields.map(field => (
+                <label
+                  className="grid min-w-[150px] flex-1 gap-1 text-xs font-semibold text-slate-500"
+                  key={field.key}
+                >
+                  {field.label}
+                  {field.type === 'select' ? (
+                    <select
+                      className={inputClass}
+                      value={
+                        values[`${action.id}:${field.key}`] ??
+                        field.default ??
+                        ''
+                      }
+                      onChange={event =>
+                        onValues({
+                          ...values,
+                          [`${action.id}:${field.key}`]: event.target.value
+                        })
+                      }
+                    >
+                      {(field.options ?? []).map(option => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <input
+                      className={inputClass}
+                      type={field.type}
+                      value={values[`${action.id}:${field.key}`] ?? ''}
+                      onChange={event =>
+                        onValues({
+                          ...values,
+                          [`${action.id}:${field.key}`]: event.target.value
+                        })
+                      }
+                      placeholder={field.default || field.label}
+                    />
+                  )}
+                  {field.help && (
+                    <small className="font-normal leading-4 text-slate-400">
+                      {field.help}
+                    </small>
+                  )}
+                </label>
+              ))}
+            </div>
+          ) : null}
+          <footer className="flex items-center justify-end gap-2">
+            {action.confirm && (
+              <small className="mr-auto flex items-center gap-1 text-xs text-amber-700 dark:text-amber-300">
+                <TriangleAlert className="size-3.5" />
+                此操作会修改本机系统设置，执行前请再次确认。
+              </small>
+            )}
+            <button
+              className="inline-flex min-h-8 items-center justify-center rounded-lg border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-600 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-300"
+              onClick={() => onToggle('')}
+            >
+              取消
+            </button>
+            <button
+              className={cn(
+                'inline-flex min-h-8 items-center justify-center rounded-lg border px-3 text-xs font-semibold text-white transition hover:opacity-90 disabled:opacity-50',
+                action.confirm
+                  ? 'border-rose-600 bg-rose-600 hover:bg-rose-700'
+                  : 'border-brand-600 bg-brand-600 hover:bg-brand-700'
+              )}
+              disabled={isLoading}
+              onClick={() => void onRun(action)}
+            >
+              {isLoading ? '启动中…' : '确认执行'}
+            </button>
+          </footer>
+        </div>
+      )}
     </section>
   )
 }
@@ -4427,6 +4544,7 @@ function RuntimePanel({
   foregroundStopping,
   pm2Running,
   onRefresh,
+  onRefreshOverview,
   onOpenConsole,
   onRun,
   onSaveLogin,
@@ -4445,6 +4563,7 @@ function RuntimePanel({
   foregroundStopping: boolean
   pm2Running: boolean
   onRefresh: () => void
+  onRefreshOverview: () => Promise<RuntimeOverview | undefined>
   onOpenConsole: () => void
   onRun: (action: string, packageName?: string) => Promise<boolean>
   onSaveLogin: (login: string, packageName?: string) => Promise<boolean>
@@ -4466,6 +4585,7 @@ function RuntimePanel({
   const [selectedPlatform, setSelectedPlatform] = useState('')
   const [pending, setPending] = useState<PendingAction | null>(null)
   const [validationMessage, setValidationMessage] = useState('')
+  const [validationTitle, setValidationTitle] = useState('运行前配置不完整')
   const [loadPackageConfig] = useLazyPackageConfigQuery()
   const [loadRuntimePreflight] = useLazyRobotRuntimePreflightQuery()
   const [loginChoice, setLoginChoice] = useState<LoginChoice | null>(null)
@@ -4505,20 +4625,26 @@ function RuntimePanel({
     const startingLocal = action === 'dev' || action === 'app'
     const startingPM2 = action === 'pm2' || action === 'pm2-reload'
     if (startingLocal && pm2LocalRunning) {
+      setValidationTitle('已有进程在运行')
       setValidationMessage(
         '当前目录正在后台（PM2）运行；请先在“后台运行”中停止服务，再启动本机进程。'
       )
       return
     }
     if (startingPM2 && localRunning) {
+      setValidationTitle('已有进程在运行')
       setValidationMessage(
         '当前目录正在本机（开发/前台）运行；请先停止本机进程，再启动后台服务。'
       )
       return
     }
     try {
-      const preflight = await loadRuntimePreflight(root, true).unwrap()
-      const platform = (overview?.platforms ?? []).find(
+      // Bypass the 1-hour query cache so a just-installed connection package is
+      // already reflected when the start dialog opens.
+      setValidationTitle('运行前配置不完整')
+      const preflight = await loadRuntimePreflight(root, false).unwrap()
+      const freshOverview = await onRefreshOverview()
+      const platform = (freshOverview?.platforms ?? []).find(
         item => item.id === preflight.login
       )
       setCustomLogin(preflight.login)
@@ -4565,42 +4691,28 @@ function RuntimePanel({
       setLoginDialogError(message)
     }
   }
-  const choosePlatform = (id: string) => {
+  const choosePlatform = async (id: string) => {
     setSelectedPlatform(id)
-    const platform = (overview?.platforms ?? []).find(item => item.id === id)
+    if (!id) {
+      // "不选择" clears every login trace so the dialog looks untouched.
+      setCustomLogin('')
+      setCustomPackage('')
+      setConnectionConfig(null)
+      setConnectionValues({})
+      setLoginDialogError('')
+      return
+    }
+    // Use the freshest installed flag, not the possibly-stale render snapshot,
+    // so a package installed moments ago loads its config (with any saved
+    // required values) instead of being treated as "not installed".
+    const freshOverview = await onRefreshOverview()
+    const platform = (freshOverview?.platforms ?? overview?.platforms ?? []).find(
+      item => item.id === id
+    )
     if (platform) {
       setCustomLogin(platform.id)
       setCustomPackage(platform.package)
       void loadConnectionConfig(platform.package)
-    }
-  }
-  const saveLoginFromDialog = async () => {
-    const login = customLogin.trim()
-    if (!login) {
-      setLoginDialogError('请选择或填写登录连接，也可以选择无 login 启动。')
-      return
-    }
-    const missing = (connectionConfig?.fields ?? [])
-      .filter(field => field.required && !connectionValues[field.name]?.trim())
-      .map(field => field.description || field.name)
-    if (missing.length) {
-      setLoginDialogError(`请填写必填项：${missing.join('、')}`)
-      return
-    }
-    setLoginDialogBusy(true)
-    try {
-      if (packageTarget && connectionConfig?.fields.length) {
-        if (!(await onSavePackageConfig(packageTarget, connectionValues)))
-          return
-      }
-      if (!(await onSaveLogin(login, packageTarget))) return
-      const preflight = await loadRuntimePreflight(root, true).unwrap()
-      setLoginChoice(current => (current ? { ...current, preflight } : current))
-      setLoginDialogError('登录连接已保存。请确认下方启动配置后继续。')
-    } catch (reason) {
-      setLoginDialogError(operationErrorMessage(reason, '登录连接未保存。'))
-    } finally {
-      setLoginDialogBusy(false)
     }
   }
   const installSelectedConnection = async () => {
@@ -4609,36 +4721,50 @@ function RuntimePanel({
     try {
       if (await onRun('install-connection', packageTarget)) {
         await loadConnectionConfig(packageTarget)
-        setLoginDialogError('连接包已安装。请填写下方配置后保存登录连接。')
+        // Re-read the preflight so the "确认启动" gate sees the package as
+        // installed instead of keeping it disabled on the pre-install snapshot.
+        const preflight = await loadRuntimePreflight(root, false).unwrap()
+        setLoginChoice(current =>
+          current ? { ...current, preflight } : current
+        )
+        setLoginDialogError('连接包已安装。请填写下方配置后点击“启动”。')
       }
+    } catch (reason) {
+      setLoginDialogError(
+        operationErrorMessage(reason, '连接包安装未完成。')
+      )
     } finally {
       setLoginDialogBusy(false)
     }
   }
-  const continueStartFromDialog = async (withoutLogin = false) => {
+  // Unified start action for the login dialog. It always saves the current
+  // connection config (and login when one is chosen), then starts the robot.
+  // Without a login it starts directly; with one it persists the required
+  // fields silently before launching.
+  const startFromDialog = async () => {
     if (!loginChoice) return
-    const preflight = loginChoice.preflight
-    if (preflight.missing.length) {
-      setLoginDialogError(
-        `启动前仍缺少：${preflight.missing.join('、')}。请完成配置后再启动。`
-      )
+    // A login is the user's typed value, or the one already configured in the
+    // file when the user did not touch the login field.
+    const login = customLogin.trim() || loginChoice.preflight.login || ''
+    const hasLogin = Boolean(login || selectedPlatform)
+    const missing = (connectionConfig?.fields ?? [])
+      .filter(field => field.required && !connectionValues[field.name]?.trim())
+      .map(field => field.description || field.name)
+    if (hasLogin && missing.length) {
+      setLoginDialogError(`请先填写必填项：${missing.join('、')} 再启动。`)
       return
     }
-    if (withoutLogin && preflight.login) {
-      setLoginDialogError(
-        '当前已配置 login。请先在配置中移除 login，或使用“确认启动”。'
-      )
-      return
-    }
-    if (!withoutLogin && !preflight.login) {
-      setLoginDialogError('请先保存登录连接，或明确选择“无 login 启动”。')
-      return
-    }
-    // This dialog is the final confirmation point.  Keeping the action here
-    // avoids making people re-confirm the exact same startup choice in a
-    // second, disconnected dialog.
     setLoginDialogBusy(true)
     try {
+      // Persist required fields silently when a connection package is selected,
+      // then save the login before launching.
+      if (packageTarget && connectionConfig?.fields.length) {
+        if (!(await onSavePackageConfig(packageTarget, connectionValues)))
+          return
+      }
+      if (login) {
+        if (!(await onSaveLogin(login, packageTarget))) return
+      }
       if (await onRun(loginChoice.action)) closeLoginDialog()
     } catch (reason) {
       setLoginDialogError(
@@ -4680,8 +4806,12 @@ function RuntimePanel({
       />
       <ConfirmDialog
         open={Boolean(validationMessage)}
-        title="运行前配置不完整"
-        subtitle="请先填写连接包声明的必填字段。"
+        title={validationTitle}
+        subtitle={
+          validationTitle === '已有进程在运行'
+            ? '同一机器人目录同时只能以一种方式运行。'
+            : '请先填写连接包声明的必填字段。'
+        }
         message={validationMessage}
         confirmLabel="知道了"
         cancelLabel="关闭"
@@ -4698,16 +4828,17 @@ function RuntimePanel({
               className="grid max-h-[min(720px,calc(100vh-48px))] w-full max-w-2xl grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden rounded-xl border border-slate-200 bg-white shadow-[0_20px_58px_rgb(28_26_23/0.22)]"
               role="dialog"
               aria-modal="true"
-              aria-label="启动前登录连接"
+              aria-label={loginChoice.label}
             >
               <header className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
                 <div>
                   <strong className="text-sm text-ink-950">
-                    启动前登录连接
+                    {loginChoice.label}
                   </strong>
                   <p className="mt-1 text-xs text-slate-500">
-                    当前选择：{loginChoice.preflight.login || '未配置 login'}
-                    。可直接在这里完成连接配置。
+                    {loginChoice.preflight.login
+                      ? `将使用 ${loginChoice.preflight.login} 登录连接启动。`
+                      : '尚未配置 login；可在这里完成连接配置后启动。'}
                   </p>
                 </div>
                 <button
@@ -4848,56 +4979,42 @@ function RuntimePanel({
                     后即可启动。
                   </p>
                 ) : null}
-                <section className="rounded-lg border border-slate-200 bg-slate-50 p-3">
-                  <strong className="text-xs text-slate-700">
-                    本次启动检查
-                  </strong>
-                  <ul className="mt-2 grid gap-1 pl-4 text-xs text-slate-500">
-                    {loginChoice.preflight.summary.map(item => (
-                      <li key={item}>{item}</li>
-                    ))}
-                  </ul>
-                </section>
               </div>
               <footer className="flex flex-wrap items-center justify-end gap-2 border-t border-slate-200 px-5 py-3">
-                <button
-                  className="text-button"
-                  disabled={
-                    loginDialogBusy ||
-                    busy ||
-                    Boolean(loginChoice.preflight.login) ||
-                    loginChoice.preflight.missing.length > 0
-                  }
-                  title={
-                    loginChoice.preflight.login
-                      ? '当前已配置 login；如需无 login 启动，请先从配置中移除它。'
-                      : loginChoice.preflight.missing.length
-                        ? '请先补齐启动前检查中的缺项。'
-                        : ''
-                  }
-                  onClick={() => void continueStartFromDialog(true)}
-                >
-                  无 login 启动
-                </button>
-                <button
-                  className="secondary-button"
-                  disabled={loginDialogBusy || busy || !customLogin.trim()}
-                  onClick={() => void saveLoginFromDialog()}
-                >
-                  保存登录连接
-                </button>
-                <button
-                  className="primary-button"
-                  disabled={
-                    loginDialogBusy ||
-                    busy ||
-                    !loginChoice.preflight.login ||
-                    loginChoice.preflight.missing.length > 0
-                  }
-                  onClick={() => void continueStartFromDialog(false)}
-                >
-                  确认启动
-                </button>
+                {(() => {
+                  // Whether the user actively chose a login (picked a platform
+                  // or typed one). The configured login is ignored here so the
+                  // button stays enabled when the user makes no choice.
+                  const userLogin = Boolean(
+                    customLogin.trim() || selectedPlatform
+                  )
+                  // Missing required fields only block start when a login is
+                  // chosen; without a login the robot starts directly.
+                  const missing = (connectionConfig?.fields ?? [])
+                    .filter(
+                      field =>
+                        field.required &&
+                        !connectionValues[field.name]?.trim()
+                    )
+                    .map(field => field.description || field.name)
+                  const blocked = userLogin && missing.length > 0
+                  return (
+                    <button
+                      className="primary-button"
+                      disabled={loginDialogBusy || busy || blocked}
+                      title={
+                        blocked
+                          ? `请先填写必填项：${missing.join('、')}`
+                          : userLogin
+                            ? '会先保存当前连接配置，再启动机器人。'
+                            : '无 login 启动机器人。'
+                      }
+                      onClick={() => void startFromDialog()}
+                    >
+                      {loginDialogBusy || busy ? '启动中…' : '启动'}
+                    </button>
+                  )
+                })()}
               </footer>
             </section>
           </div>,
@@ -5539,14 +5656,20 @@ function ControlCard({
   onGit: () => void
 }) {
   const gitRoot = project?.path ?? ''
-  const { data: gitBranches } = useGitWorkspaceQuery(
-    { root: gitRoot, view: 'branch' },
-    { skip: !gitRoot || page !== 'robot' || section !== 'runtime' }
+  const gitOverviewBranchesArgs = useMemo(
+    () => ({ root: gitRoot, view: 'branch' as const }),
+    [gitRoot]
   )
-  const { data: gitChanges } = useGitWorkspaceQuery(
-    { root: gitRoot, view: 'commit' },
-    { skip: !gitRoot || page !== 'robot' || section !== 'runtime' }
+  const gitOverviewChangesArgs = useMemo(
+    () => ({ root: gitRoot, view: 'commit' as const }),
+    [gitRoot]
   )
+  const { data: gitBranches } = useGitWorkspaceQuery(gitOverviewBranchesArgs, {
+    skip: !gitRoot || page !== 'robot' || section !== 'runtime'
+  })
+  const { data: gitChanges } = useGitWorkspaceQuery(gitOverviewChangesArgs, {
+    skip: !gitRoot || page !== 'robot' || section !== 'runtime'
+  })
   const gitOverview = gitBranches && gitChanges
     ? { ...gitBranches, changes: gitChanges.changes }
     : gitBranches ?? gitChanges ?? undefined
@@ -5663,12 +5786,6 @@ function ControlCard({
                       : '未关联远程'}
                   </span>
                 )}
-                <button
-                  className="ml-auto text-[11px] font-medium text-brand-600 hover:underline"
-                  onClick={onGit}
-                >
-                  管理 Git
-                </button>
               </div>
             ) : (
               <div className="flex items-center justify-between gap-2 text-[11px] text-slate-500">

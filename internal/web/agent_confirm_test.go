@@ -137,3 +137,21 @@ func TestAgentConfirmHandlerUnknownID(t *testing.T) {
 		t.Fatalf("状态码 = %d，应为 404", response.Code)
 	}
 }
+
+// TestSSEHeartbeatFlushed verifies the observer sends a start event and that a
+// heartbeat frame is written while the context is alive.
+func TestSSEHeartbeatFlushed(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	ctx, cancel := context.WithCancel(context.Background())
+	emit := agentObserver(recorder, "sessionX", ctx)
+	// start 事件应立即写入。
+	if !strings.Contains(recorder.Body.String(), `"type":"start"`) {
+		t.Fatalf("应写入 start 事件：%q", recorder.Body.String())
+	}
+	// 发送一个事件验证正常写入。
+	emit(agent.Event{Type: "text", Text: "你好"})
+	if !strings.Contains(recorder.Body.String(), "你好") {
+		t.Fatalf("应写入 text 事件：%q", recorder.Body.String())
+	}
+	cancel()
+}
