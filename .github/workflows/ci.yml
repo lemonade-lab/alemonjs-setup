@@ -34,10 +34,10 @@ jobs:
     strategy:
       matrix:
         include:
-          - { goos: windows, goarch: amd64, binary: alx.exe, bundle: alx-windows-amd64.zip, plugin_binary: network-firewall-windows-amd64.exe }
-          - { goos: darwin, goarch: arm64, binary: alx, bundle: alx-darwin-arm64.zip, plugin_binary: network-firewall-darwin-arm64 }
-          - { goos: darwin, goarch: amd64, binary: alx, bundle: alx-darwin-amd64.zip, plugin_binary: network-firewall-darwin-amd64 }
-          - { goos: linux, goarch: amd64, binary: alx, bundle: alx-linux-amd64.zip, plugin_binary: network-firewall-linux-amd64 }
+          - { goos: windows, goarch: amd64, binary: alx.exe, bundle: alx-windows-amd64.zip }
+          - { goos: darwin, goarch: arm64, binary: alx, bundle: alx-darwin-arm64.zip }
+          - { goos: darwin, goarch: amd64, binary: alx, bundle: alx-darwin-amd64.zip }
+          - { goos: linux, goarch: amd64, binary: alx, bundle: alx-linux-amd64.zip }
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -52,10 +52,8 @@ jobs:
       - run: yarn install --frozen-lockfile --non-interactive && yarn build
         working-directory: frontend
       - run: |
-          mkdir -p "bundle/plugins/network-firewall/dist" release
+          mkdir -p bundle release
           CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build -trimpath -ldflags "-s -w -X main.Version=${GITHUB_REF_NAME}" -o "bundle/${{ matrix.binary }}" .
-          CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build -trimpath -ldflags "-s -w" -o "bundle/plugins/network-firewall/dist/${{ matrix.plugin_binary }}" ./plugins/network-firewall/runner
-          cp plugins/network-firewall/alx.json "bundle/plugins/network-firewall/"
           (cd bundle && zip -r "../release/${{ matrix.bundle }}" .)
           (cd release && sha256sum "${{ matrix.bundle }}" > "${{ matrix.bundle }}.sha256")
       - uses: actions/upload-artifact@v4
