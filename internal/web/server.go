@@ -71,10 +71,10 @@ type operationTask struct {
 // changes state or a running process emits output. Type is "task" (full task
 // snapshot) or "output" (incremental text for a task).
 type robotEvent struct {
-	Type   string          `json:"type"`
-	TaskID string          `json:"taskId,omitempty"`
-	Task   *operationTask  `json:"task,omitempty"`
-	Text   string          `json:"text,omitempty"`
+	Type   string         `json:"type"`
+	TaskID string         `json:"taskId,omitempty"`
+	Task   *operationTask `json:"task,omitempty"`
+	Text   string         `json:"text,omitempty"`
 }
 
 // robotEventHub fans events out to open SSE subscribers. A dropped channel is
@@ -313,6 +313,7 @@ func NewServerWithAuth(version string, staticFiles fs.FS, identity *access.Manag
 	mux.HandleFunc("/api/v1/agent/sessions/", s.agentSessionHandler)
 	mux.HandleFunc("/api/v1/agent/approve", s.agentConfirmHandler)
 	mux.HandleFunc("/api/v1/system/ssh", s.sshHandler)
+	mux.HandleFunc("/api/v1/system/mcp", s.systemMCPHandler)
 	mux.HandleFunc("/api/v1/directories", s.directoryHandler)
 	mux.HandleFunc("/api/v1/catalog", s.catalogHandler)
 	mux.HandleFunc("/api/v1/catalog/versions", s.catalogVersionsHandler)
@@ -717,6 +718,15 @@ func (s *server) setupPluginActionHandler(w http.ResponseWriter, r *http.Request
 		writeJSON(w, http.StatusOK, map[string]any{"id": parts[0], "enabled": input.Enabled})
 		return
 	}
+	if parts[1] == "install" {
+		installed, err := s.plugins.Install(parts[0])
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"id": installed.ID, "installed": true})
+		return
+	}
 	if parts[1] != "actions" {
 		writeError(w, http.StatusNotFound, "未找到 Setup 插件操作。")
 		return
@@ -847,6 +857,35 @@ func (s *server) sshHandler(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "该操作暂不支持。")
 	}
+}
+
+// systemMCPHandler reports whether the local HTTP MCP server is actually
+// running, so the header control shows a real status instead of pretending the
+// service is always up. MCP is started manually via `alx mcp-http`.
+func (s *server) systemMCPHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "该操作暂不支持。")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"running": probeMCPRunning()})
+}
+
+// probeMCPRunning probes the default Streamable HTTP MCP endpoint. Any HTTP
+// response (even 401/404) means a server is listening; only a connection error
+// means the service is not running.
+func probeMCPRunning() bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://127.0.0.1:17391/mcp", nil)
+	if err != nil {
+		return false
+	}
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		return false
+	}
+	defer response.Body.Close()
+	return true
 }
 
 func (s *server) directoryHandler(w http.ResponseWriter, r *http.Request) {

@@ -107,7 +107,9 @@ export function EnvConfigForm({ content, busy, onChange, onSave }: Props) {
               onChange={event => update(index, 'key', event.target.value)}
               placeholder="变量名，例如 BOT_TOKEN"
             />
-            <span className="hidden justify-self-center font-mono text-slate-400 sm:inline">=</span>
+            <span className="hidden justify-self-center font-mono text-slate-400 sm:inline">
+              =
+            </span>
             <input
               className={inputClass}
               value={entry.value}

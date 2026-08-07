@@ -410,7 +410,7 @@
   --theme-accent-contrast: #ffffff;
   /* Semantic */
   --theme-surface-code: #191919;
-  --theme-text-code: #191919;
+  --theme-text-code: #2b56a8;
   --theme-success: #3f8f5f;
   --theme-success-soft: #edf7f0;
   --theme-success-text: #2c7a4b;
@@ -5661,7 +5661,13 @@ button > svg,
   background: var(--theme-surface-raised);
   border-radius: 5px;
   color: var(--theme-text-code);
-  font-family: var(--theme-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-family: var(
+    --theme-font-mono,
+    ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace
+  );
   font-size: 0.8em;
   padding: 2px 5px;
 }
@@ -5670,7 +5676,13 @@ button > svg,
   border: 1px solid var(--theme-border-subtle);
   border-radius: 10px;
   color: var(--theme-text-code);
-  font-family: var(--theme-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-family: var(
+    --theme-font-mono,
+    ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace
+  );
   font-size: 0.78rem;
   line-height: 1.65;
   margin: 12px 0;
@@ -5763,7 +5775,10 @@ button > svg,
   justify-items: start;
   padding: 9px 12px;
   text-align: left;
-  transition: border-color 0.15s ease, background 0.15s ease, transform 0.1s ease;
+  transition:
+    border-color 0.15s ease,
+    background 0.15s ease,
+    transform 0.1s ease;
   width: 100%;
 }
 .agent-examples button:hover {
@@ -5909,7 +5924,13 @@ button > svg,
 .agent-step-output pre {
   border-radius: 0 0 9px 9px;
   color: var(--theme-text-code);
-  font-family: var(--theme-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-family: var(
+    --theme-font-mono,
+    ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace
+  );
   font-size: 0.72rem;
   line-height: 1.65;
   max-height: 200px;
@@ -5966,7 +5987,9 @@ button > svg,
   border-radius: 14px;
   box-shadow: var(--theme-shadow-panel);
   padding: 10px 12px 8px;
-  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  transition:
+    border-color 0.15s ease,
+    box-shadow 0.15s ease;
 }
 .agent-composer > .agent-composer-box:focus-within {
   border-color: var(--theme-accent);
@@ -5978,7 +6001,9 @@ button > svg,
   border-radius: 14px;
   box-shadow: var(--theme-shadow-soft) 0 2px 6px;
   padding: 10px 12px 8px;
-  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  transition:
+    border-color 0.15s ease,
+    box-shadow 0.15s ease;
 }
 .agent-composer-box:focus-within {
   border-color: var(--theme-accent);
@@ -6039,7 +6064,9 @@ button > svg,
   display: flex;
   height: 30px;
   justify-content: center;
-  transition: background 0.15s ease, transform 0.1s ease;
+  transition:
+    background 0.15s ease,
+    transform 0.1s ease;
   width: 30px;
 }
 .agent-send:hover:not(:disabled) {
@@ -6072,7 +6099,9 @@ button > svg,
   display: flex;
   height: 30px;
   justify-content: center;
-  transition: background 0.15s ease, color 0.15s ease;
+  transition:
+    background 0.15s ease,
+    color 0.15s ease;
   width: 30px;
 }
 .agent-composer-icon:hover:not(:disabled) {
@@ -6099,7 +6128,9 @@ button > svg,
   height: 30px;
   max-width: 170px;
   padding: 0 8px;
-  transition: border-color 0.15s ease, background 0.15s ease;
+  transition:
+    border-color 0.15s ease,
+    background 0.15s ease;
 }
 .agent-composer-model:hover:not(:disabled) {
   background: var(--theme-surface-hover);
@@ -6249,7 +6280,9 @@ button > svg,
   display: flex;
   height: 30px;
   justify-content: center;
-  transition: background 0.15s ease, color 0.15s ease;
+  transition:
+    background 0.15s ease,
+    color 0.15s ease;
   width: 30px;
 }
 .agent-stop:hover {
@@ -6329,7 +6362,9 @@ button > svg,
   font-size: 0.8rem;
   font-weight: 500;
   padding: 8px 12px;
-  transition: border-color 0.15s ease, background 0.15s ease;
+  transition:
+    border-color 0.15s ease,
+    background 0.15s ease;
 }
 .agent-provider-chip:hover {
   background: var(--theme-surface-hover);
@@ -6368,7 +6403,6 @@ button > svg,
   padding-top: 16px;
 }
 
-
 /* Agent 确认弹窗与权限选择 */
 .agent-confirm-overlay {
   align-items: center;
@@ -6406,7 +6440,13 @@ button > svg,
   background: var(--theme-surface-code);
   border-radius: 4px;
   color: var(--theme-text-code);
-  font-family: var(--theme-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-family: var(
+    --theme-font-mono,
+    ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace
+  );
   font-size: 0.74rem;
   padding: 1px 5px;
 }
@@ -6415,7 +6455,13 @@ button > svg,
   border: 1px solid var(--theme-border-subtle);
   border-radius: 8px;
   color: var(--theme-text-secondary);
-  font-family: var(--theme-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-family: var(
+    --theme-font-mono,
+    ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace
+  );
   font-size: 0.72rem;
   line-height: 1.6;
   margin: 0 0 16px;
@@ -6539,7 +6585,9 @@ button > svg,
   justify-content: center;
   opacity: 0;
   padding: 0;
-  transition: color 0.15s ease, opacity 0.15s ease;
+  transition:
+    color 0.15s ease,
+    opacity 0.15s ease;
   width: 26px;
 }
 .agent-session:hover .agent-session-delete,
@@ -6570,7 +6618,9 @@ button > svg,
   right: -36px;
   top: 50%;
   transform: translateY(-50%);
-  transition: opacity 0.15s ease, color 0.15s ease;
+  transition:
+    opacity 0.15s ease,
+    color 0.15s ease;
   width: 26px;
 }
 .agent-message-user:hover .agent-message-edit,
@@ -6611,7 +6661,13 @@ button > svg,
   align-items: center;
   color: var(--theme-text-secondary);
   display: flex;
-  font-family: var(--theme-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-family: var(
+    --theme-font-mono,
+    ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace
+  );
   font-size: 0.74rem;
   gap: 8px;
   font-weight: 600;
@@ -6631,7 +6687,13 @@ button > svg,
 }
 .agent-diff-removed,
 .agent-diff-added {
-  font-family: var(--theme-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-family: var(
+    --theme-font-mono,
+    ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace
+  );
   font-size: 0.7rem;
   line-height: 1.6;
   margin: 0;
@@ -6701,7 +6763,11 @@ button > svg,
 }
 .agent-codeblock-head {
   align-items: center;
-  background: color-mix(in srgb, var(--theme-surface-code) 90%, var(--theme-surface-hover) 10%);
+  background: color-mix(
+    in srgb,
+    var(--theme-surface-code) 90%,
+    var(--theme-surface-hover) 10%
+  );
   border-bottom: 1px solid var(--theme-border-subtle);
   display: flex;
   justify-content: space-between;
@@ -6709,7 +6775,13 @@ button > svg,
 }
 .agent-codeblock-lang {
   color: var(--theme-text-muted);
-  font-family: var(--theme-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-family: var(
+    --theme-font-mono,
+    ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace
+  );
   font-size: 0.68rem;
   font-weight: 600;
   letter-spacing: 0.02em;
@@ -6736,8 +6808,13 @@ button > svg,
   width: 6px;
 }
 @keyframes agent-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.3; }
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.3;
+  }
 }
 .agent-codeblock-copy {
   align-items: center;
@@ -6750,7 +6827,9 @@ button > svg,
   font-size: 0.66rem;
   gap: 4px;
   padding: 2px 7px;
-  transition: background 0.15s ease, color 0.15s ease;
+  transition:
+    background 0.15s ease,
+    color 0.15s ease;
 }
 .agent-codeblock-copy:hover {
   background: var(--theme-surface-hover);
@@ -6802,4 +6881,52 @@ button > svg,
 }
 [data-theme='dark'] .agent-codeblock .tok-function {
   color: #61afef;
+}
+
+/* Codex-aligned control card: a proper card for the detail/navigation rail. */
+.control-dock {
+  padding: 10px 8px 10px 4px;
+}
+.control-card {
+  background: var(--theme-surface-panel);
+  border: 1px solid var(--theme-border-default);
+  border-radius: 12px;
+  box-shadow: 0 6px 20px rgb(28 26 23 / 0.05);
+}
+
+/* Neutralise legacy control-card child rules so the component's own Tailwind
+ * controls the internal spacing. */
+.control-card > header,
+.control-card footer {
+  padding: 0;
+  border-bottom: 0;
+  border-top: 0;
+}
+.control-card > header strong {
+  color: inherit;
+  font-size: inherit;
+  max-width: none;
+}
+.control-card > header span,
+.control-card footer span {
+  color: inherit;
+  font-size: inherit;
+}
+.control-card > header > i {
+  background: transparent;
+  border-radius: 0;
+  color: inherit;
+  height: auto;
+  width: auto;
+}
+
+/* Topbar (window header) buttons: borderless, quiet icons for a clean chrome.
+ * Existing background tints (e.g. active Dev mode, environment warning) are
+ * kept; only the border is removed and a quiet hover fill is added. */
+.topbar button {
+  border-color: transparent !important;
+  box-shadow: none !important;
+}
+.topbar button:hover {
+  background: var(--theme-surface-hover) !important;
 }

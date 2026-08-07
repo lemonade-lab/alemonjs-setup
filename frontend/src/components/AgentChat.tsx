@@ -17,7 +17,7 @@ import {
   Terminal,
   Trash2,
   Unlock,
-  X,
+  X
 } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { AgentMarkdown } from './AgentMarkdown'
@@ -97,7 +97,9 @@ function formatToolArgs(tool: string, rawArgs: string): string {
       }
       case 'agent_run_command': {
         const command = typeof args.command === 'string' ? args.command : ''
-        const sub = Array.isArray(args.args) ? (args.args as string[]).join(' ') : ''
+        const sub = Array.isArray(args.args)
+          ? (args.args as string[]).join(' ')
+          : ''
         return `运行 ${command}${sub ? ` ${sub}` : ''}`
       }
       case 'agent_verify':
@@ -227,7 +229,12 @@ export function AgentChatPage({
     id: string
     tool: string
     args: string
-    diff?: { path: string; mode?: string; content?: string; hunks?: Array<{ old: string; new: string }> } | null
+    diff?: {
+      path: string
+      mode?: string
+      content?: string
+      hunks?: Array<{ old: string; new: string }>
+    } | null
   } | null>(null)
   const [sessions, setSessions] = useState<SessionMeta[]>([])
   const [sessionId, setSessionId] = useState('')
@@ -240,30 +247,27 @@ export function AgentChatPage({
 
   const current = providers.find(item => item.ID === provider)
 
-  const loadModels = useCallback(
-    async (id: string) => {
-      try {
-        const response = await fetch(
-          `/api/v1/ai/models?provider=${encodeURIComponent(id)}`
-        )
-        if (!response.ok) return
-        const data = (await response.json()) as { models?: string[] }
-        const list = data.models ?? []
-        setModels(list)
-        // 若当前 model 不在该 provider 的模型列表里（例如旧配置残留了
-        // 别的服务商模型），回退到列表第一个，避免把脏模型发给后端。
-        if (list.length > 0) {
-          setModel(currentModel => {
-            const stale = !list.includes(currentModel)
-            return stale ? list[0] : currentModel
-          })
-        }
-      } catch {
-        // 模型列表加载失败不阻塞
+  const loadModels = useCallback(async (id: string) => {
+    try {
+      const response = await fetch(
+        `/api/v1/ai/models?provider=${encodeURIComponent(id)}`
+      )
+      if (!response.ok) return
+      const data = (await response.json()) as { models?: string[] }
+      const list = data.models ?? []
+      setModels(list)
+      // 若当前 model 不在该 provider 的模型列表里（例如旧配置残留了
+      // 别的服务商模型），回退到列表第一个，避免把脏模型发给后端。
+      if (list.length > 0) {
+        setModel(currentModel => {
+          const stale = !list.includes(currentModel)
+          return stale ? list[0] : currentModel
+        })
       }
-    },
-    []
-  )
+    } catch {
+      // 模型列表加载失败不阻塞
+    }
+  }, [])
 
   const loadProviders = useCallback(async () => {
     const response = await fetch('/api/v1/ai/providers')
@@ -313,7 +317,9 @@ export function AgentChatPage({
     lastLoadedSessionId.current = initialSessionId
     void (async () => {
       try {
-        const response = await fetch(`/api/v1/agent/sessions/${initialSessionId}`)
+        const response = await fetch(
+          `/api/v1/agent/sessions/${initialSessionId}`
+        )
         if (!response.ok) return
         const data = (await response.json()) as {
           session: SessionMeta
@@ -384,7 +390,12 @@ export function AgentChatPage({
       text?: string
       tool?: string
       output?: string
-      diff?: { path: string; mode?: string; content?: string; hunks?: Array<{ old: string; new: string }> } | null
+      diff?: {
+        path: string
+        mode?: string
+        content?: string
+        hunks?: Array<{ old: string; new: string }>
+      } | null
     }) => {
       switch (event.type) {
         case 'tool':
@@ -485,7 +496,12 @@ export function AgentChatPage({
       ? 'http://localhost:17390/api/v1/agent/chat?stream=1'
       : '/api/v1/agent/chat?stream=1'
     try {
-      console.log('[agent] streamURL =', streamURL, 'DEV =', import.meta.env.DEV)
+      console.log(
+        '[agent] streamURL =',
+        streamURL,
+        'DEV =',
+        import.meta.env.DEV
+      )
       const response = await fetch(streamURL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -724,50 +740,55 @@ export function AgentChatPage({
                   />
                 </button>
                 {timelineOpen && (
-                <div className="agent-timeline">
-                {activity.map((item, index) => (
-                  <div
-                    className="agent-step"
-                    data-status={item.status}
-                    key={item.id}
-                  >
-                    <div className="agent-step-rail">
-                      <span className="agent-step-node">
-                        <ToolIcon name={item.tool} />
-                      </span>
-                      {index < activity.length - 1 && (
-                        <span className="agent-step-line" />
-                      )}
-                    </div>
-                    <div className="agent-step-body">
-                      <div className="agent-step-head">
-                        <div className="agent-step-title">
-                          <span>{TOOL_LABEL[item.tool] || item.tool}</span>
-                          <small>{TOOL_DESCRIPTION[item.tool]}</small>
-                        </div>
-                        <span className="agent-step-status">
-                          <StepStatus status={item.status} />
-                        </span>
-                      </div>
-                      {item.args && (
-                        <div className="agent-step-args">
-                          <span className="agent-step-args-text">
-                            {formatToolArgs(item.tool, item.args)}
+                  <div className="agent-timeline">
+                    {activity.map((item, index) => (
+                      <div
+                        className="agent-step"
+                        data-status={item.status}
+                        key={item.id}
+                      >
+                        <div className="agent-step-rail">
+                          <span className="agent-step-node">
+                            <ToolIcon name={item.tool} />
                           </span>
+                          {index < activity.length - 1 && (
+                            <span className="agent-step-line" />
+                          )}
                         </div>
-                      )}
-                      {item.output && (
-                        <details className="agent-step-output" open={item.status === 'error'}>
-                          <summary>
-                            {item.status === 'error' ? '查看错误' : '查看结果'}
-                          </summary>
-                          <pre>{item.output}</pre>
-                        </details>
-                      )}
-                    </div>
+                        <div className="agent-step-body">
+                          <div className="agent-step-head">
+                            <div className="agent-step-title">
+                              <span>{TOOL_LABEL[item.tool] || item.tool}</span>
+                              <small>{TOOL_DESCRIPTION[item.tool]}</small>
+                            </div>
+                            <span className="agent-step-status">
+                              <StepStatus status={item.status} />
+                            </span>
+                          </div>
+                          {item.args && (
+                            <div className="agent-step-args">
+                              <span className="agent-step-args-text">
+                                {formatToolArgs(item.tool, item.args)}
+                              </span>
+                            </div>
+                          )}
+                          {item.output && (
+                            <details
+                              className="agent-step-output"
+                              open={item.status === 'error'}
+                            >
+                              <summary>
+                                {item.status === 'error'
+                                  ? '查看错误'
+                                  : '查看结果'}
+                              </summary>
+                              <pre>{item.output}</pre>
+                            </details>
+                          )}
+                        </div>
+                      </div>
+                    ))}
                   </div>
-                ))}
-              </div>
                 )}
               </div>
             )}
@@ -861,7 +882,11 @@ export function AgentChatPage({
                         {(
                           [
                             ['ask', '请求批准', '每次修改文件前都征求你的同意'],
-                            ['auto', '替我审核', '自动批准文件修改，你只看到结果'],
+                            [
+                              'auto',
+                              '替我审核',
+                              '自动批准文件修改，你只看到结果'
+                            ],
                             ['full', '完全访问', '全部操作自动执行，不做确认']
                           ] as const
                         ).map(([id, label, desc]) => (
@@ -911,9 +936,7 @@ export function AgentChatPage({
                             .filter(item => item.HasKey)
                             .map(item => (
                               <button
-                                className={
-                                  provider === item.ID ? 'active' : ''
-                                }
+                                className={provider === item.ID ? 'active' : ''}
                                 key={item.ID}
                                 onClick={() => changeProvider(item.ID)}
                               >
@@ -967,7 +990,8 @@ export function AgentChatPage({
               <div>
                 <h3>AI 接口配置</h3>
                 <p>
-                  密钥仅保存在本机；Agent 会在所选项目中读取文件、搜索代码并运行白名单命令。
+                  密钥仅保存在本机；Agent
+                  会在所选项目中读取文件、搜索代码并运行白名单命令。
                 </p>
               </div>
               <button
@@ -1016,7 +1040,9 @@ export function AgentChatPage({
                 type="password"
                 value={apiKey}
                 onChange={event => setAPIKey(event.target.value)}
-                placeholder={current?.HasKey ? '重新填写以更新密钥' : '填写 API Key'}
+                placeholder={
+                  current?.HasKey ? '重新填写以更新密钥' : '填写 API Key'
+                }
               />
             </label>
             <footer className="agent-settings-actions">
@@ -1093,21 +1119,20 @@ export function AgentChatPage({
               <strong>Agent 请求修改项目</strong>
             </header>
             <p>
-              工具 <code>{pendingConfirm.tool}</code> 想要修改项目文件。确认后才会写入。
+              工具 <code>{pendingConfirm.tool}</code>{' '}
+              想要修改项目文件。确认后才会写入。
             </p>
             {pendingConfirm.diff ? (
               <div className="agent-confirm-diff">
                 <div className="agent-confirm-diff-path">
                   {pendingConfirm.diff.path}
-                  {pendingConfirm.diff.mode === 'create' && (
-                    <em>新建</em>
-                  )}
-                  {pendingConfirm.diff.mode === 'delete' && (
-                    <em>删除</em>
-                  )}
+                  {pendingConfirm.diff.mode === 'create' && <em>新建</em>}
+                  {pendingConfirm.diff.mode === 'delete' && <em>删除</em>}
                 </div>
                 {pendingConfirm.diff.mode === 'create' && (
-                  <pre className="agent-diff-added">{pendingConfirm.diff.content}</pre>
+                  <pre className="agent-diff-added">
+                    {pendingConfirm.diff.content}
+                  </pre>
                 )}
                 {pendingConfirm.diff.mode === 'delete' && (
                   <pre className="agent-diff-removed">（将删除此文件）</pre>

@@ -151,6 +151,9 @@ func parseCatalog(reader io.Reader) ([]Group, map[string]string, error) {
 	if err := scanner.Err(); err != nil {
 		return nil, nil, fmt.Errorf("读取官方目录失败")
 	}
+	if groups == nil {
+		groups = []Group{}
+	}
 	return groups, references, nil
 }
 

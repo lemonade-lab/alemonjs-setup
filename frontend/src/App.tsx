@@ -45,13 +45,13 @@ export default function App() {
   const [creating, setCreating] = useState(false)
   const [creation, setCreation] = useState<Creation | null>(null)
   const [repairCheck, setRepairCheck] = useState<Check | null>(null)
-  const { data: goalData = [], isLoading: loading } = useGoalsQuery()
+  const { data: goalData, isLoading: loading } = useGoalsQuery()
   const [
     loadEnvironmentReport,
     { data: environmentData, isFetching: checking }
   ] = useLazyEnvironmentReportQuery()
   const report = (environmentData as Report | undefined) ?? null
-  const goals = goalData as Goal[]
+  const goals = (goalData as Goal[] | null | undefined) ?? []
   const routeGoal = location.pathname.match(
     /^\/guide\/([^/]+)\/step\/\d+$/
   )?.[1]
@@ -246,14 +246,14 @@ function FlowView({
         ? 'alx'
         : null
   const {
-    data: releaseData = [],
+    data: releaseData,
     isError: releaseError,
     isFetching: releaseFetching,
     refetch: refetchReleases
   } = useReleasesQuery(releaseApp ?? '', {
     skip: !releaseApp
   })
-  const releases = releaseData as Release[]
+  const releases = (releaseData as Release[] | null | undefined) ?? []
   const webSteps =
     webEdition === 'clean'
       ? [

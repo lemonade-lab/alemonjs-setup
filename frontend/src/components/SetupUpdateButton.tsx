@@ -14,6 +14,7 @@ import {
   useLazySetupUpdateQuery,
   useReleasesQuery
 } from '../store/workspaceApi'
+import { Button } from './Button'
 
 type Release = {
   tag: string
@@ -225,7 +226,7 @@ export function SetupUpdateButton() {
                     </span>
                   </div>
                   {data.platformMatched && data.integrityReady ? (
-                    <button
+                    <Button
                       className="inline-flex min-h-9 justify-self-end rounded-md bg-brand-600 px-3 text-xs font-semibold text-white transition hover:bg-brand-700 disabled:opacity-60"
                       disabled={busy}
                       onClick={() => {
@@ -238,7 +239,7 @@ export function SetupUpdateButton() {
                         : data.downloadReady
                           ? '更新并重启'
                           : '下载更新'}
-                    </button>
+                    </Button>
                   ) : (
                     <p className="rounded-lg border border-amber-200 bg-amber-50 p-2.5 text-xs leading-5 text-amber-800">
                       {data.platformMatched
@@ -338,13 +339,12 @@ export function SetupUpdateButton() {
                     </small>
                   </span>
                 </label>
-                <button
-                  className="inline-flex min-h-9 justify-self-end rounded-md bg-brand-600 px-3 text-xs font-semibold text-white transition hover:bg-brand-700 disabled:cursor-not-allowed disabled:opacity-50"
+                <Button
                   disabled={!file || busy}
                   onClick={() => void upload()}
                 >
                   {busy ? '正在安装…' : '安装更新'}
-                </button>
+                </Button>
                 {message && (
                   <small className="rounded-md bg-slate-50 p-2 text-[11px] leading-4 text-slate-500">
                     {message}

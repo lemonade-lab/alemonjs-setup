@@ -6,6 +6,7 @@
 package setupplugin
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -26,6 +27,7 @@ import (
 const manifestName = "alx.json"
 const maxManifestSize = 64 * 1024
 const onlineIndexURL = "https://raw.githubusercontent.com/lemonade-lab/alemonjs.dev/main/docs/apps-x.md"
+const installTimeout = 3 * time.Minute
 
 var validID = regexp.MustCompile(`^[a-z][a-z0-9-]{1,63}$`)
 var onlineRepository = regexp.MustCompile(`(?m)^\s*\[[^\]]+\]:\s*(https://github\.com/lemonade-lab/([A-Za-z0-9_.-]+))\s*$`)
@@ -77,17 +79,18 @@ type WebSpec struct {
 // Results are cached and refreshed by Rescan/StartWatch so hot-plugging a
 // plugin directory is reflected without restarting alx.
 type Registry struct {
-	mu           sync.RWMutex
-	roots        []string
-	statePath    string
+	mu                sync.RWMutex
+	roots             []string
+	statePath         string
 	onlineIndexURL    string
 	httpClient        *http.Client
 	onlineManifestURL func(string) string
-	cached       []Plugin
-	revision     uint64
-	loaded       bool
-	lastFingerprint string
-	listeners    map[chan struct{}]struct{}
+	cloneURL          func(string) string
+	cached            []Plugin
+	revision          uint64
+	loaded            bool
+	lastFingerprint   string
+	listeners         map[chan struct{}]struct{}
 }
 
 // Subscribe returns a channel that receives a signal whenever the cached plugin
@@ -121,6 +124,7 @@ func NewRegistry(roots ...string) *Registry {
 			onlineIndexURL:    onlineIndexURL,
 			httpClient:        &http.Client{Timeout: 5 * time.Second},
 			onlineManifestURL: defaultOnlineManifestURL,
+			cloneURL:          defaultCloneURL,
 		}
 	}
 	return &Registry{roots: uniqueRoots(roots)}
@@ -212,7 +216,9 @@ func (r *Registry) ensureLoaded() {
 func (r *Registry) snapshot() []Plugin {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	return append([]Plugin(nil), r.cached...)
+	items := make([]Plugin, len(r.cached))
+	copy(items, r.cached)
+	return items
 }
 
 // Rescan recomputes the full plugin set and replaces the cache. It bumps the
@@ -606,6 +612,11 @@ func defaultOnlineManifestURL(repository string) string {
 	return "https://raw.githubusercontent.com/lemonade-lab/" + name + "/main/" + manifestName
 }
 
+func defaultCloneURL(repository string) string {
+	name := strings.TrimPrefix(repository, "https://github.com/lemonade-lab/")
+	return "https://github.com/lemonade-lab/" + name + ".git"
+}
+
 // onlinePlugins reads the curated Apps-X index. Only repositories owned by
 // lemonade-lab are accepted, so a documentation edit cannot turn discovery
 // into an arbitrary URL fetch. Online manifests are deliberately read-only:
@@ -636,6 +647,108 @@ func (r *Registry) onlinePlugins() []Plugin {
 		items = append(items, plugin)
 	}
 	return items
+}
+
+// Install clones an online plugin's repository into a plugin root and rescans,
+// turning the read-only online entry into a local, loaded plugin. Only
+// lemonade-lab repositories discovered from the Apps-X index are accepted. The
+// clone is shallow and bounded by installTimeout; a partial clone is removed on
+// failure so a retry starts clean.
+func (r *Registry) Install(id string) (Plugin, error) {
+	if !validID.MatchString(id) {
+		return Plugin{}, errors.New("无效的 Setup 插件标识")
+	}
+	online := r.onlinePlugin(id)
+	if online == nil {
+		return Plugin{}, errors.New("未找到可安装的在线 Setup 插件")
+	}
+	if online.Source == "" || !onlineRepository.MatchString(online.Source) {
+		return Plugin{}, errors.New("在线插件仓库来源不受支持")
+	}
+	root, err := r.installRoot()
+	if err != nil {
+		return Plugin{}, err
+	}
+	name := strings.TrimPrefix(online.Source, "https://github.com/lemonade-lab/")
+	if !validID.MatchString(name) {
+		return Plugin{}, errors.New("在线插件仓库名无效")
+	}
+	target := filepath.Join(root, name)
+	if _, err := os.Lstat(target); err == nil {
+		return Plugin{}, errors.New("该插件已经安装")
+	}
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		return Plugin{}, errors.New("无法创建插件安装目录：" + err.Error())
+	}
+	clone := r.cloneURL
+	if clone == nil {
+		clone = defaultCloneURL
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), installTimeout)
+	defer cancel()
+	command := exec.CommandContext(ctx, "git", "clone", "--depth", "1", "-q", clone(online.Source), target)
+	if output, err := command.CombinedOutput(); err != nil {
+		_ = os.RemoveAll(target)
+		message := strings.TrimSpace(string(output))
+		if errors.Is(err, exec.ErrNotFound) {
+			return Plugin{}, errors.New("未检测到 git，无法在线安装插件")
+		}
+		if message == "" {
+			message = err.Error()
+		}
+		return Plugin{}, fmt.Errorf("在线安装插件失败：%s", message)
+	}
+	r.Rescan()
+	installed, err := r.Find(id)
+	if err != nil {
+		return Plugin{}, errors.New("插件已下载，但加载失败；请检查插件目录 " + target)
+	}
+	return installed, nil
+}
+
+// onlinePlugin returns one currently discoverable online-only plugin, falling
+// back to a fresh index fetch if the cache has not been populated.
+func (r *Registry) onlinePlugin(id string) *Plugin {
+	for _, plugin := range r.All() {
+		if plugin.Online && plugin.ID == id {
+			return &plugin
+		}
+	}
+	return nil
+}
+
+// installRoot picks where an online plugin is cloned. The user-level root (where
+// enable state is stored) is preferred when it is one of the scan roots, so an
+// install lands in a directory alx owns; otherwise the first root a directory
+// can be created in is used.
+func (r *Registry) installRoot() (string, error) {
+	preferred := ""
+	if config, err := os.UserConfigDir(); err == nil {
+		preferred = filepath.Join(config, "alx", "plugins")
+	}
+	hasPreferred := false
+	for _, root := range r.roots {
+		if root == preferred {
+			hasPreferred = true
+			break
+		}
+	}
+	ordered := make([]string, 0, len(r.roots))
+	if hasPreferred {
+		ordered = append(ordered, preferred)
+	}
+	for _, root := range r.roots {
+		if root == preferred {
+			continue
+		}
+		ordered = append(ordered, root)
+	}
+	for _, root := range ordered {
+		if err := os.MkdirAll(root, 0o755); err == nil {
+			return root, nil
+		}
+	}
+	return "", errors.New("没有可写入的插件安装目录")
 }
 
 func (r *Registry) readOnlineFile(url string) ([]byte, error) {

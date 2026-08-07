@@ -5,38 +5,51 @@ import { Button } from './Button'
 type AuthStatus = { enabled: boolean; authenticated: boolean; account?: string }
 
 async function authRequest(path: string, init?: RequestInit) {
-  const response = await fetch(`/api/v1/auth/${path}`, {
-    credentials: 'same-origin',
-    headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
-    ...init
-  })
-  const data = (await response.json()) as AuthStatus & { error?: string }
-  if (!response.ok) throw new Error(data.error || '身份认证操作未完成。')
-  return data
-}
-
-async function readStatus() {
-  return authRequest('status')
+  const controller = new AbortController()
+  const timer = window.setTimeout(() => controller.abort(), 8000)
+  try {
+    const response = await fetch(`/api/v1/auth/${path}`, {
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
+      signal: controller.signal,
+      ...init
+    })
+    const data = (await response.json()) as AuthStatus & { error?: string }
+    if (!response.ok) throw new Error(data.error || '身份认证操作未完成。')
+    return data
+  } finally {
+    window.clearTimeout(timer)
+  }
 }
 
 function notifyAuthChanged() {
   window.dispatchEvent(new Event('alx:auth-changed'))
 }
 
+async function readStatus() {
+  return authRequest('status')
+}
+
 export function AuthGate({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<AuthStatus | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState('')
   const [account, setAccount] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const refresh = () => {
+    setLoading(true)
+    setLoadError('')
     void readStatus()
       .then(setStatus)
-      .catch(reason =>
-        setError(
+      .catch(reason => {
+        setStatus(null)
+        setLoadError(
           reason instanceof Error ? reason.message : '无法读取身份认证状态。'
         )
-      )
+      })
+      .finally(() => setLoading(false))
   }
   useEffect(() => {
     refresh()
@@ -60,6 +73,28 @@ export function AuthGate({ children }: { children: ReactNode }) {
       setBusy(false)
     }
   }
+  if (loadError)
+    return (
+      <main className="auth-gate flex min-h-screen items-center justify-center p-5">
+        <section className="grid w-full max-w-[360px] gap-3 rounded-xl border border-slate-200 bg-white p-6 text-center shadow-[0_18px_52px_rgb(28_26_23/0.12)] dark:border-slate-700 dark:bg-slate-900">
+          <div className="grid gap-1">
+            <strong className="text-sm text-slate-800 dark:text-slate-100">
+              无法连接到后台服务
+            </strong>
+            <p className="mt-1 text-xs leading-5 text-slate-500 dark:text-slate-400">
+              {loadError}。请确认 alx 后台仍在运行，然后重试。
+            </p>
+          </div>
+          <button
+            className="primary-button"
+            onClick={refresh}
+            disabled={loading}
+          >
+            {loading ? '重试中…' : '重试'}
+          </button>
+        </section>
+      </main>
+    )
   if (!status)
     return (
       <main className="auth-gate flex min-h-screen items-center justify-center p-5 text-sm text-slate-500">

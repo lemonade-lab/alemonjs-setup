@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"testing"
@@ -229,5 +230,87 @@ func TestRegistrySubscribeSignalsChange(t *testing.T) {
 	case <-changes:
 		t.Fatal("subscriber still receives signals after unsubscribe")
 	default:
+	}
+}
+
+func requireGit(t *testing.T) string {
+	t.Helper()
+	git, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("git is required for online plugin installation tests")
+	}
+	return git
+}
+
+// makeGitPluginRepo commits a plugin manifest to a throwaway local repository so
+// Install can clone it without network access.
+func makeGitPluginRepo(t *testing.T) string {
+	t.Helper()
+	git := requireGit(t)
+	remote := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(remote, "web"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manifest := `{"id":"alemonx-network","name":"网络","version":"1.0.0","web":{"root":"web"}}`
+	if err := os.WriteFile(filepath.Join(remote, manifestName), []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run := func(args ...string) {
+		command := exec.Command(git, args...)
+		command.Dir = remote
+		if output, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("git %v failed: %v\n%s", args, err, output)
+		}
+	}
+	run("init", "-q", "-b", "main")
+	run("add", ".")
+	run("-c", "user.email=test@example.com", "-c", "user.name=test", "commit", "-q", "-m", "init")
+	return remote
+}
+
+func TestRegistryInstallsOnlinePluginLocally(t *testing.T) {
+	remote := makeGitPluginRepo(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/apps-x.md":
+			_, _ = w.Write([]byte("[network]: https://github.com/lemonade-lab/alemonx-network\n"))
+		case "/alx.json":
+			_, _ = w.Write([]byte(`{"id":"alemonx-network","name":"网络","version":"1.0.0","web":{"root":"web"}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	root := t.TempDir()
+	registry := Registry{
+		roots:             []string{root},
+		onlineIndexURL:    server.URL + "/apps-x.md",
+		httpClient:        server.Client(),
+		onlineManifestURL: func(string) string { return server.URL + "/alx.json" },
+		cloneURL:          func(string) string { return remote },
+	}
+	installed, err := registry.Install("alemonx-network")
+	if err != nil {
+		t.Fatalf("install failed: %v", err)
+	}
+	if installed.Online {
+		t.Fatal("installed plugin must be local, not online-only")
+	}
+	if !installed.Enabled {
+		t.Fatal("installed plugin must be enabled")
+	}
+	all := registry.All()
+	if len(all) != 1 || all[0].ID != "alemonx-network" || all[0].Online || all[0].Source != root {
+		t.Fatalf("installed plugin should be the sole local entry: %#v", all)
+	}
+	if _, err := registry.Install("alemonx-network"); err == nil {
+		t.Fatal("duplicate install must be rejected")
+	}
+}
+
+func TestRegistryInstallRejectsUnknownPlugin(t *testing.T) {
+	registry := Registry{roots: []string{t.TempDir()}}
+	if _, err := registry.Install("nope"); err == nil {
+		t.Fatal("unknown plugin id must be rejected")
 	}
 }

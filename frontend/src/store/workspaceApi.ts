@@ -203,6 +203,19 @@ export const workspaceApi = createApi({
       }),
       invalidatesTags: ['SetupPlugins']
     }),
+    installSetupPlugin: build.mutation<
+      { id: string; installed: boolean },
+      { pluginID: string }
+    >({
+      query: ({ pluginID }) => ({
+        url: `setup/plugins/${encodeURIComponent(pluginID)}/install`,
+        method: 'POST'
+      }),
+      invalidatesTags: ['SetupPlugins']
+    }),
+    systemMcp: build.query<{ running: boolean }, void>({
+      query: () => 'system/mcp'
+    }),
     startSetupPluginTask: build.mutation<
       RobotTask,
       {
@@ -487,6 +500,8 @@ export const {
   useLazySetupUpdateQuery,
   useSetupPluginsQuery,
   useSetSetupPluginEnabledMutation,
+  useInstallSetupPluginMutation,
+  useSystemMcpQuery,
   useStartSetupPluginTaskMutation,
   useCatalogQuery,
   useCatalogVersionsQuery,
