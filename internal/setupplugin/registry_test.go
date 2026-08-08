@@ -300,7 +300,7 @@ func TestRegistryInstallsOnlinePluginLocally(t *testing.T) {
 		t.Fatal("installed plugin must be enabled")
 	}
 	all := registry.All()
-	if len(all) != 1 || all[0].ID != "alemonx-network" || all[0].Online || all[0].Source != root {
+	if len(all) != 1 || all[0].ID != "alemonx-network" || all[0].Online || all[0].Source != filepath.Join(root, "alemonx-network") {
 		t.Fatalf("installed plugin should be the sole local entry: %#v", all)
 	}
 	if _, err := registry.Install("alemonx-network"); err == nil {

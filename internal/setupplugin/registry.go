@@ -31,6 +31,7 @@ const installTimeout = 3 * time.Minute
 
 var validID = regexp.MustCompile(`^[a-z][a-z0-9-]{1,63}$`)
 var onlineRepository = regexp.MustCompile(`(?m)^\s*\[[^\]]+\]:\s*(https://github\.com/lemonade-lab/([A-Za-z0-9_.-]+))\s*$`)
+var onlineSource = regexp.MustCompile(`^https://github\.com/lemonade-lab/[A-Za-z0-9_.-]+$`)
 
 // Navigation controls where the plugin appears in the global function rail.
 type Navigation struct {
@@ -662,7 +663,7 @@ func (r *Registry) Install(id string) (Plugin, error) {
 	if online == nil {
 		return Plugin{}, errors.New("未找到可安装的在线 Setup 插件")
 	}
-	if online.Source == "" || !onlineRepository.MatchString(online.Source) {
+	if online.Source == "" || !onlineSource.MatchString(online.Source) {
 		return Plugin{}, errors.New("在线插件仓库来源不受支持")
 	}
 	root, err := r.installRoot()
