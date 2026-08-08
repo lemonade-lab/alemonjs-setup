@@ -69,6 +69,11 @@ type TaskMeta = {
   plan?: { goal: string; completion: string; currentStep: number; steps: Array<{ id: string; title: string; status: string }> }
 }
 type GoalMeta = { id: string; title: string; prompt: string; root: string; scheduleMinutes?: number; nextRun?: string; status: string; lastTaskId?: string; lastError?: string }
+type OpsIncident = { id: string; processName: string; fingerprint: string; status: string; severity: string; occurrences: number; decisionReason?: string; projectRoot: string }
+type OpsTodo = { id: string; title: string; summary: string; severity: string; status: string; incidentId: string }
+type OpsMaintenance = { id: string; incidentId: string; taskId?: string; status: string; error?: string; rollbackPerformed?: boolean }
+type OpsPolicyUI = { projectRoot: string; mode: 'off' | 'observe' | 'auto' | 'strict'; autoAllowed: boolean; allowCodeChanges: boolean; allowPm2Control: boolean; observationMinutes: number; maxModifiedFiles: number; maxPm2Actions: number }
+type OpsMetrics = { incidents: number; openTodos: number; maintenanceRuns: number; autoFixSuccess: number; rollbacks: number; resolved: number; averageRecoverySecs: number }
 type GoalDraft = { id?: string; title: string; prompt: string; root: string; provider: string; model: string; scheduleMinutes: number; isolation: string }
 
 const TOOL_LABEL: Record<string, string> = {
@@ -410,6 +415,12 @@ export function AgentChatPage({
   const [sessions, setSessions] = useStoreState<SessionMeta[]>([])
   const [tasks, setTasks] = useStoreState<TaskMeta[]>([])
   const [goals, setGoals] = useStoreState<GoalMeta[]>([])
+  const [opsIncidents, setOpsIncidents] = useStoreState<OpsIncident[]>([])
+  const [opsTodos, setOpsTodos] = useStoreState<OpsTodo[]>([])
+  const [opsMaintenance, setOpsMaintenance] = useStoreState<OpsMaintenance[]>([])
+  const [opsPaused, setOpsPaused] = useStoreState(false)
+  const [opsPolicy, setOpsPolicy] = useStoreState<OpsPolicyUI>({ projectRoot: root, mode: 'observe', autoAllowed: false, allowCodeChanges: false, allowPm2Control: false, observationMinutes: 5, maxModifiedFiles: 10, maxPm2Actions: 3 })
+  const [opsMetrics, setOpsMetrics] = useStoreState<OpsMetrics | null>(null)
   const [goalDraft, setGoalDraft] = useStoreState<GoalDraft | null>(null)
   const [goalRuns, setGoalRuns] = useStoreState<Array<{ id: string; taskId: string; status: string; error?: string; startedAt: string; finishedAt?: string }>>([])
   const [planDraft, setPlanDraft] = useStoreState<{ taskId: string; goal: string; completion: string; steps: Array<{ id: string; title: string; status: string }> } | null>(null)
@@ -540,6 +551,17 @@ export function AgentChatPage({
   }, [loadTasks])
   const loadGoals = useCallback(async () => { try { const response = await fetch('/api/v1/agent/goals'); if (response.ok) setGoals((await response.json()) as GoalMeta[]) } catch { /* auxiliary */ } }, [setGoals])
   useEffect(() => { void loadGoals() }, [loadGoals])
+  const loadOps = useCallback(async () => {
+    try {
+      const [incidents, todos, maintenance, policy, metrics] = await Promise.all([fetch('/api/v1/ops/incidents'), fetch('/api/v1/ops/todos'), fetch('/api/v1/ops/maintenance'), fetch(`/api/v1/ops/policy?root=${encodeURIComponent(root)}`), fetch('/api/v1/ops/metrics')])
+      if (incidents.ok) setOpsIncidents((await incidents.json()) as OpsIncident[])
+      if (todos.ok) setOpsTodos((await todos.json()) as OpsTodo[])
+      if (maintenance.ok) setOpsMaintenance((await maintenance.json()) as OpsMaintenance[])
+      if (policy.ok) setOpsPolicy((await policy.json()) as OpsPolicyUI)
+      if (metrics.ok) setOpsMetrics((await metrics.json()) as OpsMetrics)
+    } catch { /* 运维面板是辅助信息，不阻塞对话 */ }
+  }, [root, setOpsIncidents, setOpsTodos, setOpsMaintenance, setOpsPolicy, setOpsMetrics])
+  useEffect(() => { void loadOps(); const timer = window.setInterval(() => void loadOps(), 10000); return () => window.clearInterval(timer) }, [loadOps])
 
   // When opened from the directory session tree, load that conversation.
   // Track the last loaded id so a repeated id is not re-fetched, while a new id
@@ -671,6 +693,10 @@ export function AgentChatPage({
   const showGoalRuns = async (id: string) => { const response = await fetch(`/api/v1/agent/goals/${encodeURIComponent(id)}/runs`); if (response.ok) setGoalRuns((await response.json()) as typeof goalRuns); setNotice('已加载目标运行历史。') }
   const runGoal = async (id: string) => { await fetch(`/api/v1/agent/goals/${encodeURIComponent(id)}/run`, { method: 'POST' }); await loadGoals(); await loadTasks(); setNotice('长期目标已创建任务。') }
   const toggleGoal = async (goal: GoalMeta) => { await fetch(`/api/v1/agent/goals/${encodeURIComponent(goal.id)}/${goal.status === 'active' ? 'pause' : 'resume'}`, { method: 'POST' }); await loadGoals() }
+  const analyzeOps = async (id: string) => { await fetch(`/api/v1/ops/incidents/${encodeURIComponent(id)}/analyze`, { method: 'POST' }); await loadOps(); setNotice('已提交 AI 运维分析。') }
+  const createOpsTodo = async (id: string) => { await fetch(`/api/v1/ops/incidents/${encodeURIComponent(id)}/todo`, { method: 'POST' }); await loadOps(); setNotice('已加入运维待办。') }
+  const toggleOpsMonitor = async () => { const next = !opsPaused; await fetch(`/api/v1/ops/monitor/${next ? 'pause' : 'resume'}`, { method: 'POST' }); setOpsPaused(next); setNotice(next ? 'AI 运维已暂停采集。' : 'AI 运维已恢复采集。') }
+  const saveOpsPolicy = async () => { await fetch('/api/v1/ops/policy', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(opsPolicy) }); setNotice('AI 运维策略已保存。') }
 
   const handleEvent = useCallback(
     (event: {
@@ -1685,6 +1711,18 @@ export function AgentChatPage({
           <div className="agent-goals-panel">
             <div className="agent-goals-header"><strong>长期目标</strong><button className="agent-session-action" onClick={() => void createGoal()}>新建</button></div>
             {goals.map(goal => <div className="agent-goal-item" key={goal.id}><span>{goal.title || goal.prompt}</span><small>{goal.status}{goal.lastError ? ` · ${goal.lastError}` : ''}</small><div><button className="agent-session-action" onClick={() => void runGoal(goal.id)}>运行</button><button className="agent-session-action" onClick={() => void toggleGoal(goal)}>{goal.status === 'active' ? '暂停' : '恢复'}</button><button className="agent-session-action" onClick={() => editGoal(goal)}>编辑</button><button className="agent-session-action" onClick={() => void showGoalRuns(goal.id)}>历史</button><button className="agent-session-action" onClick={() => void deleteGoal(goal.id)}>删除</button></div></div>)}
+          </div>
+          <div className="agent-goals-panel agent-ops-panel">
+            <div className="agent-goals-header"><strong>AI 运维</strong><small>{opsPaused ? '已暂停' : '运行中'} · {opsTodos.length} 个待办</small><button className="agent-session-action" onClick={() => void toggleOpsMonitor()}>{opsPaused ? '恢复' : '暂停'}</button></div>
+            {opsMetrics && <small>事件 {opsMetrics.incidents} · 已恢复 {opsMetrics.resolved} · 回滚 {opsMetrics.rollbacks} · 平均 {Math.round(opsMetrics.averageRecoverySecs)} 秒</small>}
+            {opsIncidents.slice(0, 5).map(incident => <div className="agent-goal-item" key={incident.id}><span>{incident.processName} · {incident.severity}</span><small>{incident.status} · {incident.occurrences} 次</small><div><button className="agent-session-action" onClick={() => void analyzeOps(incident.id)}>分析</button><button className="agent-session-action" onClick={() => void createOpsTodo(incident.id)}>加入待办</button></div></div>)}
+            {opsIncidents.length === 0 && <p className="agent-sessions-empty">暂无生产事件。</p>}
+            {opsMaintenance.length > 0 && <small>最近维护：{opsMaintenance[0].status}{opsMaintenance[0].rollbackPerformed ? ' · 已回滚' : ''}</small>}
+            <label className="agent-ops-policy">策略<select value={opsPolicy.mode} onChange={event => setOpsPolicy({ ...opsPolicy, mode: event.target.value as OpsPolicyUI['mode'] })}><option value="observe">观察</option><option value="auto">自动维护</option><option value="strict">严格确认</option><option value="off">关闭</option></select></label>
+            <label className="agent-ops-policy"><input type="checkbox" checked={opsPolicy.autoAllowed} onChange={event => setOpsPolicy({ ...opsPolicy, autoAllowed: event.target.checked })} />项目加入自动维护白名单</label>
+            <label className="agent-ops-policy"><input type="checkbox" checked={opsPolicy.allowCodeChanges} onChange={event => setOpsPolicy({ ...opsPolicy, allowCodeChanges: event.target.checked })} />允许代码修改</label>
+            <label className="agent-ops-policy"><input type="checkbox" checked={opsPolicy.allowPm2Control} onChange={event => setOpsPolicy({ ...opsPolicy, allowPm2Control: event.target.checked })} />允许 PM2 控制</label>
+            <button className="agent-session-action" onClick={() => void saveOpsPolicy()}>保存策略</button>
           </div>
         </aside>
       )}

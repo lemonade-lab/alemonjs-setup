@@ -277,7 +277,13 @@ func LoadPackageVersions(name string) (PackageVersions, error) {
 	}
 	endpoint := "https://registry.npmjs.org/" + url.PathEscape(name)
 	client := &http.Client{Timeout: 8 * time.Second}
-	response, err := client.Get(endpoint)
+	request, err := http.NewRequest(http.MethodGet, endpoint, nil)
+	if err != nil {
+		return PackageVersions{}, fmt.Errorf("无法读取插件 Release，请检查网络后重试")
+	}
+	request.Header.Set("Accept", "application/vnd.github+json")
+	request.Header.Set("User-Agent", "alemonjs-setup")
+	response, err := client.Do(request)
 	if err != nil {
 		return PackageVersions{}, fmt.Errorf("无法读取 npm 版本列表，请检查网络后重试")
 	}
@@ -341,8 +347,52 @@ func loadRepositoryReleases(source string) (PackageVersions, error) {
 	}
 	versions := make([]string, 0, len(releases))
 	for _, release := range releases {
-		if release.TagName != "" && !release.Draft && !release.Prerelease {
+		// A published prerelease is still a real GitHub Release and is useful
+		// for repository-backed plugins that have not cut a stable version yet.
+		if release.TagName != "" && !release.Draft {
 			versions = append(versions, release.TagName)
+		}
+	}
+	sort.SliceStable(versions, func(i, j int) bool { return gitTagHigher(versions[i], versions[j]) })
+	versions = uniqueStrings(versions)
+	if len(versions) == 0 {
+		// GitHub hides draft releases from the public API. The repository page
+		// can still show those releases to an authenticated user, so fall back
+		// to published-looking tags instead of reporting a false empty result.
+		return loadRepositoryTags(parsed.Host, parts[0], parts[1])
+	}
+	return PackageVersions{Latest: versions[0], Versions: versions}, nil
+}
+
+func loadRepositoryTags(host, owner, repository string) (PackageVersions, error) {
+	endpoint := "https://" + host + "/api/v5/repos/" + url.PathEscape(owner) + "/" + url.PathEscape(repository) + "/tags?per_page=100"
+	if host == "github.com" {
+		endpoint = "https://api.github.com/repos/" + url.PathEscape(owner) + "/" + url.PathEscape(repository) + "/tags?per_page=100"
+	}
+	request, err := http.NewRequest(http.MethodGet, endpoint, nil)
+	if err != nil {
+		return PackageVersions{}, fmt.Errorf("无法读取插件版本，请检查网络后重试")
+	}
+	request.Header.Set("Accept", "application/vnd.github+json")
+	request.Header.Set("User-Agent", "alemonjs-setup")
+	response, err := (&http.Client{Timeout: 8 * time.Second}).Do(request)
+	if err != nil {
+		return PackageVersions{}, fmt.Errorf("无法读取插件版本，请检查网络后重试")
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return PackageVersions{}, fmt.Errorf("无法读取插件版本")
+	}
+	var tags []struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(io.LimitReader(response.Body, 2<<20)).Decode(&tags); err != nil {
+		return PackageVersions{}, fmt.Errorf("插件版本无法识别")
+	}
+	versions := make([]string, 0, len(tags))
+	for _, tag := range tags {
+		if tag.Name != "" {
+			versions = append(versions, tag.Name)
 		}
 	}
 	sort.SliceStable(versions, func(i, j int) bool { return gitTagHigher(versions[i], versions[j]) })

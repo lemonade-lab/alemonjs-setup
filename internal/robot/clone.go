@@ -1,25 +1,37 @@
 package robot
 
 import (
+	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"alemonx/internal/system"
 )
 
 var gitBranchPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/-]*$`)
 var cloneDirectoryPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+var gitCloneProgressPattern = regexp.MustCompile(`(?i)(compressing objects|receiving objects|resolving deltas):\s*(\d+)%`)
 
 type CloneTarget struct {
 	Path   string `json:"path"`
 	Exists bool   `json:"exists"`
+}
+
+// CloneProgress is a progress update reported by Git itself while cloning.
+type CloneProgress struct {
+	Percent int
+	Detail  string
 }
 
 func cloneRepositoryURL(repository string) (*url.URL, string, error) {
@@ -117,6 +129,14 @@ func CloneDestination(destination, repository, name string) (CloneTarget, error)
 // directory. The destination name and mirror are validated from fixed choices.
 // depth limits how much history is downloaded; 0 means the full repository.
 func CloneRepository(destination, repository, branch, name, mirror string, depth int) (Result, error) {
+	return CloneRepositoryWithProgress(destination, repository, branch, name, mirror, depth, nil)
+}
+
+// CloneRepositoryWithProgress clones a repository and forwards Git's live
+// --progress output. The displayed total is weighted across Git's own phases:
+// object compression (0–5%), receiving objects (5–90%), and resolving deltas
+// (90–99%). 100% is only emitted after Git exits successfully.
+func CloneRepositoryWithProgress(destination, repository, branch, name, mirror string, depth int, onProgress func(CloneProgress)) (Result, error) {
 	parsed, _, err := cloneRepositoryURL(repository)
 	if err != nil {
 		return Result{}, err
@@ -154,7 +174,15 @@ func CloneRepository(destination, repository, branch, name, mirror string, depth
 	default:
 		return Result{}, errors.New("不支持的 Git 镜像")
 	}
-	args := []string{"clone"}
+	args := []string{}
+	if parsed.Scheme == "https" && (mirror == "" || mirror == "official") {
+		// A user-level url.*.insteadOf rule can silently redirect even an
+		// explicitly selected “official” source to an unavailable mirror. Give
+		// this exact repository URL a higher-precedence no-op rewrite for this
+		// command only. It preserves credential helpers and other Git settings.
+		args = append(args, "-c", "url."+remote+".insteadOf="+remote)
+	}
+	args = append(args, "clone", "--progress")
 	if depth > 0 {
 		args = append(args, "--depth", strconv.Itoa(depth))
 	}
@@ -162,17 +190,119 @@ func CloneRepository(destination, repository, branch, name, mirror string, depth
 		args = append(args, "--branch", branch)
 	}
 	args = append(args, remote, target.Path)
-	output, err := run(destination, "git", args...)
+	output, err := runCloneWithProgress(destination, onProgress, args...)
 	if err != nil {
 		return Result{Path: target.Path, Output: output}, fmt.Errorf("克隆仓库失败：%w", err)
 	}
+	warnings := []string{}
+	if parsed.Scheme == "https" && (mirror == "" || mirror == "official") {
+		// Keep later fetch/pull operations on the selected official source too;
+		// this repository-local setting overrides a less-specific global mirror.
+		if _, err := gitRun(target.Path, "config", "url."+remote+".insteadOf", remote); err != nil {
+			warnings = append(warnings, "未能保存官网来源设置："+err.Error())
+		}
+	}
 	// git clone --branch narrows remote.origin.fetch to that single branch, so
 	// later fetches would never learn about the other remote branches. Restore
-	// the full refspec so the whole repository becomes visible after fetch.
+	// the full refspec so the whole repository becomes visible after fetch. This
+	// is a follow-up convenience only: a successful clone must remain usable if
+	// Git cannot update this optional configuration (for example, a filesystem
+	// lock held by a security tool on Windows).
 	if _, err := gitRun(target.Path, "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"); err != nil {
-		return Result{Path: target.Path, Output: output}, fmt.Errorf("克隆完成，但无法设置远程分支跟踪：%w", err)
+		warnings = append(warnings, "未能恢复全部远程分支跟踪；稍后可在 Git 管理中执行拉取："+err.Error())
+	}
+	if len(warnings) > 0 {
+		output = strings.TrimSpace(output + "\n提示：仓库已克隆。\n" + strings.Join(warnings, "\n"))
 	}
 	return Result{Path: target.Path, Output: "已克隆到 " + target.Path + "。\n" + output}, nil
+}
+
+func cloneProgressFromGitOutput(value string) (CloneProgress, bool) {
+	match := gitCloneProgressPattern.FindStringSubmatch(value)
+	if len(match) != 3 {
+		return CloneProgress{}, false
+	}
+	phase := strings.ToLower(match[1])
+	percent, err := strconv.Atoi(match[2])
+	if err != nil {
+		return CloneProgress{}, false
+	}
+	percent = max(0, min(100, percent))
+	switch phase {
+	case "compressing objects":
+		return CloneProgress{Percent: percent * 5 / 100, Detail: "正在压缩对象…"}, true
+	case "receiving objects":
+		return CloneProgress{Percent: 5 + percent*85/100, Detail: fmt.Sprintf("正在接收对象（%d%%）…", percent)}, true
+	case "resolving deltas":
+		return CloneProgress{Percent: 90 + percent*9/100, Detail: fmt.Sprintf("正在解析增量（%d%%）…", percent)}, true
+	default:
+		return CloneProgress{}, false
+	}
+}
+
+func runCloneWithProgress(root string, onProgress func(CloneProgress), args ...string) (string, error) {
+	// Clone-specific temporary Git config is placed before the clone subcommand,
+	// so infer the timeout from the operation rather than args[0].
+	timeout := commandTimeout("git", "clone")
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	command := exec.CommandContext(ctx, "git", args...)
+	command.Dir = root
+	HideWindow(command)
+	var output bytes.Buffer
+	progressOutput := &cloneProgressWriter{output: &output, onProgress: onProgress}
+	command.Stdout = progressOutput
+	command.Stderr = progressOutput
+	err := command.Run()
+	text := strings.TrimSpace(output.String())
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return text, fmt.Errorf("操作超时（%s）；请检查网络、登录状态或代理后重试", timeout.Round(time.Second))
+	}
+	if err != nil {
+		if permissionError(err) || permissionError(errors.New(text)) {
+			return text, permissionAdvice("执行 git")
+		}
+		if commandNotFound(err, text) {
+			return text, missingCommandAdvice("git")
+		}
+		if text != "" {
+			return text, fmt.Errorf("%s：%w", text, err)
+		}
+		return text, fmt.Errorf("执行 git 失败：%w", err)
+	}
+	return text, nil
+}
+
+type cloneProgressWriter struct {
+	output     *bytes.Buffer
+	onProgress func(CloneProgress)
+	last       CloneProgress
+	pending    string
+	mu         sync.Mutex
+}
+
+func (w *cloneProgressWriter) Write(chunk []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	_, _ = w.output.Write(chunk)
+	if w.onProgress == nil {
+		return len(chunk), nil
+	}
+	w.pending += string(chunk)
+	lastBreak := strings.LastIndexAny(w.pending, "\r\n")
+	if lastBreak < 0 {
+		return len(chunk), nil
+	}
+	values, rest := w.pending[:lastBreak], w.pending[lastBreak+1:]
+	w.pending = rest
+	for _, value := range strings.FieldsFunc(values, func(r rune) bool { return r == '\r' || r == '\n' }) {
+		progress, ok := cloneProgressFromGitOutput(value)
+		if ok && progress != w.last {
+			w.last = progress
+			w.onProgress(progress)
+		}
+	}
+	return len(chunk), nil
 }
 
 func requireSSHKey(repository *url.URL) error {

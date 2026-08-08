@@ -1,12 +1,15 @@
 package main
 
 import (
+	"context"
 	"embed"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"alemonx/internal/access"
@@ -239,11 +242,21 @@ func authCommand(arguments []string, confirmed bool, account, password, confirma
 }
 
 func serve(host, port string) {
+	runtime := web.NewServerRuntime(Version, staticFiles, templateFiles)
 	server := &http.Server{
 		Addr:              host + ":" + port,
-		Handler:           web.NewServer(Version, staticFiles, templateFiles),
+		Handler:           runtime.Handler,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
+	stopCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	go func() {
+		<-stopCtx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = runtime.Shutdown(shutdownCtx)
+		_ = server.Shutdown(shutdownCtx)
+	}()
 
 	fmt.Print(startupMessage(Version, host, port))
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {

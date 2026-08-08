@@ -6,6 +6,30 @@
 - TaskPlan 按 `understand → implement → verify` 串行推进，验证失败保留在当前步骤。
 - GoalRun 支持 queued/running/terminal 状态、重启补偿和目标级互斥。
 - checkpoint、events、snapshot、report 使用本地原子持久化，旧聊天接口保持兼容。
+- AI 运维中心支持 PM2 错误指纹去重、Incident、Todo、MaintenanceRun、项目策略和指标查询。
+- 自动维护采用项目白名单：默认 observe，只有明确授权项目才可进入 auto；高风险决策始终转人工。
+- 自动任务完成后进入观察窗口；错误复发会停止自动修复并尝试快照回滚，失败则进入 recovery_required/Todo。
+- 运维中心提供实时事件、待办、维护记录、策略、暂停采集和紧急停止入口。
+
+## AI 运维状态机与灰度规则
+
+```text
+PM2 日志 → fingerprint 去重 → Incident triaged → AI 决策
+  → auto_fix → TaskPlan/Reviewer → observing → resolved
+  → 失败、复发或高风险 → todo / recovery_required
+```
+
+- 项目策略保存在 `incidents/policy-*.json`，使用 `autoAllowed` 作为白名单闸门。
+- `OpsMonitor` 将事件指纹持久化到 `seen-events.json`，重启后不重复唤醒 AI。
+- `FailureCircuitBreak` 达到阈值后自动切换 strict 并撤销白名单。
+- 启动时对账未完成 MaintenanceRun；缺失任务或快照冲突不会自动重放写操作。
+
+## 线上启用与紧急停止
+
+1. 先将项目保持 `observe`，确认 PM2 日志、事件聚合和待办链路正常。
+2. 在 AI 运维中心开启项目白名单、配置验证命令，再切换 `auto`。
+3. 观察自动修复成功率、MTTR、回滚率和误判率后再扩大白名单。
+4. 发生异常时使用“紧急停止”，或调用 `POST /api/v1/ops/monitor/emergency-stop`；恢复使用 `POST /api/v1/ops/monitor/resume`。
 - SSE 支持 `Last-Event-ID` 续传，写操作重新进入 ask 权限确认。
 
 ## 入口兼容矩阵

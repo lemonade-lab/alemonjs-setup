@@ -7,6 +7,26 @@ import (
 	"testing"
 )
 
+func TestCloneProgressFromGitOutput(t *testing.T) {
+	tests := []struct {
+		output  string
+		percent int
+		detail  string
+	}{
+		{"Receiving objects:  50% (20/40), 1.20 MiB | 1.20 MiB/s", 47, "正在接收对象（50%）…"},
+		{"Resolving deltas: 100% (12/12), done.", 99, "正在解析增量（100%）…"},
+	}
+	for _, test := range tests {
+		progress, ok := cloneProgressFromGitOutput(test.output)
+		if !ok || progress.Percent != test.percent || progress.Detail != test.detail {
+			t.Fatalf("cloneProgressFromGitOutput(%q) = %#v, %v", test.output, progress, ok)
+		}
+	}
+	if _, ok := cloneProgressFromGitOutput("remote: Enumerating objects: 12, done."); ok {
+		t.Fatal("non-percentage Git output should not create a progress update")
+	}
+}
+
 func TestGitReleaseStatusDoesNotBlockLocalChangesOrMissingBuildOutput(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "package.json"), []byte(`{"name":"example","version":"1.0.0","scripts":{"build":"echo build"}}`), 0644); err != nil {

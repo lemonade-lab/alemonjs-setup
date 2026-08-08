@@ -17,3 +17,21 @@ func TestGitBuildCheckDoesNotRequireGlobalPackageTools(t *testing.T) {
 		}
 	}
 }
+
+func TestWindowsRegistryPathValue(t *testing.T) {
+	output := "\r\nHKEY_CURRENT_USER\\Environment\r\n    Path    REG_EXPAND_SZ    %LOCALAPPDATA%\\Programs\\nodejs;C:\\Tools\\Git\\cmd\r\n"
+	got := windowsRegistryPathValue(output)
+	want := "%LOCALAPPDATA%\\Programs\\nodejs;C:\\Tools\\Git\\cmd"
+	if got != want {
+		t.Fatalf("windowsRegistryPathValue() = %q, want %q", got, want)
+	}
+}
+
+func TestExpandWindowsEnvironment(t *testing.T) {
+	t.Setenv("LOCALAPPDATA", `C:\\Users\\alemon\\AppData\\Local`)
+	got := expandWindowsEnvironment(`%LOCALAPPDATA%\\Programs\\nodejs`)
+	want := `C:\\Users\\alemon\\AppData\\Local\\Programs\\nodejs`
+	if got != want {
+		t.Fatalf("expandWindowsEnvironment() = %q, want %q", got, want)
+	}
+}

@@ -3,7 +3,9 @@ package system
 
 import (
 	"context"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
@@ -70,7 +72,7 @@ func (c *Checker) platform() Check {
 }
 
 func (c *Checker) command(id, name, argument, suggestion string) Check {
-	path, err := exec.LookPath(id)
+	path, err := c.commandPath(id)
 	if err != nil {
 		return Check{ID: id, Name: name, Status: "missing", Detail: "未检测到", Suggestion: suggestion}
 	}
@@ -87,3 +89,116 @@ func (c *Checker) command(id, name, argument, suggestion string) Check {
 	return Check{ID: id, Name: name, Status: "ready", Detail: version}
 }
 
+// commandPath resolves a command without relying solely on this process's PATH.
+// On Windows, an app that was already open when Node.js or Git was installed
+// retains its old environment. The installers update the registry, but not the
+// GUI process, so LookPath alone keeps reporting a false negative until restart.
+func (c *Checker) commandPath(name string) (string, error) {
+	if path, err := exec.LookPath(name); err == nil {
+		return path, nil
+	}
+	if runtime.GOOS != "windows" {
+		return "", exec.ErrNotFound
+	}
+
+	for _, directory := range windowsCommandDirectories(name) {
+		path := filepath.Join(directory, name+".exe")
+		if info, err := os.Stat(path); err == nil && !info.IsDir() {
+			return path, nil
+		}
+	}
+	return "", exec.ErrNotFound
+}
+
+func windowsCommandDirectories(name string) []string {
+	directories := windowsRegistryPathDirectories()
+	programFiles := []string{os.Getenv("ProgramFiles"), os.Getenv("ProgramW6432"), os.Getenv("ProgramFiles(x86)")}
+	switch name {
+	case "node", "npm", "npx":
+		for _, root := range programFiles {
+			if root != "" {
+				directories = append(directories, filepath.Join(root, "nodejs"))
+			}
+		}
+		if localAppData := os.Getenv("LOCALAPPDATA"); localAppData != "" {
+			directories = append(directories, filepath.Join(localAppData, "Programs", "nodejs"))
+		}
+		if appData := os.Getenv("APPDATA"); appData != "" {
+			directories = append(directories, filepath.Join(appData, "nvm"))
+		}
+	case "git":
+		for _, root := range programFiles {
+			if root != "" {
+				directories = append(directories, filepath.Join(root, "Git", "cmd"), filepath.Join(root, "Git", "bin"))
+			}
+		}
+		if localAppData := os.Getenv("LOCALAPPDATA"); localAppData != "" {
+			directories = append(directories, filepath.Join(localAppData, "Programs", "Git", "cmd"), filepath.Join(localAppData, "Programs", "Git", "bin"))
+		}
+	}
+
+	seen := make(map[string]bool, len(directories))
+	result := make([]string, 0, len(directories))
+	for _, directory := range directories {
+		directory = strings.Trim(strings.TrimSpace(directory), `"`)
+		if directory != "" && !seen[strings.ToLower(directory)] {
+			seen[strings.ToLower(directory)] = true
+			result = append(result, directory)
+		}
+	}
+	return result
+}
+
+// windowsRegistryPathDirectories reads both persistent PATH values. It is kept
+// best-effort: the standard install directories above still cover installations
+// where access to one of the registry hives is unavailable.
+func windowsRegistryPathDirectories() []string {
+	if runtime.GOOS != "windows" {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	directories := []string{}
+	for _, key := range []string{
+		`HKCU\Environment`,
+		`HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment`,
+	} {
+		output, err := exec.CommandContext(ctx, "reg.exe", "query", key, "/v", "Path").Output()
+		if err != nil {
+			continue
+		}
+		if value := windowsRegistryPathValue(string(output)); value != "" {
+			directories = append(directories, filepath.SplitList(expandWindowsEnvironment(value))...)
+		}
+	}
+	return directories
+}
+
+func windowsRegistryPathValue(output string) string {
+	for _, line := range strings.Split(output, "\n") {
+		if typeIndex := strings.Index(line, "REG_"); typeIndex >= 0 {
+			if valueIndex := strings.IndexAny(line[typeIndex:], " \t"); valueIndex >= 0 {
+				return strings.TrimSpace(line[typeIndex+valueIndex:])
+			}
+		}
+	}
+	return ""
+}
+
+func expandWindowsEnvironment(value string) string {
+	return os.Expand(expandWindowsPercentVariables(value), func(key string) string { return os.Getenv(key) })
+}
+
+func expandWindowsPercentVariables(value string) string {
+	for start := strings.IndexByte(value, '%'); start >= 0; {
+		endOffset := strings.IndexByte(value[start+1:], '%')
+		if endOffset < 0 {
+			break
+		}
+		end := start + endOffset + 1
+		key := value[start+1 : end]
+		value = value[:start] + os.Getenv(key) + value[end+1:]
+		start = strings.IndexByte(value, '%')
+	}
+	return value
+}

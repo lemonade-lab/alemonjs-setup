@@ -64,6 +64,7 @@ import {
   Send,
   Settings,
   Shield,
+  ShieldCheck,
   Terminal,
   Trash2,
   Waypoints,
@@ -78,6 +79,7 @@ import { Tabs } from './Tabs'
 import { NpmrcConfigForm } from './NpmrcConfigForm'
 import { EnvConfigForm } from './EnvConfigForm'
 import { BotWorkspace } from './BotWorkspace'
+import { OpsCenter } from './OpsCenter'
 import { NpmPublishPanel } from './NpmPublishPanel'
 import { PackageManifestPanel } from './PackageManifestPanel'
 import { SetupUpdateButton } from './SetupUpdateButton'
@@ -179,7 +181,7 @@ const coreFeatureCatalog: Array<{
   label: string
   icon: ReactNode
   status?: string
-}> = [{ id: 'plugins', label: '插件', icon: <Plug /> }]
+}> = [{ id: 'plugins', label: '插件', icon: <Plug /> }, { id: 'ops', label: 'AI 运维', icon: <ShieldCheck /> }]
 const directoryActions: Array<{
   id: Section | Page
   label: string
@@ -409,6 +411,12 @@ export function DirectoryPicker({
     }))
   ]
   const locations = data?.locations ?? []
+  // Finder sidebars represent directories too. In a directory picker, picking
+  // one should both navigate there and make it immediately confirmable.
+  const selectSidebarLocation = (nextPath: string) => {
+    visit(nextPath)
+    if (selectionMode !== 'file') setSelected([nextPath])
+  }
   const goHistory = (step: number) => {
     const target = history[historyIndex + step]
     if (target) {
@@ -547,7 +555,7 @@ export function DirectoryPicker({
                     : 'text-slate-600 hover:bg-slate-100'
                 )}
                 key={item.path}
-                onClick={() => visit(item.path)}
+                onClick={() => selectSidebarLocation(item.path)}
               >
                 <Folder className="size-4 text-slate-500" />
                 {item.name}
@@ -567,7 +575,7 @@ export function DirectoryPicker({
                         : 'text-slate-600 hover:bg-slate-100'
                     )}
                     key={location.path}
-                    onClick={() => visit(location.path)}
+                    onClick={() => selectSidebarLocation(location.path)}
                     title={location.path}
                   >
                     {location.kind === 'home' ? (
@@ -793,6 +801,7 @@ export function Dashboard({
   const [releaseVersion, setReleaseVersion] = useStoreState('')
   const [directoryPickerOpen, setDirectoryPickerOpen] = useStoreState(false)
   const [cloneProgress, setCloneProgress] = useStoreState(0)
+  const [cloneStatus, setCloneStatus] = useStoreState('正在准备克隆…')
   const [gitCloneOpen, setGitCloneOpen] = useStoreState(false)
   const [gitDestinationPickerOpen, setGitDestinationPickerOpen] =
     useStoreState(false)
@@ -1447,7 +1456,8 @@ export function Dashboard({
   ) {
     if (!gitDestination) return
     setBusy(true)
-    setCloneProgress(10)
+    setCloneProgress(0)
+    setCloneStatus('正在启动 Git…')
     try {
       const response = await fetch('/api/v1/robot/git-clone', {
         method: 'POST',
@@ -1468,6 +1478,7 @@ export function Dashboard({
       }
       if (!response.ok || !data.id)
         throw new Error(data.error || '克隆仓库失败。')
+      setCloneStatus(data.output || '正在连接远程仓库…')
       for (;;) {
         await new Promise(resolve => window.setTimeout(resolve, 550))
         const taskResponse = await fetch(
@@ -1481,6 +1492,7 @@ export function Dashboard({
           error?: string
         }
         setCloneProgress(task.progress ?? 10)
+        setCloneStatus(task.output || '正在克隆仓库…')
         if (task.status === 'running') continue
         if (task.status === 'failed')
           throw new Error(task.error || '克隆仓库失败。')
@@ -1499,6 +1511,7 @@ export function Dashboard({
     } finally {
       setBusy(false)
       setCloneProgress(0)
+      setCloneStatus('正在准备克隆…')
     }
   }
 
@@ -1827,6 +1840,8 @@ export function Dashboard({
         onOpen={id => selectSystemFeature(`setup:${id}`)}
         onRefresh={() => void refetchSetupPlugins()}
       />
+    ) : systemFeature === 'ops' ? (
+      <OpsCenter root={root} />
     ) : systemFeature === 'tasks' ? (
       <OperationTasksPage root={root} />
     ) : systemFeature === 'environment' ? (
@@ -2107,6 +2122,7 @@ export function Dashboard({
             destination={gitDestination}
             busy={busy}
             progress={cloneProgress}
+            status={cloneStatus}
             onClose={() => setGitCloneOpen(false)}
             onChooseDestination={() => setGitDestinationPickerOpen(true)}
             onConfirm={cloneRobotRepository}
@@ -2519,6 +2535,7 @@ function GitCloneDialog({
   destination,
   busy,
   progress,
+  status,
   onClose,
   onChooseDestination,
   onConfirm
@@ -2527,6 +2544,7 @@ function GitCloneDialog({
   destination: string
   busy: boolean
   progress: number
+  status: string
   onClose: () => void
   onChooseDestination: () => void
   onConfirm: (
@@ -2706,18 +2724,14 @@ function GitCloneDialog({
         </header>
         <div className="grid gap-3 overflow-auto p-4">
           <section
-            className="grid gap-2 rounded-lg border border-slate-200 bg-slate-50 p-3"
             aria-label="仓库连接方式"
           >
             <header className="flex items-center justify-between gap-2">
-              <strong className="text-xs font-semibold text-slate-700">
-                连接方式
-              </strong>
               <small className="text-[11px] text-slate-500">
                 {sshLoading
                   ? '正在检查 SSH…'
                   : sshKeys.length
-                    ? `已检测到 SSH 密钥：${sshKeys[0].name}`
+                    ? ``
                     : '未配置 SSH 密钥'}
               </small>
             </header>
@@ -2743,7 +2757,7 @@ function GitCloneDialog({
             <p className="m-0 text-xs leading-5 text-slate-500">
               {connection === 'ssh'
                 ? sshKeys.length
-                  ? '推荐 SSH：私有仓库需先将此公钥添加到代码平台。'
+                  ? ''
                   : '未配置 SSH 密钥；请在顶部 SSH 管理中生成并添加公钥，或改用 HTTPS。'
                 : 'HTTPS 可直接使用；访问私有仓库时，需要在代码平台完成在线授权。'}
             </p>
@@ -2868,7 +2882,7 @@ function GitCloneDialog({
           {busy && (
             <div className="mr-auto grid min-w-44 gap-1 self-center">
               <div className="flex justify-between text-[11px] text-slate-500">
-                <span>正在下载仓库</span>
+                <span>{status}</span>
                 <span>{progress}%</span>
               </div>
               <div className="h-1.5 overflow-hidden rounded-full bg-slate-200">
@@ -4700,7 +4714,7 @@ function CatalogDetail({
                 {versionsLoading && <option value="">读取版本…</option>}
                 {versionsError && <option value="">版本读取失败</option>}
                 {noRepositoryTag && (
-                  <option value="">该插件没有可用的正式 Release</option>
+                  <option value="">该插件没有可用的 Release</option>
                 )}
                 {packageVersions?.versions.map(itemVersion => (
                   <option key={itemVersion} value={itemVersion}>
@@ -4754,7 +4768,7 @@ function CatalogDetail({
       </section>
       {repositoryInstall && noRepositoryTag && (
         <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-          该插件仓库没有正式 Release，不能作为可复现的版本安装。
+          该插件仓库没有可用的 Release，不能作为可复现的版本安装。
         </p>
       )}
       {repositoryInstall && versionsError && (

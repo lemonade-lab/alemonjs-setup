@@ -305,7 +305,7 @@ func (m *TaskManager) run(ctx context.Context, id string, task AgentTask, runner
 	var observer TaskObserver
 	if ok {
 		previous = managed.Task
-		if errors.Is(ctx.Err(), context.Canceled) {
+		if errors.Is(ctx.Err(), context.Canceled) && managed.Task.Status != TaskPaused {
 			managed.Task.Status = TaskCancelled
 		} else if err != nil {
 			managed.Task.Status = TaskFailed
@@ -402,6 +402,29 @@ func (m *TaskManager) List() []AgentTask {
 		}
 	}
 	return out
+}
+
+// PauseRunning preserves checkpoints while stopping active runners during a
+// graceful server shutdown.
+func (m *TaskManager) PauseRunning() error {
+	m.mu.Lock()
+	ids := make([]string, 0)
+	for id, managed := range m.tasks {
+		if managed.Task.Status == TaskRunning { ids = append(ids, id) }
+	}
+	m.mu.Unlock()
+	for _, id := range ids {
+		m.mu.Lock()
+		managed := m.tasks[id]
+		if managed != nil && managed.Task.Status == TaskRunning {
+			if managed.Cancel != nil { managed.Cancel() }
+			managed.Task.Status = TaskPaused
+			managed.Task.Updated = time.Now()
+			if err := m.store.SaveTask(managed.Task); err != nil { m.mu.Unlock(); return err }
+		}
+		m.mu.Unlock()
+	}
+	return nil
 }
 
 func (m *TaskManager) Events(id string, after int64) ([]TaskEvent, error) {

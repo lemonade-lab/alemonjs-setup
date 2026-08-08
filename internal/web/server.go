@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html"
 	"io"
@@ -199,6 +200,10 @@ type server struct {
 	goalSchedulerStop chan struct{}
 	goalSchedulerMu   sync.Mutex
 	goalRunning       map[string]bool
+	opsStore          *agent.OpsStore
+	opsOrchestrator   *agent.OpsOrchestrator
+	opsPaused         bool
+	opsMonitor        *agent.OpsMonitor
 	agentConfirms     *agentConfirmManager
 	mu                sync.RWMutex
 	operations        []operationTask
@@ -213,6 +218,29 @@ type server struct {
 	requestID      atomic.Uint64
 	directoryRoots []string
 	events         *robotEventHub
+}
+
+// ServerRuntime owns the HTTP handler and all process-local background loops.
+// Existing callers can keep using NewServer; production entrypoints should use
+// Runtime.Shutdown so monitors and task state are flushed before exit.
+type ServerRuntime struct {
+	Handler http.Handler
+	server  *server
+	once    sync.Once
+}
+
+func (r *ServerRuntime) Shutdown(ctx context.Context) error {
+	if r == nil || r.server == nil { return nil }
+	var shutdownErr error
+	r.once.Do(func() {
+		s := r.server
+		if s.opsMonitor != nil { _ = s.opsMonitor.Stop() }
+		s.stopGoalScheduler()
+		if s.pluginWatcher != nil { s.pluginWatcher.Stop() }
+		if err := s.agentTasks.PauseRunning(); err != nil { shutdownErr = err }
+		select { case <-ctx.Done(): if shutdownErr == nil { shutdownErr = ctx.Err() }; default: }
+	})
+	return shutdownErr
 }
 
 // cleanupStaleProcesses runs at server startup. It loads the persisted markers
@@ -262,16 +290,24 @@ func githubMirrors(repository string) []mirror {
 }
 
 func NewServer(version string, staticFiles fs.FS, templateFiles ...fs.FS) http.Handler {
+	return NewServerRuntime(version, staticFiles, templateFiles...).Handler
+}
+
+func NewServerRuntime(version string, staticFiles fs.FS, templateFiles ...fs.FS) *ServerRuntime {
 	identity, err := access.New()
 	if err != nil {
 		panic(err)
 	}
-	return NewServerWithAuth(version, staticFiles, identity, templateFiles...)
+	return NewServerRuntimeWithAuth(version, staticFiles, identity, templateFiles...)
 }
 
 // NewServerWithAuth permits tests and embedders to provide an isolated auth
 // store instead of reading the current user's alx configuration.
 func NewServerWithAuth(version string, staticFiles fs.FS, identity *access.Manager, templateFiles ...fs.FS) http.Handler {
+	return NewServerRuntimeWithAuth(version, staticFiles, identity, templateFiles...).Handler
+}
+
+func NewServerRuntimeWithAuth(version string, staticFiles fs.FS, identity *access.Manager, templateFiles ...fs.FS) *ServerRuntime {
 	assets, err := fs.Sub(staticFiles, "dist")
 	if err != nil {
 		panic(err)
@@ -290,10 +326,106 @@ func NewServerWithAuth(version string, staticFiles fs.FS, identity *access.Manag
 	}
 	goalStore := agent.NewGoalStoreAt(filepath.Join(filepath.Dir(taskStore.TasksDir()), "goals"))
 	tasks := agent.NewTaskManager(taskStore)
-	s := &server{version: version, assets: assets, static: http.FileServer(http.FS(assets)), checker: system.NewChecker(), plugins: setupplugin.NewRegistry(), auth: identity, ai: aiManager, agentSessions: sessionStore, agentTaskStore: taskStore, agentTasks: tasks, taskService: &agent.TaskService{Manager: tasks}, goalStore: goalStore, goalSchedulerStop: make(chan struct{}), goalRunning: map[string]bool{}, agentConfirms: newAgentConfirmManager(), development: map[string]developmentProcess{}, webviewRuntimes: map[string]*webViewRuntime{}, stopping: map[string]bool{}, consoleCache: map[string]consoleSnapshot{}, directoryRoots: managedDirectoryRoots(), events: newRobotEventHub()}
+	opsStore := agent.NewOpsStoreAt(filepath.Join(filepath.Dir(taskStore.TasksDir()), "incidents"))
+	s := &server{version: version, assets: assets, static: http.FileServer(http.FS(assets)), checker: system.NewChecker(), plugins: setupplugin.NewRegistry(), auth: identity, ai: aiManager, agentSessions: sessionStore, agentTaskStore: taskStore, agentTasks: tasks, taskService: &agent.TaskService{Manager: tasks}, goalStore: goalStore, opsStore: opsStore, goalSchedulerStop: make(chan struct{}), goalRunning: map[string]bool{}, agentConfirms: newAgentConfirmManager(), development: map[string]developmentProcess{}, webviewRuntimes: map[string]*webViewRuntime{}, stopping: map[string]bool{}, consoleCache: map[string]consoleSnapshot{}, directoryRoots: managedDirectoryRoots(), events: newRobotEventHub()}
+	s.opsOrchestrator = &agent.OpsOrchestrator{
+		Store:  opsStore,
+		Policy: func(root string) (agent.OpsPolicy, error) { return opsStore.GetPolicy(root) },
+		AI: func(incident agent.Incident, policy agent.OpsPolicy) (agent.AutoFixDecision, error) {
+			providers, err := s.ai.List()
+			if err != nil {
+				return agent.AutoFixDecision{}, err
+			}
+			prompt := `你是线上运维审查器。只返回 JSON，不要 Markdown。动作只能是 observe_only、restart_process、auto_fix、create_todo、escalate。禁止凭据、数据库、系统权限和任意 shell 操作。若定位、验证或风险不明确，返回 create_todo。字段：action,confidence,severity,risk,reason,requiresHuman,allowedActions。\n项目：` + incident.ProjectRoot + `\n错误：` + incident.Sample + `\n文件：` + incident.File + `:` + fmt.Sprint(incident.Line) + `\n策略：` + policy.Mode
+			for _, provider := range providers {
+				if !provider.HasKey {
+					continue
+				}
+				answer, chatErr := s.ai.Chat(provider.ID, provider.Model, []map[string]string{{"role": "user", "content": prompt}})
+				if chatErr == nil {
+					return agent.ParseAutoFixDecision(answer)
+				}
+			}
+			return agent.AutoFixDecision{}, errors.New("没有可用的 AI Provider")
+		},
+		PM2: func(root, action string) (string, error) {
+			if !agent.IsAllowedPM2Action(action) {
+				return "", fmt.Errorf("PM2 操作不在白名单：%s", action)
+			}
+			result, err := s.robots.Run(root, action, "", "", "", "", "", true)
+			return result.Output, err
+		},
+		StartFix: func(incident agent.Incident, _ agent.AutoFixDecision) (string, error) {
+			providers, err := s.ai.List()
+			if err != nil {
+				return "", err
+			}
+			for _, provider := range providers {
+				if !provider.HasKey {
+					continue
+				}
+				created, createErr := s.createAgentTask(agentTaskInput{Provider: provider.ID, Model: provider.Model, Root: incident.ProjectRoot, Access: "auto", Messages: []map[string]string{{"role": "user", "content": "生产错误自动维护：" + incident.Sample + "\n请先定位根因，仅修改必要文件，并运行验证命令。"}}, Isolation: "workspace"}, true)
+				if createErr == nil {
+					return created.ID, nil
+				}
+			}
+			return "", errors.New("没有已配置的 AI Provider")
+		},
+	}
+	s.opsMonitor = s.newOpsMonitor()
 	_ = s.goalStore.ReconcileRuns(s.agentTasks.List())
+	_ = s.opsStore.ReconcileMaintenance(s.agentTasks.List())
 	s.startGoalScheduler()
+	if s.opsMonitor != nil {
+		_ = s.opsMonitor.Start(context.Background())
+	}
 	s.agentTasks.SetObserver(func(previous, current agent.AgentTask) {
+		if previous.Status != current.Status && s.opsStore != nil {
+			status := string(current.Status)
+			if status == string(agent.TaskCompleted) || status == string(agent.TaskFailed) || status == string(agent.TaskCancelled) {
+				_ = s.opsStore.UpdateMaintenanceByTask(current.ID, status, current.LastError)
+				if status == string(agent.TaskCompleted) {
+					if runs, runsErr := s.opsStore.ListMaintenance(); runsErr == nil {
+						for _, run := range runs {
+							if run.TaskID != current.ID {
+								continue
+							}
+							if incident, incidentErr := s.opsStore.GetIncident(run.IncidentID); incidentErr == nil {
+								if policy, policyErr := s.opsStore.GetPolicy(incident.ProjectRoot); policyErr == nil && policy.MaxModifiedFiles > 0 {
+									if report, reportErr := s.agentTaskStore.LoadReport(current.ID); reportErr == nil && len(report.ModifiedFiles) > policy.MaxModifiedFiles {
+										store := agent.NewSnapshotStoreAt(filepath.Join(s.agentTaskStore.TasksDir(), current.ID, "snapshots"))
+										_, _ = store.Rollback(current.ID, incident.ProjectRoot, false)
+										run.Status, run.Error, run.RollbackPerformed = "failed", fmt.Sprintf("修改文件数超过策略上限 %d", policy.MaxModifiedFiles), true
+										incident.Status, incident.DecisionReason = agent.IncidentTodo, run.Error
+										_ = s.opsStore.SaveIncident(incident)
+									}
+								}
+							}
+							_ = s.opsStore.SaveMaintenance(run)
+						}
+					}
+				}
+				if status == string(agent.TaskFailed) || status == string(agent.TaskCancelled) {
+					if runs, runsErr := s.opsStore.ListMaintenance(); runsErr == nil {
+						for _, run := range runs {
+							if run.TaskID != current.ID {
+								continue
+							}
+							if incident, incidentErr := s.opsStore.GetIncident(run.IncidentID); incidentErr == nil {
+								if policy, policyErr := s.opsStore.GetPolicy(incident.ProjectRoot); policyErr == nil {
+									policy.FailureCount++
+									if policy.FailureCircuitBreak > 0 && policy.FailureCount >= policy.FailureCircuitBreak {
+										policy.Mode, policy.AutoAllowed = "strict", false
+									}
+									policy.Updated = time.Now()
+									_ = s.opsStore.SavePolicy(policy)
+								}
+							}
+						}
+					}
+				}
+			}
+		}
 		if current.GoalID == "" || previous.Status == current.Status {
 			return
 		}
@@ -341,6 +473,8 @@ func NewServerWithAuth(version string, staticFiles fs.FS, identity *access.Manag
 	mux.HandleFunc("/api/v1/agent/diagnostics", s.agentDiagnosticsHandler)
 	mux.HandleFunc("/api/v1/agent/goals", s.agentGoalsHandler)
 	mux.HandleFunc("/api/v1/agent/goals/", s.agentGoalHandler)
+	mux.HandleFunc("/api/v1/ops/", s.opsHandler)
+	mux.HandleFunc("/api/v1/ops", s.opsHandler)
 	mux.HandleFunc("/api/v1/system/ssh", s.sshHandler)
 	mux.HandleFunc("/api/v1/system/mcp", s.systemMCPHandler)
 	mux.HandleFunc("/api/v1/directories", s.directoryHandler)
@@ -394,7 +528,7 @@ func NewServerWithAuth(version string, staticFiles fs.FS, identity *access.Manag
 	// The Gin engine owns every request. Existing handlers remain standard
 	// net/http functions, preserving their API contracts during migration.
 	router.Any("/*path", gin.WrapH(mux))
-	return router
+	return &ServerRuntime{Handler: router, server: s}
 }
 
 const authCookieName = "alx_session"
@@ -3190,12 +3324,12 @@ func (s *server) robotGitCloneHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "目标目录已存在。")
 		return
 	}
-	created := operationTask{ID: "clone-" + time.Now().Format("20060102150405.000000000"), Root: destination, Path: target.Path, Action: "git-clone", Status: "running", Output: "正在校验仓库与目标目录…", Progress: 10, CreatedAt: time.Now()}
+	created := operationTask{ID: "clone-" + time.Now().Format("20060102150405.000000000"), Root: destination, Path: target.Path, Action: "git-clone", Status: "running", Output: "正在启动 Git…", Progress: 0, CreatedAt: time.Now()}
 	s.addOperation(created)
 	go func() {
-		s.updateOperation(created.ID, 35, "正在连接远程仓库…", "", false)
-		s.updateOperation(created.ID, 60, "正在下载仓库文件…", "", false)
-		result, err := robot.CloneRepository(destination, input.Repository, input.Branch, input.Name, input.Mirror, input.Depth)
+		result, err := robot.CloneRepositoryWithProgress(destination, input.Repository, input.Branch, input.Name, input.Mirror, input.Depth, func(progress robot.CloneProgress) {
+			s.updateOperation(created.ID, progress.Percent, progress.Detail, "", false)
+		})
 		if err != nil {
 			s.updateOperation(created.ID, 100, result.Output, err.Error(), true)
 			return
