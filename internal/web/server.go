@@ -181,26 +181,31 @@ type webViewRuntime struct {
 }
 
 type server struct {
-	version         string
-	assets          fs.FS
-	static          http.Handler
-	checker         *system.Checker
-	creator         *project.Creator
-	robots          robot.Manager
-	plugins         *setupplugin.Registry
-	pluginWatcher   *setupplugin.Watcher
-	auth            *access.Manager
-	ai              *ai.Manager
-	agentSessions   *agent.SessionStore
-	agentTasks      *agent.TaskManager
-	agentTaskStore  *agent.TaskStore
-	agentConfirms   *agentConfirmManager
-	mu              sync.RWMutex
-	operations      []operationTask
-	development     map[string]developmentProcess
-	webviewRuntimes map[string]*webViewRuntime
-	stopping        map[string]bool
-	consoleCache    map[string]consoleSnapshot
+	version           string
+	assets            fs.FS
+	static            http.Handler
+	checker           *system.Checker
+	creator           *project.Creator
+	robots            robot.Manager
+	plugins           *setupplugin.Registry
+	pluginWatcher     *setupplugin.Watcher
+	auth              *access.Manager
+	ai                *ai.Manager
+	agentSessions     *agent.SessionStore
+	agentTasks        *agent.TaskManager
+	taskService       *agent.TaskService
+	agentTaskStore    *agent.TaskStore
+	goalStore         *agent.GoalStore
+	goalSchedulerStop chan struct{}
+	goalSchedulerMu   sync.Mutex
+	goalRunning       map[string]bool
+	agentConfirms     *agentConfirmManager
+	mu                sync.RWMutex
+	operations        []operationTask
+	development       map[string]developmentProcess
+	webviewRuntimes   map[string]*webViewRuntime
+	stopping          map[string]bool
+	consoleCache      map[string]consoleSnapshot
 	// pm2Status lets tests substitute a fake PM2 state. The default read runs a
 	// real `npx pm2 jlist` behind a short timeout so a missing pm2 never blocks
 	// a local start request for the full package-manager timeout.
@@ -283,7 +288,20 @@ func NewServerWithAuth(version string, staticFiles fs.FS, identity *access.Manag
 	if err != nil {
 		panic(err)
 	}
-	s := &server{version: version, assets: assets, static: http.FileServer(http.FS(assets)), checker: system.NewChecker(), plugins: setupplugin.NewRegistry(), auth: identity, ai: aiManager, agentSessions: sessionStore, agentTaskStore: taskStore, agentTasks: agent.NewTaskManager(taskStore), agentConfirms: newAgentConfirmManager(), development: map[string]developmentProcess{}, webviewRuntimes: map[string]*webViewRuntime{}, stopping: map[string]bool{}, consoleCache: map[string]consoleSnapshot{}, directoryRoots: managedDirectoryRoots(), events: newRobotEventHub()}
+	goalStore := agent.NewGoalStoreAt(filepath.Join(filepath.Dir(taskStore.TasksDir()), "goals"))
+	tasks := agent.NewTaskManager(taskStore)
+	s := &server{version: version, assets: assets, static: http.FileServer(http.FS(assets)), checker: system.NewChecker(), plugins: setupplugin.NewRegistry(), auth: identity, ai: aiManager, agentSessions: sessionStore, agentTaskStore: taskStore, agentTasks: tasks, taskService: &agent.TaskService{Manager: tasks}, goalStore: goalStore, goalSchedulerStop: make(chan struct{}), goalRunning: map[string]bool{}, agentConfirms: newAgentConfirmManager(), development: map[string]developmentProcess{}, webviewRuntimes: map[string]*webViewRuntime{}, stopping: map[string]bool{}, consoleCache: map[string]consoleSnapshot{}, directoryRoots: managedDirectoryRoots(), events: newRobotEventHub()}
+	_ = s.goalStore.ReconcileRuns(s.agentTasks.List())
+	s.startGoalScheduler()
+	s.agentTasks.SetObserver(func(previous, current agent.AgentTask) {
+		if current.GoalID == "" || previous.Status == current.Status {
+			return
+		}
+		status := string(current.Status)
+		if status == string(agent.TaskCompleted) || status == string(agent.TaskFailed) || status == string(agent.TaskCancelled) {
+			_ = s.goalStore.UpdateRunByTask(current.ID, status, current.LastError)
+		}
+	})
 	// Kill any previously supervised robot process that survived a restart so a
 	// stray node cannot keep the app port occupied.
 	cleanupStaleProcesses()
@@ -321,6 +339,8 @@ func NewServerWithAuth(version string, staticFiles fs.FS, identity *access.Manag
 	mux.HandleFunc("/api/v1/agent/tasks", s.agentTasksHandler)
 	mux.HandleFunc("/api/v1/agent/tasks/", s.agentTaskHandler)
 	mux.HandleFunc("/api/v1/agent/diagnostics", s.agentDiagnosticsHandler)
+	mux.HandleFunc("/api/v1/agent/goals", s.agentGoalsHandler)
+	mux.HandleFunc("/api/v1/agent/goals/", s.agentGoalHandler)
 	mux.HandleFunc("/api/v1/system/ssh", s.sshHandler)
 	mux.HandleFunc("/api/v1/system/mcp", s.systemMCPHandler)
 	mux.HandleFunc("/api/v1/directories", s.directoryHandler)
@@ -336,6 +356,7 @@ func NewServerWithAuth(version string, staticFiles fs.FS, identity *access.Manag
 	mux.HandleFunc("/api/v1/robot", s.robotHandler)
 	mux.HandleFunc("/api/v1/robot/validate", s.robotValidateHandler)
 	mux.HandleFunc("/api/v1/robot/console", s.robotConsoleHandler)
+	mux.HandleFunc("/api/v1/robot/terminal", s.robotTerminalHandler)
 	mux.HandleFunc("/api/v1/robot/pm2-logs", s.robotPM2LogsHandler)
 	mux.HandleFunc("/api/v1/robot/pm2-status", s.robotPM2StatusHandler)
 	mux.HandleFunc("/api/v1/robot/pm2-processes", s.robotPM2ProcessesHandler)
@@ -1482,6 +1503,90 @@ func (s *server) robotConsoleHandler(w http.ResponseWriter, r *http.Request) {
 		payload.Output = "当前没有正在运行的前台或开发进程。"
 	}
 	writeJSON(w, http.StatusOK, payload)
+}
+
+type robotTerminalRequest struct {
+	Root    string `json:"root"`
+	Command string `json:"command"`
+}
+
+// robotTerminalHandler runs one approved command with the robot directory as
+// its working directory. It deliberately does not expose a persistent shell:
+// every request is validated and scoped independently before it starts.
+func (s *server) robotTerminalHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "该操作暂不支持。")
+		return
+	}
+	var input robotTerminalRequest
+	if err := json.NewDecoder(io.LimitReader(r.Body, 16<<10)).Decode(&input); err != nil {
+		writeError(w, http.StatusBadRequest, "终端命令格式无效。")
+		return
+	}
+	validation, err := (robot.Manager{}).Validate(input.Root)
+	if err != nil {
+		writeError(w, http.StatusForbidden, err.Error())
+		return
+	}
+	root := validation.Path
+	command := strings.TrimSpace(input.Command)
+	if err := validateRobotTerminalCommand(command); err != nil {
+		writeError(w, http.StatusForbidden, err.Error())
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
+	defer cancel()
+	var cmd *exec.Cmd
+	if runtime.GOOS == "windows" {
+		cmd = exec.CommandContext(ctx, "cmd.exe", "/d", "/s", "/c", command)
+	} else {
+		cmd = exec.CommandContext(ctx, "/bin/sh", "-lc", command)
+	}
+	cmd.Dir = root
+	output, runErr := cmd.CombinedOutput()
+	text := string(output)
+	if runErr != nil {
+		if ctx.Err() != nil {
+			text += "\n命令已超时并被终止。"
+		} else {
+			text += "\n" + runErr.Error()
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"output": "$ " + command + "\n" + text})
+}
+
+func validateRobotTerminalCommand(command string) error {
+	if command == "" {
+		return fmt.Errorf("请输入终端命令。")
+	}
+	if len(command) > 2000 {
+		return fmt.Errorf("终端命令不能超过 2000 个字符。")
+	}
+	for _, token := range []string{";", "&&", "||", "|", ">", "<", "`", "$(", "${", "\n", "\r"} {
+		if strings.Contains(command, token) {
+			return fmt.Errorf("终端不支持 shell 拼接或重定向；请一次执行一条命令。")
+		}
+	}
+	fields := strings.Fields(command)
+	allowed := map[string]bool{
+		"pwd": true, "ls": true, "dir": true, "cat": true, "head": true,
+		"tail": true, "find": true, "grep": true, "git": true, "node": true,
+		"npm": true, "yarn": true, "pnpm": true, "bun": true, "go": true,
+		"python": true, "python3": true,
+	}
+	if len(fields) == 0 || !allowed[strings.ToLower(filepath.Base(fields[0]))] {
+		return fmt.Errorf("该命令不在机器人目录终端的允许列表中。")
+	}
+	for _, field := range fields {
+		if filepath.IsAbs(field) || strings.Contains(field, "..") {
+			return fmt.Errorf("终端命令只能使用机器人目录内的相对路径。")
+		}
+		lower := strings.ToLower(field)
+		if lower == "--global" || lower == "-g" || lower == "--prefix" || lower == "-c" || lower == "-e" {
+			return fmt.Errorf("终端不允许全局修改或内联脚本参数。")
+		}
+	}
+	return nil
 }
 
 // cachedRobotConsole reuses the terminal's static context for a short window so

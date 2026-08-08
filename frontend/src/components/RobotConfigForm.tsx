@@ -235,7 +235,7 @@ export function RobotConfigForm({ content, toolbar, onChange }: Props) {
   useEffect(() => {
     const next = readValues(content)
     setValues(current => (sameValues(current, next) ? current : next))
-  }, [content])
+  }, [content, setValues])
   // Redux's YAML draft is the shared editing source for both modes.
   const set = (key: string, value: string) => {
     const next = { ...values, [key]: value }

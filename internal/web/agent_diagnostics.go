@@ -28,7 +28,8 @@ func (s *server) agentDiagnosticsHandler(w http.ResponseWriter, r *http.Request)
 	}
 	files := &robotFileService{manager: robot.Manager{}}
 	if input.Error != "" {
-		writeJSON(w, http.StatusOK, agent.ParseDiagnostic(input.Root, input.Error))
+		diagnostic := agent.ParseDiagnostic(input.Root, input.Error)
+		writeJSON(w, http.StatusOK, map[string]any{"kind": diagnostic.ErrorKind, "file": diagnostic.File, "line": diagnostic.Line, "column": diagnostic.Column, "message": diagnostic.ErrorText, "relatedFiles": diagnostic.RelatedFiles, "explanation": agent.ExplainDiagnostic(diagnostic)})
 		return
 	}
 	spec, ok := agent.DiscoverVerifyCommand(input.Root, files)

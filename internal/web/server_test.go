@@ -91,14 +91,14 @@ func TestOperationWriterBuffersPartialLines(t *testing.T) {
 // without a real PM2 daemon or a listening listener.
 func newStatefulTestServer() *server {
 	return &server{
-		robots:        robot.Manager{},
-		operations:    []operationTask{},
-		development:   map[string]developmentProcess{},
-		stopping:      map[string]bool{},
-		consoleCache:  map[string]consoleSnapshot{},
-		pm2Status:     func(string) (robot.PM2Status, error) { return robot.PM2Status{}, nil },
+		robots:         robot.Manager{},
+		operations:     []operationTask{},
+		development:    map[string]developmentProcess{},
+		stopping:       map[string]bool{},
+		consoleCache:   map[string]consoleSnapshot{},
+		pm2Status:      func(string) (robot.PM2Status, error) { return robot.PM2Status{}, nil },
 		directoryRoots: managedDirectoryRoots(),
-		events:        newRobotEventHub(),
+		events:         newRobotEventHub(),
 	}
 }
 

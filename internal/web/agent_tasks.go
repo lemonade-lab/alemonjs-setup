@@ -1,11 +1,13 @@
 package web
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -21,6 +23,7 @@ type agentTaskInput struct {
 	Model     string              `json:"model"`
 	Root      string              `json:"root"`
 	SessionID string              `json:"sessionId"`
+	GoalID    string              `json:"goalId,omitempty"`
 	Access    string              `json:"access"`
 	Messages  []map[string]string `json:"messages"`
 	Isolation string              `json:"isolation,omitempty"`
@@ -40,68 +43,87 @@ func (s *server) agentTasksHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "请求无法识别。")
 		return
 	}
-	if len(input.Messages) == 0 {
-		writeError(w, http.StatusBadRequest, "请填写要发送的消息。")
+	legacy := r.Header.Get("X-Legacy-Agent") == "1"
+	created, err := s.createAgentTask(input, legacy)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if strings.Contains(err.Error(), "有效的机器人目录") || strings.Contains(err.Error(), "隔离模式") || strings.Contains(err.Error(), "权限模式") || strings.Contains(err.Error(), "请填写") {
+			status = http.StatusBadRequest
+		}
+		if strings.Contains(err.Error(), "provider") || strings.Contains(err.Error(), "model") {
+			status = http.StatusBadGateway
+		}
+		writeError(w, status, err.Error())
 		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{"taskId": created.ID, "sessionId": created.SessionID, "status": created.Status, "task": created})
+}
+
+func (s *server) createAgentTask(input agentTaskInput, legacy bool) (agent.AgentTask, error) {
+	if len(input.Messages) == 0 {
+		return agent.AgentTask{}, errors.New("请填写要发送的消息。")
 	}
 	if input.Access == "" {
 		input.Access = "ask"
 	}
 	if input.Access != "ask" && input.Access != "auto" && input.Access != "full" {
-		writeError(w, http.StatusBadRequest, "权限模式无效。")
-		return
+		return agent.AgentTask{}, errors.New("权限模式无效。")
 	}
 	if _, err := (robot.Manager{}).Validate(input.Root); err != nil {
-		writeError(w, http.StatusBadRequest, "请先选择一个有效的机器人目录。")
-		return
+		return agent.AgentTask{}, errors.New("请先选择一个有效的机器人目录。")
 	}
 	cfg, err := s.ai.Resolve(input.Provider, input.Model)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, err.Error())
-		return
+		return agent.AgentTask{}, err
 	}
 	sessionID := input.SessionID
 	if sessionID == "" {
 		title := titleFromMessage(input.Messages[len(input.Messages)-1]["content"])
 		session, createErr := s.agentSessions.Create(input.Root, input.Provider, input.Model, title)
 		if createErr != nil {
-			writeError(w, http.StatusInternalServerError, createErr.Error())
-			return
+			return agent.AgentTask{}, createErr
 		}
 		sessionID = session.ID
 	}
-	task := agent.AgentTask{SessionID: sessionID, Root: input.Root, Provider: input.Provider, Model: input.Model, Access: input.Access}
+	task := agent.AgentTask{SessionID: sessionID, GoalID: input.GoalID, Root: input.Root, Provider: input.Provider, Model: input.Model, Access: input.Access}
 	if input.Isolation == "" {
 		input.Isolation = "workspace"
 	}
 	if input.Isolation != "workspace" && input.Isolation != "worktree" {
-		writeError(w, http.StatusBadRequest, "隔离模式无效。")
-		return
+		return agent.AgentTask{}, errors.New("隔离模式无效。")
 	}
 	task.Isolation = input.Isolation
 	goal := input.Messages[len(input.Messages)-1]["content"]
 	task.Plan = defaultTaskPlan(goal)
+	if legacy {
+		task.Plan.Approved = true
+		task.Status = agent.TaskQueued
+	} else {
+		task.Status = agent.TaskPlanPending
+	}
 	initial := make([]agent.Message, 0, len(input.Messages))
 	for _, message := range input.Messages {
 		initial = append(initial, agent.Message{Role: message["role"], Content: message["content"]})
 	}
-	checkpoint := agent.AgentCheckpoint{TaskID: task.ID, SessionID: sessionID, Root: input.Root, Provider: input.Provider, Model: input.Model, Messages: initial, Status: agent.TaskQueued, Plan: task.Plan, Updated: time.Now()}
+	checkpoint := agent.AgentCheckpoint{TaskID: task.ID, SessionID: sessionID, Root: input.Root, Provider: input.Provider, Model: input.Model, Messages: initial, Status: task.Status, Plan: task.Plan, Updated: time.Now()}
 	// TaskManager assigns the ID; the checkpoint is written by the runner before
 	// the first model call once that ID is known.
 	runner := s.makeAgentTaskRunner(cfg, checkpoint, input.Access)
-	created, err := s.agentTasks.Create(task, runner)
+	created, err := s.taskService.Create(task, runner)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return agent.AgentTask{}, err
 	}
 	checkpoint.TaskID = created.ID
 	_ = s.agentTaskStore.SaveCheckpoint(checkpoint)
-	if err := s.agentTasks.Start(created.ID); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+	if task.Status != agent.TaskPlanPending {
+		if err := s.taskService.Start(created.ID); err != nil {
+			return agent.AgentTask{}, err
+		}
 	}
-	created.Status = agent.TaskRunning
-	writeJSON(w, http.StatusAccepted, created)
+	if task.Status != agent.TaskPlanPending {
+		created.Status = agent.TaskRunning
+	}
+	return created, nil
 }
 
 func defaultTaskPlan(goal string) agent.TaskPlan {
@@ -126,57 +148,104 @@ func (s *server) makeAgentTaskRunner(cfg ai.Resolved, checkpoint agent.AgentChec
 				defer worktree.Remove()
 			}
 		}
-		if checkpoint.Plan.CurrentStep < len(checkpoint.Plan.Steps) {
-			checkpoint.Plan.Steps[checkpoint.Plan.CurrentStep].Status = "running"
-			step := checkpoint.Plan.Steps[checkpoint.Plan.CurrentStep]
-			_, _ = s.agentTasks.MarkStep(task.ID, step.ID, "running", "")
-			emit(agent.Event{Type: "plan", Tool: step.ID, Text: step.Title})
-		}
 		snapshotStore := agent.NewSnapshotStoreAt(filepath.Join(s.agentTaskStore.TasksDir(), task.ID, "snapshots"))
 		files := &robotFileService{manager: robot.Manager{}, snapshot: snapshotStore, taskID: task.ID}
 		files.lockOwner = task.ID
+		files.planApproved = task.Plan.Approved
 		defer func() {
 			if files.unlock != nil {
 				files.unlock()
 			}
 		}()
 		messages := agent.PruneOrphanTools(checkpoint.Messages)
-		systemPrompt := agent.BuildSystemPrompt(workRoot, files, agentBasePrompt())
-		checkpoint.SystemPrompt = systemPrompt
-		checkpoint.Updated = time.Now()
-		_ = s.agentTaskStore.SaveCheckpoint(checkpoint)
-		loop := agent.NewLoop(cfg, agent.ProjectTools(workRoot, files, agent.NewCommandRunner()), systemPrompt, 40).WithContextBudget(120 * 1024).WithAutoVerify()
-		loop.WithObserver(emit)
-		loop.WithCheckpoint(func(turn int, transcript []agent.Message) {
-			checkpoint.Turn = turn
-			checkpoint.Messages = transcript
-			checkpoint.Updated = time.Now()
-			_ = s.agentTaskStore.SaveCheckpoint(checkpoint)
-		})
-		if access == "ask" {
-			loop.WithApprover(askApprover(s.agentConfirms, emit, task.ID))
-		} else {
-			loop.WithApprover(taskApprover(workRoot))
-		}
-		result, err := loop.Run(ctx, messages)
-		if err != nil {
-			if checkpoint.Plan.CurrentStep < len(checkpoint.Plan.Steps) {
-				checkpoint.Plan.Steps[checkpoint.Plan.CurrentStep].Status = "failed"
-				checkpoint.Plan.Steps[checkpoint.Plan.CurrentStep].Result = err.Error()
-				step := checkpoint.Plan.Steps[checkpoint.Plan.CurrentStep]
-				_, _ = s.agentTasks.MarkStep(task.ID, step.ID, "failed", err.Error())
+		var result *agent.Result
+		for checkpoint.Plan.CurrentStep < len(checkpoint.Plan.Steps) {
+			currentTask, getErr := s.agentTasks.Get(task.ID)
+			if getErr != nil {
+				return "", getErr
 			}
-			checkpoint.Status = agent.TaskFailed
-			_, _ = s.agentTasks.UpdatePlan(task.ID, checkpoint.Plan)
-			checkpoint.LastError = err.Error()
-			checkpoint.Context.Failures = append(checkpoint.Context.Failures, err.Error())
+			checkpoint.Plan = currentTask.Plan
+			idx := checkpoint.Plan.CurrentStep
+			step := checkpoint.Plan.Steps[idx]
+			if step.Status == "completed" || step.Status == "skipped" {
+				if idx == len(checkpoint.Plan.Steps)-1 {
+					break
+				}
+				if _, advErr := (agent.StepExecutor{Manager: s.agentTasks}).Advance(task.ID); advErr != nil {
+					return "", advErr
+				}
+				continue
+			}
+			if _, startErr := (agent.StepExecutor{Manager: s.agentTasks}).StartCurrent(task.ID); startErr != nil {
+				return "", startErr
+			}
+			stepID := step.ID
+			files.stepID = stepID
+			checkpoint.LastAction = "执行步骤：" + step.Title
+			checkpoint.SystemPrompt = agent.BuildSystemPrompt(workRoot, files, agentBasePrompt()+"\n当前计划步骤："+step.Title+"\n步骤说明："+step.Description)
 			checkpoint.Updated = time.Now()
 			_ = s.agentTaskStore.SaveCheckpoint(checkpoint)
-			return "", err
+			verifySeen, writeSeen := false, false
+			loop := agent.NewLoop(cfg, agent.ProjectTools(workRoot, files, agent.NewCommandRunner()), checkpoint.SystemPrompt, 40).WithContextBudget(120 * 1024).WithAutoVerify()
+			loop.WithVerificationObserver(func(v agent.VerificationResult) {
+				verifySeen = true
+				executor := agent.StepExecutor{Manager: s.agentTasks}
+				if v.Passed {
+					_, _ = executor.Complete(task.ID, v.Output)
+				} else {
+					_, _ = executor.MarkVerifying(task.ID, v.Output)
+					_, _ = executor.Fail(task.ID, v.Error)
+				}
+			})
+			loop.WithObserver(func(event agent.Event) {
+				if event.Type == "tool" && (event.Tool == "agent_edit_file" || event.Tool == "agent_run_command") {
+					writeSeen = true
+					_, _ = s.agentTasks.MarkStep(task.ID, stepID, "verifying", "等待验证")
+				}
+				emit(event)
+			})
+			loop.WithCheckpoint(func(turn int, transcript []agent.Message) {
+				checkpoint.Turn, checkpoint.Messages, checkpoint.Updated = turn, transcript, time.Now()
+				_ = s.agentTaskStore.SaveCheckpoint(checkpoint)
+			})
+			if access == "ask" {
+				loop.WithApprover(askApprover(s.agentConfirms, emit, task.ID))
+			} else {
+				loop.WithApprover(taskApprover(workRoot))
+			}
+			stepResult, runErr := loop.Run(ctx, messages)
+			if runErr != nil {
+				_, _ = (agent.StepExecutor{Manager: s.agentTasks}).Fail(task.ID, runErr.Error())
+				checkpoint.Status, checkpoint.LastError = agent.TaskFailed, runErr.Error()
+				_ = s.agentTaskStore.SaveCheckpoint(checkpoint)
+				return "", runErr
+			}
+			result, messages = stepResult, stepResult.Messages
+			updated, _ := s.agentTasks.Get(task.ID)
+			stepState := updated.Plan.Steps[updated.Plan.CurrentStep]
+			if stepState.Status == "running" {
+				if stepID == "understand" && !writeSeen {
+					_, _ = (agent.StepExecutor{Manager: s.agentTasks}).Complete(task.ID, "项目结构理解完成")
+				} else if !verifySeen {
+					err := errors.New("步骤未完成验证")
+					_, _ = (agent.StepExecutor{Manager: s.agentTasks}).Fail(task.ID, err.Error())
+					return "", err
+				}
+			}
+			updated, _ = s.agentTasks.Get(task.ID)
+			if updated.Plan.Steps[updated.Plan.CurrentStep].Status != "completed" && updated.Plan.Steps[updated.Plan.CurrentStep].Status != "skipped" {
+				return "", errors.New("步骤验证失败")
+			}
+			checkpoint.Plan = updated.Plan
+			checkpoint.Messages = messages
+			if updated.Plan.CurrentStep < len(updated.Plan.Steps)-1 {
+				if _, advErr := (agent.StepExecutor{Manager: s.agentTasks}).Advance(task.ID); advErr != nil {
+					return "", advErr
+				}
+			}
 		}
-		for i := range checkpoint.Plan.Steps {
-			checkpoint.Plan.Steps[i].Status = "completed"
-			_, _ = s.agentTasks.MarkStep(task.ID, checkpoint.Plan.Steps[i].ID, "completed", "验证通过")
+		if result == nil {
+			return "", errors.New("计划没有产生结果")
 		}
 		modified := make([]string, 0, len(files.snapshots))
 		for _, snap := range files.snapshots {
@@ -186,6 +255,9 @@ func (s *server) makeAgentTaskRunner(cfg ai.Resolved, checkpoint agent.AgentChec
 		reviewRaw, _ := json.Marshal(review)
 		emit(agent.Event{Type: "review", Text: string(reviewRaw)})
 		report := agent.TaskReport{Goal: checkpoint.Plan.Goal, Plan: checkpoint.Plan, ModifiedFiles: modified, Validation: []string{"Agent loop completed"}, Reviewer: review, Summary: review.Summary, RollbackTaskID: task.ID, GeneratedAt: time.Now()}
+		if worktree != nil {
+			report.Diff = worktree.Diff()
+		}
 		checkpoint.Report = &report
 		checkpoint.Context.ModifiedFiles = modified
 		checkpoint.Context.Validation = report.Validation
@@ -194,12 +266,10 @@ func (s *server) makeAgentTaskRunner(cfg ai.Resolved, checkpoint agent.AgentChec
 		if !review.GoalSatisfied {
 			checkpoint.Status = agent.TaskFailed
 			checkpoint.LastError = review.Summary
-			_, _ = s.agentTasks.UpdatePlan(task.ID, checkpoint.Plan)
 			_ = s.agentTaskStore.SaveCheckpoint(checkpoint)
 			return "", errors.New(review.Summary)
 		}
 		checkpoint.Status = agent.TaskCompleted
-		_, _ = s.agentTasks.UpdatePlan(task.ID, checkpoint.Plan)
 		checkpoint.Messages = result.Messages
 		checkpoint.Updated = time.Now()
 		_ = s.agentTaskStore.SaveCheckpoint(checkpoint)
@@ -266,7 +336,17 @@ func (s *server) agentTaskHandler(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		writeJSON(w, http.StatusOK, updated.Plan)
+		updated, err = s.agentTasks.ApprovePlan(taskID)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if err := s.agentTasks.Start(taskID); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		updated.Status = agent.TaskRunning
+		writeJSON(w, http.StatusAccepted, updated)
 		return
 	}
 	if len(parts) == 4 && parts[1] == "step" && parts[3] == "retry" && r.Method == http.MethodPost {
@@ -313,6 +393,39 @@ func (s *server) agentTaskHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, report)
+		return
+	}
+	if len(parts) == 2 && parts[1] == "merge" && r.Method == http.MethodPost {
+		if task, err := s.agentTasks.Get(taskID); err != nil {
+			writeError(w, http.StatusNotFound, "任务不存在。")
+		} else {
+			var input struct {
+				Confirm bool `json:"confirm"`
+			}
+			_ = json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&input)
+			if task.Isolation != "worktree" {
+				writeError(w, http.StatusConflict, "只有 worktree 任务可以合并。")
+				return
+			}
+			if !input.Confirm {
+				writeError(w, http.StatusBadRequest, "合并前必须明确确认。")
+				return
+			}
+			report, reportErr := s.agentTaskStore.LoadReport(taskID)
+			if reportErr != nil || strings.TrimSpace(report.Diff) == "" {
+				writeError(w, http.StatusConflict, "任务没有可应用的 diff。")
+				return
+			}
+			cmd := exec.Command("git", "-C", task.Root, "apply", "--whitespace=nowarn", "-")
+			cmd.Stdin = bytes.NewBufferString(report.Diff)
+			if output, applyErr := cmd.CombinedOutput(); applyErr != nil {
+				writeError(w, http.StatusConflict, "合并失败："+strings.TrimSpace(string(output)))
+				return
+			}
+			s.agentTasks.SetStatus(taskID, agent.TaskCompleted, "")
+			s.agentTasks.EmitExternal(taskID, agent.Event{Type: "merge", Text: "worktree diff 已应用到主工作区"})
+			writeJSON(w, http.StatusOK, map[string]any{"status": "merged", "taskId": taskID})
+		}
 		return
 	}
 	if len(parts) == 2 && parts[1] == "cancel" && r.Method == http.MethodPost {

@@ -42,7 +42,7 @@ export function SetupUpdateButton() {
     window.addEventListener('alx:top-tool-open', closeWhenAnotherToolOpens)
     return () =>
       window.removeEventListener('alx:top-tool-open', closeWhenAnotherToolOpens)
-  }, [])
+  }, [setOpen])
   const uploadInputID = useId()
   const { data: releaseData = [] } = useReleasesQuery('alemonx', {
     skip: !open || mode !== 'manual'

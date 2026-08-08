@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log"
 	"net/http"
@@ -28,158 +29,167 @@ func (s *server) agentChatHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "该操作暂不支持。")
 		return
 	}
-	var input struct {
-		Provider  string              `json:"provider"`
-		Model     string              `json:"model"`
-		Root      string              `json:"root"`
-		SessionID string              `json:"sessionId"`
-		Access    string              `json:"access"`
-		Messages  []map[string]string `json:"messages"`
-	}
-	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&input); err != nil {
-		writeError(w, http.StatusBadRequest, "请求无法识别。")
+	if r.URL.Query().Get("stream") == "1" {
+		s.agentLegacyTaskStream(w, r)
 		return
 	}
-	// Decode before reading Access. The previous order inspected the zero value
-	// of input.Access, so every request silently became "full" and the UI's
-	// per-step confirmation mode could never take effect.
-	access := input.Access
-	if access == "" {
-		access = "full"
-	}
-	if access != "ask" && access != "auto" && access != "full" {
-		writeError(w, http.StatusBadRequest, "权限模式无效（应为 ask/auto/full）。")
-		return
-	}
-	if len(input.Messages) == 0 {
-		writeError(w, http.StatusBadRequest, "请填写要发送的消息。")
-		return
-	}
-	if len(input.Messages) > 30 {
-		writeError(w, http.StatusBadRequest, "一次对话最多保留 30 条消息。")
-		return
-	}
-	if _, err := (robot.Manager{}).Validate(input.Root); err != nil {
-		writeError(w, http.StatusBadRequest, "请先选择一个有效的机器人目录。")
-		return
-	}
-	cfg, err := s.ai.Resolve(input.Provider, input.Model)
-	if err != nil {
-		writeError(w, http.StatusBadGateway, err.Error())
-		return
-	}
-
-	// Session bookkeeping: persist the user message now and the full transcript
-	// after the run. A missing sessionId auto-creates one, using the first user
-	// message as the conversation title.
-	sessionID := input.SessionID
-	if sessionID == "" {
-		title := ""
-		if len(input.Messages) > 0 {
-			title = titleFromMessage(input.Messages[len(input.Messages)-1]["content"])
+	s.agentLegacyTaskWait(w, r)
+	return
+	/*
+		var input struct {
+			Provider  string              `json:"provider"`
+			Model     string              `json:"model"`
+			Root      string              `json:"root"`
+			SessionID string              `json:"sessionId"`
+			Access    string              `json:"access"`
+			Messages  []map[string]string `json:"messages"`
 		}
-		session, createErr := s.agentSessions.Create(input.Root, input.Provider, input.Model, title)
-		if createErr == nil {
-			sessionID = session.ID
+		if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&input); err != nil {
+			writeError(w, http.StatusBadRequest, "请求无法识别。")
+			return
 		}
-	}
-	// 用户消息不在此处持久化：把它推迟到 loop 成功后与 assistant 回复一起
-	// 写入，避免 loop 失败时留下"只有提问没有回答"的残缺记录。
-
-	messages := make([]agent.Message, 0, len(input.Messages))
-	for _, raw := range input.Messages {
-		messages = append(messages, agent.Message{Role: raw["role"], Content: raw["content"]})
-	}
-	// 防御：即使前端历史里混入了带 tool_calls 但没有对应 tool 响应的
-	// assistant 消息（如会话恢复不完整），也在此清除，避免 DeepSeek 报
-	// "tool_calls must be followed by tool messages"。
-	messages = agent.PruneOrphanTools(messages)
-	files := &robotFileService{manager: robot.Manager{}}
-	registry := agent.ProjectTools(input.Root, files, agent.NewCommandRunner())
-	systemPrompt := agent.BuildSystemPrompt(input.Root, files, agentBasePrompt())
-	loop := agent.NewLoop(cfg, registry, systemPrompt, 40)
-	loop.WithContextBudget(120 * 1024)
-
-	stream := r.URL.Query().Get("stream") == "1"
-	var emit func(agent.Event)
-	if stream {
-		emit = agentObserver(w, sessionID, r.Context())
-	}
-	// Persist progress independently of SSE so a closed browser still leaves a
-	// useful execution status and last completed turn in the session index.
-	lastTurn := 0
-	loop.WithObserver(func(event agent.Event) {
-		if event.Turn > 0 {
-			lastTurn = event.Turn
+		// Decode before reading Access. The previous order inspected the zero value
+		// of input.Access, so every request silently became "full" and the UI's
+		// per-step confirmation mode could never take effect.
+		access := input.Access
+		if access == "" {
+			access = "full"
 		}
-		if sessionID != "" {
-			status := "running"
-			if event.Type == "done" {
-				status = "completed"
-			} else if event.Type == "error" {
-				status = "failed"
+		if access != "ask" && access != "auto" && access != "full" {
+			writeError(w, http.StatusBadRequest, "权限模式无效（应为 ask/auto/full）。")
+			return
+		}
+		if len(input.Messages) == 0 {
+			writeError(w, http.StatusBadRequest, "请填写要发送的消息。")
+			return
+		}
+		if len(input.Messages) > 30 {
+			writeError(w, http.StatusBadRequest, "一次对话最多保留 30 条消息。")
+			return
+		}
+		if _, err := (robot.Manager{}).Validate(input.Root); err != nil {
+			writeError(w, http.StatusBadRequest, "请先选择一个有效的机器人目录。")
+			return
+		}
+		cfg, err := s.ai.Resolve(input.Provider, input.Model)
+		if err != nil {
+			writeError(w, http.StatusBadGateway, err.Error())
+			return
+		}
+
+		// Session bookkeeping: persist the user message now and the full transcript
+		// after the run. A missing sessionId auto-creates one, using the first user
+		// message as the conversation title.
+		sessionID := input.SessionID
+		if sessionID == "" {
+			title := ""
+			if len(input.Messages) > 0 {
+				title = titleFromMessage(input.Messages[len(input.Messages)-1]["content"])
 			}
-			lastError := ""
-			if event.Type == "error" {
-				lastError = event.Text
+			session, createErr := s.agentSessions.Create(input.Root, input.Provider, input.Model, title)
+			if createErr == nil {
+				sessionID = session.ID
 			}
-			_, _ = s.agentSessions.UpdateProgress(sessionID, status, lastTurn, lastError)
 		}
-		if emit != nil {
-			emit(event)
-		}
-	})
+		// 用户消息不在此处持久化：把它推迟到 loop 成功后与 assistant 回复一起
+		// 写入，避免 loop 失败时留下"只有提问没有回答"的残缺记录。
 
-	// Permission model:
-	//   ask  — each write tool waits for explicit user approval (streaming only).
-	//   auto — 替我审核：文件修改自动批准（白名单命令本就可执行）。
-	//   full — 完全访问：本次会话内全部自动授权。
-	switch access {
-	case "ask":
+		messages := make([]agent.Message, 0, len(input.Messages))
+		for _, raw := range input.Messages {
+			messages = append(messages, agent.Message{Role: raw["role"], Content: raw["content"]})
+		}
+		// 防御：即使前端历史里混入了带 tool_calls 但没有对应 tool 响应的
+		// assistant 消息（如会话恢复不完整），也在此清除，避免 DeepSeek 报
+		// "tool_calls must be followed by tool messages"。
+		messages = agent.PruneOrphanTools(messages)
+		files := &robotFileService{manager: robot.Manager{}}
+		registry := agent.ProjectTools(input.Root, files, agent.NewCommandRunner())
+		systemPrompt := agent.BuildSystemPrompt(input.Root, files, agentBasePrompt())
+		loop := agent.NewLoop(cfg, registry, systemPrompt, 40)
+		loop.WithContextBudget(120 * 1024)
+
+		stream := r.URL.Query().Get("stream") == "1"
+		var emit func(agent.Event)
 		if stream {
-			loop.WithApprover(askApprover(s.agentConfirms, emit, sessionID))
-		} else {
-			// Non-streaming cannot surface an interactive prompt; fall back to
-			// task-level authorization so one-shot requests keep working.
+			emit = agentObserver(w, sessionID, r.Context())
+		}
+		// Persist progress independently of SSE so a closed browser still leaves a
+		// useful execution status and last completed turn in the session index.
+		lastTurn := 0
+		loop.WithObserver(func(event agent.Event) {
+			if event.Turn > 0 {
+				lastTurn = event.Turn
+			}
+			if sessionID != "" {
+				status := "running"
+				if event.Type == "done" {
+					status = "completed"
+				} else if event.Type == "error" {
+					status = "failed"
+				}
+				lastError := ""
+				if event.Type == "error" {
+					lastError = event.Text
+				}
+				_, _ = s.agentSessions.UpdateProgress(sessionID, status, lastTurn, lastError)
+			}
+			if emit != nil {
+				emit(event)
+			}
+		})
+
+		// Permission model:
+		//   ask  — each write tool waits for explicit user approval (streaming only).
+		//   auto — 替我审核：文件修改自动批准（白名单命令本就可执行）。
+		//   full — 完全访问：本次会话内全部自动授权。
+		switch access {
+		case "ask":
+			if stream {
+				loop.WithApprover(askApprover(s.agentConfirms, emit, sessionID))
+			} else {
+				// Non-streaming cannot surface an interactive prompt; fall back to
+				// task-level authorization so one-shot requests keep working.
+				loop.WithApprover(taskApprover(input.Root))
+			}
+		default: // auto（替我审核）与 full（完全访问）
 			loop.WithApprover(taskApprover(input.Root))
 		}
-	default: // auto（替我审核）与 full（完全访问）
-		loop.WithApprover(taskApprover(input.Root))
-	}
-	loop.WithAutoVerify()
+		loop.WithAutoVerify()
 
-	start := time.Now()
-	result, err := loop.Run(r.Context(), messages)
-	s.logAgentRun(input.Root, len(messages), time.Since(start), err)
-	if err != nil {
-		if stream && emit != nil {
-			// stream 出错时先向 SSE 写 error 事件再关闭，避免浏览器只看到
-			// 连接重置而报 "network error"。
-			emit(agent.Event{Type: "error", Text: err.Error()})
+		start := time.Now()
+		result, err := loop.Run(r.Context(), messages)
+		s.logAgentRun(input.Root, len(messages), time.Since(start), err)
+		if err != nil {
+			if stream && emit != nil {
+				// stream 出错时先向 SSE 写 error 事件再关闭，避免浏览器只看到
+				// 连接重置而报 "network error"。
+				emit(agent.Event{Type: "error", Text: err.Error()})
+		return
+			if stream {
+				return
+			}
+			writeError(w, http.StatusBadGateway, err.Error())
 			return
+		}
+		// 只有运行成功时 result 非 nil；出错时 result 为 nil，不能遍历。
+		// 成功后持久化本轮新增的对话：先写用户提问，再写本轮最终 assistant
+		// 回答。工具调用过程不持久化——前端恢复只需要对话轮次，且下轮对话时
+		// 前端会带上完整上下文，避免每轮重复写入全部历史。
+		if sessionID != "" && result != nil {
+			if len(input.Messages) > 0 {
+				_ = s.agentSessions.Append(sessionID, agent.Message{Role: "user", Content: input.Messages[len(input.Messages)-1]["content"]})
+			}
+			if strings.TrimSpace(result.Answer) != "" {
+				_ = s.agentSessions.Append(sessionID, agent.Message{Role: "assistant", Content: result.Answer})
+			}
 		}
 		if stream {
 			return
 		}
-		writeError(w, http.StatusBadGateway, err.Error())
-		return
+		writeJSON(w, http.StatusOK, map[string]any{"answer": result.Answer, "sessionId": sessionID})
 	}
-	// 只有运行成功时 result 非 nil；出错时 result 为 nil，不能遍历。
-	// 成功后持久化本轮新增的对话：先写用户提问，再写本轮最终 assistant
-	// 回答。工具调用过程不持久化——前端恢复只需要对话轮次，且下轮对话时
-	// 前端会带上完整上下文，避免每轮重复写入全部历史。
-	if sessionID != "" && result != nil {
-		if len(input.Messages) > 0 {
-			_ = s.agentSessions.Append(sessionID, agent.Message{Role: "user", Content: input.Messages[len(input.Messages)-1]["content"]})
-		}
-		if strings.TrimSpace(result.Answer) != "" {
-			_ = s.agentSessions.Append(sessionID, agent.Message{Role: "assistant", Content: result.Answer})
-		}
-	}
-	if stream {
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"answer": result.Answer, "sessionId": sessionID})
+
+	*/
 }
 
 // agentObserver writes each agent event as a flushed SSE frame. It runs on the
@@ -243,12 +253,14 @@ func agentObserver(w http.ResponseWriter, sessionID string, ctx context.Context)
 // robotFileService adapts the robot manager's path-safe project file access to
 // the agent's FileService interface.
 type robotFileService struct {
-	manager   robot.Manager
-	snapshot  *agent.SnapshotStore
-	taskID    string
-	snapshots []agent.FileSnapshot
-	lockOwner string
-	unlock    func()
+	manager      robot.Manager
+	snapshot     *agent.SnapshotStore
+	taskID       string
+	snapshots    []agent.FileSnapshot
+	lockOwner    string
+	unlock       func()
+	stepID       string
+	planApproved bool
 }
 
 func (f *robotFileService) ReadFile(root, path string) (string, error) {
@@ -257,6 +269,9 @@ func (f *robotFileService) ReadFile(root, path string) (string, error) {
 }
 
 func (f *robotFileService) beforeWrite(root, path string) error {
+	if !f.planApproved || f.stepID == "" {
+		return errors.New("当前任务步骤未批准写入")
+	}
 	if f.unlock == nil {
 		unlock, err := agent.AcquireProjectWriteLock(root, f.lockOwner)
 		if err != nil {

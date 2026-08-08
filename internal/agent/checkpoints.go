@@ -15,18 +15,20 @@ import (
 type TaskStatus string
 
 const (
-	TaskQueued     TaskStatus = "queued"
-	TaskRunning    TaskStatus = "running"
-	TaskPaused     TaskStatus = "paused"
-	TaskFailed     TaskStatus = "failed"
-	TaskCompleted  TaskStatus = "completed"
-	TaskCancelled  TaskStatus = "cancelled"
-	TaskRolledBack TaskStatus = "rolled_back"
+	TaskQueued      TaskStatus = "queued"
+	TaskPlanPending TaskStatus = "plan_pending"
+	TaskRunning     TaskStatus = "running"
+	TaskPaused      TaskStatus = "paused"
+	TaskFailed      TaskStatus = "failed"
+	TaskCompleted   TaskStatus = "completed"
+	TaskCancelled   TaskStatus = "cancelled"
+	TaskRolledBack  TaskStatus = "rolled_back"
 )
 
 type AgentTask struct {
 	ID           string      `json:"id"`
 	SessionID    string      `json:"sessionId"`
+	GoalID       string      `json:"goalId,omitempty"`
 	Root         string      `json:"root"`
 	Provider     string      `json:"provider"`
 	Model        string      `json:"model"`
@@ -120,6 +122,7 @@ type TaskReport struct {
 	Plan           TaskPlan     `json:"plan"`
 	ModifiedFiles  []string     `json:"modifiedFiles,omitempty"`
 	Validation     []string     `json:"validation,omitempty"`
+	Diff           string       `json:"diff,omitempty"`
 	Reviewer       ReviewResult `json:"reviewer"`
 	Summary        string       `json:"summary"`
 	RollbackTaskID string       `json:"rollbackTaskId,omitempty"`

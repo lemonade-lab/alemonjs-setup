@@ -59,7 +59,7 @@ export function GuideHome({
     const open = () => setDirectoryPickerOpen(true)
     window.addEventListener('alemon:choose-directory', open)
     return () => window.removeEventListener('alemon:choose-directory', open)
-  }, [])
+  }, [setDirectoryPickerOpen])
 
   return (
     <main className="guide-shell">

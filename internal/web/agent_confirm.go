@@ -96,6 +96,9 @@ func (s *server) agentConfirmHandler(w http.ResponseWriter, r *http.Request) {
 // timeout. Any rejection or timeout is fed back to the model as a refusal.
 func askApprover(confirms *agentConfirmManager, emit func(agent.Event), confirmID string) agent.Approver {
 	return func(ctx context.Context, call agent.ToolCall) error {
+		if call.Name != "agent_edit_file" && call.Name != "agent_run_command" {
+			return errors.New("未接入的工具不允许执行")
+		}
 		id := confirmID + ":" + call.ID
 		ch, cleanup := confirms.register(id)
 		defer cleanup()

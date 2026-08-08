@@ -101,7 +101,7 @@ func CachedUpdate(assetName, checksum string) (string, bool, error) {
 	if assetName == "." || assetName == "" || assetName == string(filepath.Separator) {
 		return "", false, errors.New("更新包名称无效")
 	}
-	base, err := os.UserCacheDir()
+	base, err := updateCacheBase()
 	if err != nil {
 		return "", false, fmt.Errorf("无法定位应用存储目录：%w", err)
 	}
@@ -132,7 +132,7 @@ func checksumFile(path, expected string) bool {
 }
 
 func pendingUpdatePath() (string, error) {
-	base, err := os.UserCacheDir()
+	base, err := updateCacheBase()
 	if err != nil {
 		return "", fmt.Errorf("无法定位应用存储目录：%w", err)
 	}
@@ -141,6 +141,13 @@ func pendingUpdatePath() (string, error) {
 		return "", err
 	}
 	return filepath.Join(directory, "pending.json"), nil
+}
+
+func updateCacheBase() (string, error) {
+	if dir := os.Getenv("ALX_TEST_CACHE_DIR"); dir != "" {
+		return dir, nil
+	}
+	return os.UserCacheDir()
 }
 
 func savePendingUpdate(update PendingUpdate) error {

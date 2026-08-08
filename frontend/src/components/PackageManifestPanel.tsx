@@ -74,7 +74,7 @@ export function PackageManifestPanel({
     if (!data) return
     const next = { ...blank, ...data, access: data.access || 'public' }
     setValues(current => (sameManifest(current, next) ? current : next))
-  }, [data])
+  }, [data, setValues])
   const saveManifest = async (next: Manifest) => {
     try {
       const result = await save({

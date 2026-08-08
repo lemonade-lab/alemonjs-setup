@@ -5,6 +5,8 @@ import {
   useEffect,
   useMemo,
   useRef,
+  type FormEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent,
   type PointerEvent as ReactPointerEvent,
   type ReactNode
@@ -26,7 +28,6 @@ import {
   CircleCheckBig,
   Info,
   CircleQuestionMark,
-  ChevronDown,
   ChevronRight,
   Circle,
   Loader2,
@@ -49,6 +50,8 @@ import {
   Package,
   PanelLeftClose,
   PanelLeftOpen,
+  PanelRightClose,
+  PanelRightOpen,
   Pencil,
   Pin,
   Play,
@@ -371,7 +374,7 @@ export function DirectoryPicker({
         }
       })
     return () => controller.abort()
-  }, [directoryReload, hidden, includeFiles, open, path, selectionMode])
+  }, [directoryReload, hidden, includeFiles, open, path, selectionMode, setData, setDirectoryError, setHistory, setHistoryIndex, setPath])
   if (!open) return null
   const suffixes = extensions
     .split(/[,，\s]+/)
@@ -769,6 +772,7 @@ export function Dashboard({
 }: Props) {
   const [page, setPage] = useStoreState<Page>('robot')
   const [sidebarCollapsed, setSidebarCollapsed] = useStoreState(false)
+  const [robotNavigationHidden, setRobotNavigationHidden] = useStoreState(false)
   const [systemFeature, setSystemFeature] = useStoreState<SystemFeature | null>(
     null
   )
@@ -828,10 +832,10 @@ export function Dashboard({
     } catch {
       // 会话列表加载失败不阻塞
     }
-  }, [])
+  }, [setAgentSessions])
   useEffect(() => {
     void loadAgentSessions()
-  }, [loadAgentSessions])
+  }, [loadAgentSessions, setAgentSessionId])
   useEffect(() => {
     const refresh = () => {
       void loadAgentSessions()
@@ -845,7 +849,7 @@ export function Dashboard({
       window.removeEventListener('alx:agent-session-created', refresh)
       window.removeEventListener('alx:agent-new-session', clearSession)
     }
-  }, [loadAgentSessions])
+  }, [loadAgentSessions, setAgentSessionId])
   const environmentChecked = useRef(false)
   const rootParamHandled = useRef(false)
   const eventsRef = useRef<EventSource | null>(null)
@@ -1120,7 +1124,7 @@ export function Dashboard({
 
   useEffect(() => {
     if (defaultPage === 'robot') setPage('robot')
-  }, [defaultPage])
+  }, [defaultPage, setPage])
   // Subscribe to robot events over SSE. Task events invalidate the operations
   // cache so the runtime card and operation log update the moment a task ends,
   // instead of polling; output events are forwarded for the terminal to append.
@@ -1188,7 +1192,7 @@ export function Dashboard({
   }, [checking, onCheck, page, report])
   useEffect(() => {
     if (!catalogTitle && catalog.length) setCatalogTitle(catalog[0].title)
-  }, [catalog, catalogTitle])
+  }, [catalog, catalogTitle, setCatalogTitle])
   useEffect(() => {
     if (root) void validateRobot(root)
   }, [root, validateRobot])
@@ -1228,7 +1232,7 @@ export function Dashboard({
     if (page === 'build') setPage('robot')
     if (section === 'npmrc' || section === 'env') setSection('config')
     setConsoleOpen(false)
-  }, [developerMode, page, section])
+  }, [developerMode, page, section, setConsoleOpen, setPage, setSection])
 
   async function api(
     method: string,
@@ -1943,6 +1947,7 @@ export function Dashboard({
               )}
             </div>
             <div className="ml-auto flex min-w-0 items-center gap-1">
+
               {developerMode && <McpControl />}
               <Button
                 variant="secondary"
@@ -1964,6 +1969,23 @@ export function Dashboard({
               </Button>
               <SSHControl />
               <AuthControl />
+              <Button
+                variant="icon"
+                onClick={() => setRobotNavigationHidden(value => !value)}
+                aria-label={
+                  robotNavigationHidden ? '显示机器人功能导航' : '隐藏机器人功能导航'
+                }
+                aria-pressed={!robotNavigationHidden}
+                title={
+                  robotNavigationHidden ? '显示机器人功能导航' : '隐藏机器人功能导航'
+                }
+              >
+                {robotNavigationHidden ? (
+                  <PanelRightOpen className="size-4" />
+                ) : (
+                  <PanelRightClose className="size-4" />
+                )}
+              </Button>
               <button
                 className="icon-button size-8 p-0"
                 onClick={onOpenGuide}
@@ -2169,7 +2191,10 @@ export function Dashboard({
             <section className="console-page">
               {workspace}
               {error && <ErrorNotice message={error} onClose={onClearError} />}
-              {!systemFeature && activeProject && !invalidProject && (
+              {!robotNavigationHidden &&
+                !systemFeature &&
+                activeProject &&
+                !invalidProject && (
                 <ControlCard
                   page={page}
                   section={section}
@@ -2195,7 +2220,7 @@ export function Dashboard({
                   }}
                   onGit={() => setGitProject(activeProject)}
                 />
-              )}
+                )}
             </section>
           </section>
         </section>
@@ -2541,7 +2566,7 @@ function GitCloneDialog({
       setTarget(null)
       setTargetError('')
     }
-  }, [open])
+  }, [open, setBranch, setBranches, setBranchesLoading, setConnection, setDepth, setMirror, setName, setRepository, setSSHKeys, setTarget, setTargetError])
   useEffect(() => {
     if (!open) return
     let active = true
@@ -2569,7 +2594,7 @@ function GitCloneDialog({
     return () => {
       active = false
     }
-  }, [open])
+  }, [open, setConnection, setSSHKeys, setSSHLoading])
   useEffect(() => {
     if (!open || !destination || !repository.trim() || !name.trim()) {
       setTarget(null)
@@ -2608,7 +2633,7 @@ function GitCloneDialog({
       controller.abort()
       window.clearTimeout(timer)
     }
-  }, [destination, name, open, repository])
+  }, [destination, name, open, repository, setTarget, setTargetError])
   useEffect(() => {
     const value = repository.trim()
     if (!open || !isCompleteGitRepositoryURL(value)) {
@@ -2652,7 +2677,7 @@ function GitCloneDialog({
       controller.abort()
       window.clearTimeout(timer)
     }
-  }, [open, repository])
+  }, [open, repository, setBranch, setBranches, setBranchesLoading])
   if (!open) return null
   const usesSSH = /^(git@|ssh:\/\/)/.test(repository.trim())
   return (
@@ -3086,7 +3111,7 @@ function ProjectItem({
     }
     document.addEventListener('mousedown', close)
     return () => document.removeEventListener('mousedown', close)
-  }, [])
+  }, [setCtxMenu, setMoreOpen, setProjectMenu])
   const invalid = data?.valid === false
   const ownSessions = agentSessions.filter(item => item.root === project.path)
   return (
@@ -3341,7 +3366,7 @@ function McpControl() {
     window.addEventListener('alx:top-tool-open', closeWhenAnotherToolOpens)
     return () =>
       window.removeEventListener('alx:top-tool-open', closeWhenAnotherToolOpens)
-  }, [])
+  }, [setOpen])
   return (
     <div className="mcp-control relative">
       <button
@@ -4155,7 +4180,7 @@ function BackpackPanel({
   useEffect(() => {
     if (selectedName && !items.some(item => item.name === selectedName))
       setSelectedName('')
-  }, [items, selectedName])
+  }, [items, selectedName, setSelectedName])
   const selected = items.find(item => item.name === selectedName)
   const toggleApp = async (packageName: string, enabled: boolean) => {
     if (!root) return
@@ -4380,10 +4405,10 @@ function BackpackPackageManager({
       data.fields.map(field => [field.name, data.values[field.name] ?? ''])
     )
     setValues(current => (sameRecord(current, next) ? current : next))
-  }, [data])
+  }, [data, setValues])
   useEffect(() => {
     if (versions?.latest) setVersion(versions.latest)
-  }, [versions])
+  }, [versions, setVersion])
   return (
     <BotWorkspace
       className="backpack-manager max-w-190"
@@ -4614,10 +4639,10 @@ function CatalogDetail({
   } = useCatalogVersionsQuery(packageName, { skip: !packageName })
   useEffect(() => {
     setVersion('')
-  }, [packageName])
+  }, [packageName, setVersion])
   useEffect(() => {
     if (!version && packageVersions?.latest) setVersion(packageVersions.latest)
-  }, [packageVersions?.latest, version])
+  }, [packageVersions?.latest, version, setVersion])
   const noRepositoryTag =
     repositoryInstall &&
     !versionsLoading &&
@@ -4799,7 +4824,7 @@ function PackageConfigPanel({
       data.fields.map(field => [field.name, data.values[field.name] ?? ''])
     )
     setValues(current => (sameRecord(current, next) ? current : next))
-  }, [data])
+  }, [data, setValues])
   if (isConfigLoading)
     return (
       <section className="package-config-panel grid gap-3 rounded-xl border border-slate-200 bg-white p-4 text-sm text-slate-500">
@@ -4901,7 +4926,7 @@ function CurrentProjectConfigPanel({
       setValues(current =>
         sameRecord(current, config.values) ? current : config.values
       )
-  }, [config])
+  }, [config, setValues])
   // A config declaration is optional. Do not turn its absence into an error
   // for ordinary robots that do not expose project-specific settings.
   if (loading)
@@ -5078,9 +5103,20 @@ function RuntimePanel({
     item => item.id === selectedPlatform
   )
   const packageTarget = knownPlatform?.package || customPackage.trim()
+  const connectionPackage = connectionConfig?.package || packageTarget
+  const valuesForConnectionPackage = (values: Record<string, string>) => {
+    if (!connectionConfig?.fields.length) return values
+    const allowed = new Set(connectionConfig.fields.map(field => field.name))
+    return Object.fromEntries(
+      Object.entries(values).filter(([name]) => allowed.has(name))
+    )
+  }
   const scheduleConnectionSave = useAutoSave<Record<string, string>>(next => {
-    if (!packageTarget || !connectionConfig?.fields.length) return
-    return onSavePackageConfig(packageTarget, next)
+    if (!connectionPackage || !connectionConfig?.fields.length) return
+    return onSavePackageConfig(
+      connectionPackage,
+      valuesForConnectionPackage(next)
+    )
   })
   const scheduleLoginSave = useAutoSave<{
     login: string
@@ -5226,12 +5262,17 @@ function RuntimePanel({
     try {
       // Persist required fields silently when a connection package is selected,
       // then save the login before launching.
-      if (packageTarget && connectionConfig?.fields.length) {
-        if (!(await onSavePackageConfig(packageTarget, connectionValues)))
+      if (connectionPackage && connectionConfig?.fields.length) {
+        if (
+          !(await onSavePackageConfig(
+            connectionPackage,
+            valuesForConnectionPackage(connectionValues)
+          ))
+        )
           return
       }
       if (login) {
-        if (!(await onSaveLogin(login, packageTarget))) return
+        if (!(await onSaveLogin(login, connectionPackage))) return
       }
       if (await onRun(loginChoice.action)) closeLoginDialog()
     } catch (reason) {
@@ -6232,10 +6273,27 @@ function ReadonlyConsole({
   root: string
   onClose: () => void
 }) {
+  type TerminalTab = { id: string; label: string; kind: 'readonly' | 'shell' }
   const [load, { data, error, isFetching }] = useLazyRobotConsoleQuery()
   const outputRef = useRef<HTMLPreElement>(null)
+  const shellOutputRef = useRef<HTMLPreElement>(null)
+  const shellInputRef = useRef<HTMLInputElement>(null)
   const followLatest = useRef(true)
-  const [showSnapshot, setShowSnapshot] = useStoreState(false)
+  const [tabs, setTabs] = useStoreState<TerminalTab[]>([])
+  const [activeTab, setActiveTab] = useStoreState('runtime')
+  const [shellCommand, setShellCommand] = useStoreState('')
+  const [shellOutput, setShellOutput] = useStoreState('')
+  const [shellBusy, setShellBusy] = useStoreState(false)
+  const [shellHistory, setShellHistory] = useStoreState<string[]>([])
+  const [shellHistoryIndex, setShellHistoryIndex] = useStoreState(-1)
+  const [windowRect, setWindowRect] = useStoreState({
+    left: 16,
+    top: 16,
+    width: 560,
+    height: 650
+  })
+  const dragStart = useRef<{ x: number; y: number; left: number; top: number } | null>(null)
+  const resizeStart = useRef<{ x: number; y: number; width: number; height: number; left: number; top: number } | null>(null)
   // liveOutput accumulates incremental output pushed over SSE; the initial
   // load seeds it with the current buffer so the terminal is real-time without
   // polling. The static snapshot still comes from the query.
@@ -6245,14 +6303,51 @@ function ReadonlyConsole({
     : ''
   const running = Boolean(data?.running)
   const message = runError || liveOutput
+  const activeTerminal = tabs.find(tab => tab.id === activeTab)
+  const resetTerminals = useCallback(() => {
+    setTabs([{ id: 'runtime', label: '前台', kind: 'readonly' }])
+    setActiveTab('runtime')
+    setShellCommand('')
+    setShellOutput('')
+    setShellHistory([])
+    setShellHistoryIndex(-1)
+  }, [setActiveTab, setShellCommand, setShellHistory, setShellHistoryIndex, setShellOutput, setTabs])
   useEffect(() => {
     if (!open || !root) return
+    const width = Math.min(560, Math.max(280, window.innerWidth - 32))
+    const height = Math.min(760, Math.max(260, window.innerHeight - 32))
+    setWindowRect({
+      left: Math.max(16, window.innerWidth - width - 16),
+      top: 16,
+      width,
+      height
+    })
+    resetTerminals()
     void load({ root }).then(result => {
-      if (result.data) setLiveOutput(result.data.output ?? '')
+      if (result.data) {
+        setLiveOutput(result.data.output ?? '')
+      }
     })
     // No polling: output streams in via the SSE robot-output event; the manual
     // refresh button re-reads the snapshot.
-  }, [load, open, root])
+  }, [load, open, resetTerminals, root, setLiveOutput, setWindowRect])
+  useEffect(() => {
+    if (!open) return
+    const clampToViewport = () => {
+      setWindowRect(current => {
+        const width = Math.min(current.width, Math.max(280, window.innerWidth - 16))
+        const height = Math.min(current.height, Math.max(260, window.innerHeight - 16))
+        return {
+          width,
+          height,
+          left: Math.max(8, Math.min(window.innerWidth - width - 8, current.left)),
+          top: Math.max(8, Math.min(window.innerHeight - height - 8, current.top))
+        }
+      })
+    }
+    window.addEventListener('resize', clampToViewport)
+    return () => window.removeEventListener('resize', clampToViewport)
+  }, [open, setWindowRect])
   useEffect(() => {
     if (!open) return
     const handler = (event: Event) => {
@@ -6261,10 +6356,10 @@ function ReadonlyConsole({
     }
     window.addEventListener('alx:robot-output', handler)
     return () => window.removeEventListener('alx:robot-output', handler)
-  }, [open])
+  }, [open, setLiveOutput])
   useEffect(() => {
     if (open) followLatest.current = true
-  }, [open])
+  }, [open, setLiveOutput])
   useEffect(() => {
     if (!open || !followLatest.current) return
     const frame = window.requestAnimationFrame(() => {
@@ -6273,35 +6368,171 @@ function ReadonlyConsole({
     })
     return () => window.cancelAnimationFrame(frame)
   }, [message, open])
+  useEffect(() => {
+    if (!open || activeTerminal?.kind !== 'shell') return
+    const frame = window.requestAnimationFrame(() => {
+      if (shellOutputRef.current) {
+        shellOutputRef.current.scrollTop = shellOutputRef.current.scrollHeight
+      }
+      shellInputRef.current?.focus()
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [activeTerminal?.kind, open, shellOutput])
+  const closeTab = (id: string) => {
+    setTabs(current => current.filter(tab => tab.id !== id))
+    if (activeTab === id) setActiveTab('')
+  }
+  const addTab = () => {
+    if (!tabs.some(tab => tab.id === 'runtime')) {
+      setTabs(current => [{ id: 'runtime', label: '前台', kind: 'readonly' }, ...current])
+      setActiveTab('runtime')
+      return
+    }
+    const id = `shell-${Date.now()}`
+    setTabs(current => [...current, { id, label: '终端', kind: 'shell' }])
+    setActiveTab(id)
+    setShellOutput('')
+  }
+  const executeShell = async (event: FormEvent) => {
+    event.preventDefault()
+    const command = shellCommand.trim()
+    if (!command || shellBusy) return
+    setShellBusy(true)
+    try {
+      const response = await fetch('/api/v1/robot/terminal', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ root, command })
+      })
+      const result = (await response.json()) as { output?: string; error?: string }
+      setShellOutput(current => `${current}${current ? '\n' : ''}${response.ok ? result.output ?? '' : `错误：${result.error ?? '命令执行失败。'}`}`)
+      setShellHistory(current => [...current, command].slice(-50))
+    } catch {
+      setShellOutput(current => `${current}${current ? '\n' : ''}错误：无法连接终端服务。`)
+    } finally {
+      setShellCommand('')
+      setShellHistoryIndex(-1)
+      setShellBusy(false)
+    }
+  }
+  const completeShellInput = async () => {
+    const parts = shellCommand.split(/(\s+)/)
+    const tokenIndex = parts.length - 1
+    const token = parts[tokenIndex] ?? ''
+    const commandNames = ['pwd', 'ls', 'cat', 'head', 'tail', 'find', 'grep', 'git', 'node', 'npm', 'yarn', 'pnpm', 'bun', 'go', 'python', 'python3']
+    if (!token || parts.length === 1) {
+      const matches = commandNames.filter(name => name.startsWith(token))
+      if (matches.length === 1) setShellCommand(matches[0] + ' ')
+      return
+    }
+    const separator = token.includes('/') ? token.lastIndexOf('/') : -1
+    const base = separator >= 0 ? token.slice(0, separator + 1) : ''
+    const prefix = separator >= 0 ? token.slice(separator + 1) : token
+    const directory = base ? `${root}/${base}` : root
+    try {
+      const response = await fetch(`/api/v1/directories?${new URLSearchParams({ path: directory, files: 'true' })}`)
+      if (!response.ok) return
+      const result = (await response.json()) as { directories?: Array<{ name: string }>; files?: Array<{ name: string }> }
+      const names = [...(result.directories ?? []), ...(result.files ?? [])].map(item => item.name).filter(name => name.startsWith(prefix))
+      if (names.length === 1) {
+        parts[tokenIndex] = base + names[0]
+        setShellCommand(parts.join(''))
+      }
+    } catch {
+      // 补全失败不应打断输入。
+    }
+  }
+  const handleShellKeyDown = (event: ReactKeyboardEvent<HTMLInputElement>) => {
+    if (event.key === 'Tab') {
+      event.preventDefault()
+      void completeShellInput()
+      return
+    }
+    if (event.key === 'ArrowUp' && shellHistory.length > 0) {
+      event.preventDefault()
+      const next = Math.max(0, shellHistoryIndex < 0 ? shellHistory.length - 1 : shellHistoryIndex - 1)
+      setShellHistoryIndex(next)
+      setShellCommand(shellHistory[next] ?? '')
+      return
+    }
+    if (event.key === 'ArrowDown' && shellHistoryIndex >= 0) {
+      event.preventDefault()
+      const next = shellHistoryIndex + 1
+      setShellHistoryIndex(next >= shellHistory.length ? -1 : next)
+      setShellCommand(next >= shellHistory.length ? '' : shellHistory[next] ?? '')
+      return
+    }
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'l') {
+      event.preventDefault()
+      setShellOutput('')
+    }
+  }
+  const moveWindow = (event: ReactPointerEvent<HTMLElement>) => {
+    const start = dragStart.current
+    if (!start) return
+    const maxLeft = Math.max(8, window.innerWidth - windowRect.width - 8)
+    const maxTop = Math.max(8, window.innerHeight - windowRect.height - 8)
+    setWindowRect(current => ({
+      ...current,
+      left: Math.max(8, Math.min(maxLeft, start.left + event.clientX - start.x)),
+      top: Math.max(8, Math.min(maxTop, start.top + event.clientY - start.y))
+    }))
+  }
+  const resizeWindow = (event: ReactPointerEvent<HTMLElement>) => {
+    const start = resizeStart.current
+    if (!start) return
+    setWindowRect(current => ({
+      ...current,
+      width: Math.max(280, Math.min(window.innerWidth - start.left - 8, start.width + event.clientX - start.x)),
+      height: Math.max(260, Math.min(window.innerHeight - start.top - 8, start.height + event.clientY - start.y))
+    }))
+  }
+  const stopInteraction = () => {
+    dragStart.current = null
+    resizeStart.current = null
+  }
   if (!open) return null
   return (
     <Modal
       open
       zIndex={40}
-      className="readonly-console-backdrop bg-slate-950/35 backdrop-blur-sm"
+      className="readonly-console-backdrop"
       ariaLabel="运行终端"
     >
       <section
-        className="readonly-console grid max-h-[min(720px,calc(100vh-32px))] w-[min(860px,100%)] grid-rows-[auto_minmax(0,1fr)] overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl dark:border-slate-700 dark:bg-slate-900"
+        className="readonly-console grid grid-rows-[auto_minmax(0,1fr)] overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl dark:border-slate-700 dark:bg-slate-900"
+        style={{ left: windowRect.left, top: windowRect.top, width: windowRect.width, height: windowRect.height }}
         role="dialog"
         aria-modal="true"
         aria-label="运行终端"
       >
-        <header className="flex items-center justify-between gap-3 border-b border-slate-200 px-4 py-3 dark:border-slate-700">
+        <header
+          className="readonly-console-header flex items-center justify-between gap-3 border-b border-slate-200 px-4 py-3 dark:border-slate-700"
+          onPointerDown={event => {
+            if ((event.target as HTMLElement).closest('button')) return
+            dragStart.current = { x: event.clientX, y: event.clientY, left: windowRect.left, top: windowRect.top }
+            event.currentTarget.setPointerCapture(event.pointerId)
+          }}
+          onPointerMove={moveWindow}
+          onPointerUp={stopInteraction}
+          onPointerCancel={stopInteraction}
+        >
           <div className="flex min-w-0 items-center gap-2">
             <Terminal className="size-4 shrink-0 text-brand-600 dark:text-brand-200" />
             <strong className="text-sm font-semibold text-slate-900 dark:text-slate-100">
-              运行终端
+              终端
             </strong>
             <small className="hidden text-xs text-slate-400 sm:inline">
-              {running
-                ? `${data?.mode ?? '进程'}实时输出 · 不支持输入命令`
-                : '查看最近运行输出 · 不支持输入命令'}
+              {activeTerminal?.kind === 'shell'
+                ? '仅限当前机器人目录'
+                : running
+                  ? `${data?.mode ?? '进程'}实时输出 · 只读`
+                  : '查看最近运行输出 · 只读'}
             </small>
           </div>
           <div className="flex items-center gap-1">
             <button
-              className="inline-flex size-8 items-center justify-center rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-800"
+              className="readonly-console-refresh inline-flex size-8 items-center justify-center rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-800"
               disabled={isFetching}
               onClick={() => void load({ root, refresh: true })}
               aria-label="刷新运行终端"
@@ -6310,7 +6541,7 @@ function ReadonlyConsole({
               <RefreshCw />
             </button>
             <button
-              className="inline-flex size-8 items-center justify-center rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-800"
+              className="readonly-console-window-close inline-flex size-8 items-center justify-center rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-800"
               onClick={onClose}
               aria-label="关闭运行终端"
               title="关闭"
@@ -6319,40 +6550,90 @@ function ReadonlyConsole({
             </button>
           </div>
         </header>
-        <div className="grid min-h-0 grid-rows-[minmax(0,1fr)_auto_auto]">
-          <pre
-            ref={outputRef}
-            className="m-0 min-h-0 overflow-auto bg-slate-950 p-4 font-mono text-xs leading-5 text-emerald-200"
-            onScroll={event => {
-              const output = event.currentTarget
-              followLatest.current =
-                output.scrollHeight - output.scrollTop - output.clientHeight <
-                24
+        <div className="readonly-console-body">
+          <nav
+            className="readonly-console-tabs"
+            aria-label="终端列表"
+            onPointerDown={event => {
+              if ((event.target as HTMLElement).closest('button')) return
+              dragStart.current = { x: event.clientX, y: event.clientY, left: windowRect.left, top: windowRect.top }
+              event.currentTarget.setPointerCapture(event.pointerId)
             }}
+            onPointerMove={moveWindow}
+            onPointerUp={stopInteraction}
+            onPointerCancel={stopInteraction}
           >
-            {isFetching && !message ? '正在读取当前目录…' : message}
-          </pre>
-          {data?.snapshot && (
+            {tabs.map(tab => (
+              <button
+                className={cn('readonly-console-tab', activeTab === tab.id && 'active')}
+                key={tab.id}
+                onClick={() => setActiveTab(tab.id)}
+              >
+                <span>{tab.label}</span>
+                <X
+                  className="size-3"
+                  onClick={event => {
+                    event.stopPropagation()
+                    closeTab(tab.id)
+                  }}
+                />
+              </button>
+            ))}
             <button
-              className="flex items-center justify-center gap-1 border-t border-slate-700 bg-slate-900 px-3 py-1.5 text-[11px] font-semibold text-slate-400 transition hover:text-slate-200"
-              onClick={() => setShowSnapshot(value => !value)}
-              aria-expanded={showSnapshot}
+              className="readonly-console-tab-add"
+              onClick={addTab}
+              aria-label="添加终端"
+              title="添加终端"
             >
-              {showSnapshot ? '收起' : '展开'}目录信息（版本 / 脚本 / Git）
-              <ChevronDown
-                className={cn(
-                  'size-3.5 transition-transform',
-                  showSnapshot && 'rotate-180'
-                )}
-              />
+              <Plus className="size-4" />
             </button>
-          )}
-          {showSnapshot && data?.snapshot && (
-            <pre className="m-0 max-h-48 overflow-auto border-t border-slate-700 bg-slate-900 px-4 py-3 font-mono text-[11px] leading-5 text-slate-400">
-              {data.snapshot}
+            {tabs.length === 0 && <span className="readonly-console-empty">没有打开的终端，点击右上角 + 添加</span>}
+          </nav>
+          {activeTerminal?.kind === 'shell' ? (
+            <div className="readonly-console-shell">
+              <pre ref={shellOutputRef}>{shellOutput || ''}</pre>
+              <form onSubmit={executeShell}>
+                <span>$</span>
+                <input
+                  ref={shellInputRef}
+                  autoFocus
+                  value={shellCommand}
+                  onChange={event => setShellCommand(event.target.value)}
+                  onKeyDown={handleShellKeyDown}
+                  disabled={shellBusy}
+                  placeholder="输入命令 · Tab 补全 · ↑↓ 历史 · Ctrl/Cmd+L 清屏"
+                  aria-label="机器人目录终端命令"
+                />
+              </form>
+            </div>
+          ) : activeTerminal ? (
+            <pre
+              ref={outputRef}
+              className="readonly-console-output"
+              onScroll={event => {
+                const output = event.currentTarget
+                followLatest.current =
+                  output.scrollHeight - output.scrollTop - output.clientHeight <
+                  24
+              }}
+            >
+              {isFetching && !message ? '正在读取运行输出…' : message}
             </pre>
-          )}
+          ) : null}
         </div>
+        <button
+          className="readonly-console-resize"
+          onPointerDown={event => {
+            event.preventDefault()
+            resizeStart.current = { x: event.clientX, y: event.clientY, width: windowRect.width, height: windowRect.height, left: windowRect.left, top: windowRect.top }
+            event.currentTarget.setPointerCapture(event.pointerId)
+          }}
+          onPointerMove={resizeWindow}
+          onPointerUp={stopInteraction}
+          onPointerCancel={stopInteraction}
+          aria-label="调整终端大小"
+          title="调整终端大小"
+        />
       </section>
     </Modal>
   )
@@ -6401,11 +6682,11 @@ function PM2LogsPanel({
         setLoading(false)
       }
     },
-    [root]
+    [root, setData, setError, setLoading]
   )
   useEffect(() => {
     if (open) setPage(1)
-  }, [open])
+  }, [open, setPage])
   useEffect(() => {
     if (open && root) void load(page)
   }, [load, open, page, root])
@@ -6855,7 +7136,7 @@ function GitReleasePanelNext({
       setSourceBranch(status?.branch || branches[0]?.name || '')
     if (!commits.some(item => item.sha === sourceCommit))
       setSourceCommit(commits[0]?.sha ?? '')
-  }, [branches, commits, sourceBranch, sourceCommit, status?.branch])
+  }, [branches, commits, sourceBranch, sourceCommit, status?.branch, setSourceBranch, setSourceCommit])
   const issues = status?.issues ?? []
   const blockingIssues = issues
   const ready = !loading && blockingIssues.length === 0 && !!sourceCommit

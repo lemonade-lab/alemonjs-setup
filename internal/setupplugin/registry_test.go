@@ -1,6 +1,7 @@
 package setupplugin
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -10,6 +11,28 @@ import (
 	"testing"
 	"time"
 )
+
+type testHTTPServer struct {
+	client *http.Client
+	URL    string
+}
+
+func (s *testHTTPServer) Close()               {}
+func (s *testHTTPServer) Client() *http.Client { return s.client }
+
+func newTestHTTPServer(t *testing.T, handler http.Handler) *testHTTPServer {
+	t.Helper()
+	transport := roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, request)
+		return &http.Response{StatusCode: recorder.Code, Header: recorder.Header(), Body: io.NopCloser(recorder.Body), Request: request}, nil
+	})
+	return &testHTTPServer{client: &http.Client{Transport: transport}, URL: "http://test.local"}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
 func TestRegistryListsValidPluginWithNavigation(t *testing.T) {
 	root := t.TempDir()
@@ -137,7 +160,7 @@ func TestRegistryCanDisableAndReenablePlugin(t *testing.T) {
 }
 
 func TestRegistryRendersOnlinePluginFromAppsXIndex(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/apps-x.md":
 			_, _ = w.Write([]byte("[network]: https://github.com/lemonade-lab/alemonx-network\n"))
@@ -270,7 +293,7 @@ func makeGitPluginRepo(t *testing.T) string {
 
 func TestRegistryInstallsOnlinePluginLocally(t *testing.T) {
 	remote := makeGitPluginRepo(t)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/apps-x.md":
 			_, _ = w.Write([]byte("[network]: https://github.com/lemonade-lab/alemonx-network\n"))

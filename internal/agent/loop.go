@@ -63,12 +63,19 @@ type Approver func(ctx context.Context, call ToolCall) error
 // is one of "text", "tool", "result", "error" or "done".
 type Event struct {
 	Type   string `json:"type"`
+	TaskID string `json:"taskId,omitempty"`
+	StepID string `json:"stepId,omitempty"`
 	Text   string `json:"text,omitempty"`
 	Tool   string `json:"tool,omitempty"`
 	CallID string `json:"callId,omitempty"`
 	Turn   int    `json:"turn,omitempty"`
 	Output string `json:"output,omitempty"`
 	Diff   *Diff  `json:"diff,omitempty"`
+}
+type VerificationResult struct {
+	Passed bool
+	Output string
+	Error  string
 }
 
 // Diff describes one file change proposed by a write tool, for rendering a
@@ -88,15 +95,16 @@ const verifyToolName = "agent_verify"
 
 // Loop drives the agentic loop against one resolved provider.
 type Loop struct {
-	cfg        ai.Resolved
-	registry   *Registry
-	system     string
-	maxTurns   int
-	approve    Approver
-	observer   func(Event)
-	checkpoint func(int, []Message)
-	verify     bool
-	budget     int
+	cfg                  ai.Resolved
+	registry             *Registry
+	system               string
+	maxTurns             int
+	approve              Approver
+	observer             func(Event)
+	checkpoint           func(int, []Message)
+	verify               bool
+	verificationObserver func(VerificationResult)
+	budget               int
 }
 
 func NewLoop(cfg ai.Resolved, registry *Registry, system string, maxTurns int) *Loop {
@@ -145,6 +153,10 @@ func (l *Loop) WithAutoVerify() *Loop {
 	l.verify = true
 	return l
 }
+func (l *Loop) WithVerificationObserver(observer func(VerificationResult)) *Loop {
+	l.verificationObserver = observer
+	return l
+}
 
 // callVerify invokes the agent_verify handler and returns its text output.
 func (l *Loop) callVerify(ctx context.Context) (string, bool) {
@@ -155,6 +167,11 @@ func (l *Loop) callVerify(ctx context.Context) (string, bool) {
 	output, err := handler(ctx, nil)
 	if err != nil {
 		output = "验证命令失败：" + err.Error()
+		if l.verificationObserver != nil {
+			l.verificationObserver(VerificationResult{Output: output, Error: err.Error()})
+		}
+	} else if l.verificationObserver != nil {
+		l.verificationObserver(VerificationResult{Passed: true, Output: output})
 	}
 	return output, true
 }

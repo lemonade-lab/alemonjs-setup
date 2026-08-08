@@ -1,6 +1,6 @@
 import { useStoreState } from '../store/guideStore'
 import { Copy, ExternalLink, KeyRound, Plus, RefreshCw, X } from 'lucide-react'
-import { useEffect } from 'react'
+import { useCallback, useEffect } from 'react'
 import { ConfirmDialog } from './ConfirmDialog'
 import { Button } from './Button'
 
@@ -13,7 +13,7 @@ export function SSHControl() {
   const [busy, setBusy] = useStoreState(false)
   const [message, setMessage] = useStoreState('')
   const [confirmGenerate, setConfirmGenerate] = useStoreState(false)
-  const load = async () => {
+  const load = useCallback(async () => {
     setLoading(true)
     try {
       const response = await fetch('/api/v1/system/ssh')
@@ -31,10 +31,10 @@ export function SSHControl() {
     } finally {
       setLoading(false)
     }
-  }
+  }, [setKeys, setLoading, setMessage])
   useEffect(() => {
     if (open) void load()
-  }, [open])
+  }, [open, load])
   useEffect(() => {
     const closeWhenAnotherToolOpens = (event: Event) => {
       if ((event as CustomEvent<string>).detail !== 'ssh') setOpen(false)
@@ -42,7 +42,7 @@ export function SSHControl() {
     window.addEventListener('alx:top-tool-open', closeWhenAnotherToolOpens)
     return () =>
       window.removeEventListener('alx:top-tool-open', closeWhenAnotherToolOpens)
-  }, [])
+  }, [setOpen])
   const generate = async () => {
     setBusy(true)
     try {

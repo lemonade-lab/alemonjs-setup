@@ -47,7 +47,7 @@ export function EnvConfigForm({ content, onChange }: Props) {
   useEffect(() => {
     const next = parse(content)
     setEntries(current => (sameEntries(current, next) ? current : next))
-  }, [content])
+  }, [content, setEntries])
   const update = (index: number, field: keyof Entry, value: string) => {
     const next = entries.map((item, position) =>
       position === index ? { ...item, [field]: value } : item

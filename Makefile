@@ -1,4 +1,4 @@
-.PHONY: help dev build test format lint dev-fe
+.PHONY: help dev build test test-agent test-all format lint dev-fe build-frontend release-check
 
 .DEFAULT_GOAL := help
 
@@ -15,14 +15,30 @@ build: ## Build the production binary
 test: ## Run Go tests
 	go test ./internal/...
 
+test-agent: ## Run Agent package tests
+	GOCACHE="$${GOCACHE:-$$(mktemp -d)}" go test ./internal/agent ./internal/web
+
+test-all: ## Run the complete Go test suite with injectable test storage
+	ALX_TEST_CACHE_DIR="$${ALX_TEST_CACHE_DIR:-$$(mktemp -d)}" GOCACHE="$${GOCACHE:-$$(mktemp -d)}" go test ./...
+
 format: ## Format Go files
 	go fmt ./...
 
-lint: ## Run Go vet
-	go vet ./internal/...
+lint: ## Run Go vet and frontend lint
+	GOCACHE="$${GOCACHE:-$$(mktemp -d)}" go vet ./internal/...
+	cd frontend && yarn lint
 
 dev-fe: ## Start the Vite development server
 	cd frontend && yarn dev
 
 build-fe: ## Build the frontend into dist/
 	cd frontend && yarn build
+
+build-frontend: build-fe ## Alias for the release gate
+
+release-check: ## Run the publishability gate
+	$(MAKE) test-agent
+	$(MAKE) test-all
+	cd frontend && yarn lint
+	$(MAKE) build-frontend
+	git diff --check

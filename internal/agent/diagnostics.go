@@ -104,3 +104,5 @@ func diagnosticExplanation(d DiagnosticContext) string {
 	}
 	return "错误类型：" + d.ErrorKind + "\n" + advice
 }
+
+func ExplainDiagnostic(d DiagnosticContext) string { return diagnosticExplanation(d) }

@@ -54,6 +54,54 @@ func TestValidateTaskPlan(t *testing.T) {
 	}
 }
 
+func TestStepExecutorAdvancesOnlyCompletedSteps(t *testing.T) {
+	store := NewTaskStoreAt(t.TempDir())
+	m := NewTaskManager(store)
+	plan := TaskPlan{Goal: "g", Completion: "c", CurrentStep: 0, Approved: true, Steps: []PlanStep{{ID: "a", Status: "pending"}, {ID: "b", Status: "pending"}}}
+	_, err := m.Create(AgentTask{ID: "step-exec", Status: TaskQueued, Plan: plan}, func(context.Context, AgentTask, func(Event)) (string, error) { return "", nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := StepExecutor{Manager: m}
+	if _, err := e.Advance("step-exec"); err == nil {
+		t.Fatal("未完成步骤不应推进")
+	}
+	if _, err := e.StartCurrent("step-exec"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.Complete("step-exec", "ok"); err == nil {
+		t.Fatal("未进入验证状态不应完成")
+	}
+	if _, err := e.MarkVerifying("step-exec", "checking"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.Complete("step-exec", "ok"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.Advance("step-exec"); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := e.Current("step-exec")
+	if got.ID != "b" {
+		t.Fatalf("current step = %q", got.ID)
+	}
+}
+
+func TestPlanPendingRequiresApproval(t *testing.T) {
+	manager := NewTaskManager(NewTaskStoreAt(t.TempDir()))
+	plan := TaskPlan{Goal: "g", Completion: "c", CurrentStep: 0, Steps: []PlanStep{{ID: "a", Status: "pending"}}}
+	task, err := manager.Create(AgentTask{ID: "pending", Status: TaskPlanPending, Plan: plan}, func(context.Context, AgentTask, func(Event)) (string, error) { return "ok", nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Start(task.ID); err == nil {
+		t.Fatal("expected approval requirement")
+	}
+	if _, err := manager.ApprovePlan(task.ID); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestSnapshotRollbackDetectsExternalChange(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "a.txt")

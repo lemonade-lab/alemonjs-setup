@@ -155,7 +155,7 @@ export function NpmPublishPanel({ root, busy, onRun }: Props) {
   useEffect(() => {
     if (!sourceCommits.some(item => item.sha === sourceCommit))
       setSourceCommit(sourceCommits[0]?.sha ?? '')
-  }, [sourceCommits, sourceCommit])
+  }, [sourceCommits, sourceCommit, setSourceCommit])
   const publish = async () => {
     if (!confirming) {
       setConfirming(true)

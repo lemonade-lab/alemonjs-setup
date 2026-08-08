@@ -36,7 +36,7 @@ export function NpmrcConfigForm({ content, onChange }: Props) {
       setPreset('custom')
       setCustomRegistry(registry)
     }
-  }, [content])
+  }, [content, setCustomRegistry, setPreset])
 
   const updateRegistry = (candidate: string) => {
     const registry = candidate.trim()

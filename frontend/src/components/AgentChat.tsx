@@ -26,7 +26,7 @@ import {
   Unlock,
   X
 } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useRef } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AgentMarkdown } from './AgentMarkdown'
 import { Modal } from './Modal'
 import cn from 'classnames'
@@ -65,8 +65,11 @@ type TaskMeta = {
   status: string
   turn: number
   lastError?: string
+  isolation?: string
   plan?: { goal: string; completion: string; currentStep: number; steps: Array<{ id: string; title: string; status: string }> }
 }
+type GoalMeta = { id: string; title: string; prompt: string; root: string; scheduleMinutes?: number; nextRun?: string; status: string; lastTaskId?: string; lastError?: string }
+type GoalDraft = { id?: string; title: string; prompt: string; root: string; provider: string; model: string; scheduleMinutes: number; isolation: string }
 
 const TOOL_LABEL: Record<string, string> = {
   read_project_file: '读取文件',
@@ -91,7 +94,8 @@ const PROMPT_EXAMPLES: Array<[string, string]> = [
 	['介绍一下这个项目', '读取项目结构，帮我介绍这个机器人项目。'],
   ['加一个新命令', '给机器人新增一个打招呼的命令并验证。'],
   ['找功能实现位置', '搜索某个功能的实现位置并解释。'],
-  ['修复最近的报错', '查看最近改动，修复导致的报错。']
+	['修复最近的报错', '查看最近改动，修复导致的报错。'],
+	['设置长期目标', '设置一个每 60 分钟检查项目并报告问题的长期目标。']
 ]
 
 const PROVIDER_KEY_LINKS: Record<string, { href: string; label: string }> = {
@@ -234,6 +238,133 @@ function StepStatus({ status }: { status: Activity['status'] }) {
   )
 }
 
+type ResponseSection = { title: string; preview: string }
+
+function responseSections(content: string): ResponseSection[] {
+  const lines = content.split('\n')
+  const sections: Array<ResponseSection & { body: string[] }> = []
+  let current: (ResponseSection & { body: string[] }) | null = null
+  for (const rawLine of lines) {
+    const line = rawLine.trim()
+    if (!line) continue
+    const heading = line.match(/^(?:#{1,4}\s+|(?:\d+[.、]|[-*])\s+)(.+)$/)
+    if (heading) {
+      if (current) sections.push(current)
+      current = { title: heading[1], preview: '', body: [] }
+      continue
+    }
+    if (!current) current = { title: line, preview: '', body: [] }
+    else current.body.push(line)
+  }
+  if (current) sections.push(current)
+  return sections
+    .map(section => ({
+      title: section.title.slice(0, 42),
+      preview: section.body.join(' ').slice(0, 110) || section.title
+    }))
+    .filter(section => section.title)
+    .slice(0, 18)
+}
+
+function AgentResponseNavigator({
+  content,
+  threadRef,
+  articleRef
+}: {
+  content: string
+  threadRef: React.RefObject<HTMLElement | null>
+  articleRef: React.RefObject<HTMLElement | null>
+}) {
+  const sections = useMemo(() => responseSections(content), [content])
+  const [active, setActive] = useState(0)
+  const [hovered, setHovered] = useState<number | null>(null)
+
+  useEffect(() => {
+    const thread = threadRef.current
+    if (!thread || sections.length < 2) return
+    const update = () => {
+      const article = articleRef.current
+      if (!article) return
+      const position = Math.max(
+        0,
+        Math.min(0.999, (thread.scrollTop - article.offsetTop + thread.clientHeight * 0.28) / Math.max(article.offsetHeight, 1))
+      )
+      setActive(Math.min(sections.length - 1, Math.floor(position * sections.length)))
+    }
+    update()
+    thread.addEventListener('scroll', update, { passive: true })
+    return () => thread.removeEventListener('scroll', update)
+  }, [articleRef, sections.length, threadRef])
+
+  if (sections.length < 2) return null
+  const preview = hovered === null ? null : sections[hovered]
+  return (
+    <nav className="agent-response-navigator" aria-label="回复结构导航">
+      <div className="agent-response-minimap">
+        {sections.map((section, index) => (
+          <button
+            className={index === active ? 'active' : ''}
+            key={`${section.title}-${index}`}
+            onClick={() => {
+              const thread = threadRef.current
+              const article = articleRef.current
+              if (!thread || !article) return
+              thread.scrollTo({
+                top: article.offsetTop + (article.offsetHeight * index) / sections.length - 20,
+                behavior: 'smooth'
+              })
+              setActive(index)
+            }}
+            onMouseEnter={() => setHovered(index)}
+            onMouseLeave={() => setHovered(null)}
+            aria-label={`跳转到：${section.title}`}
+          />
+        ))}
+      </div>
+      {preview && (
+        <div
+          className="agent-response-preview"
+          role="status"
+          style={{
+            top: `${(hovered! / Math.max(sections.length - 1, 1)) * 100}%`
+          }}
+        >
+          <strong>{preview.title}</strong>
+          <span>{preview.preview}</span>
+        </div>
+      )}
+    </nav>
+  )
+}
+
+function AgentAssistantMessage({
+  content,
+  streaming,
+  threadRef
+}: {
+  content: string
+  streaming: boolean
+  threadRef: React.RefObject<HTMLElement | null>
+}) {
+  const articleRef = useRef<HTMLElement | null>(null)
+  return (
+    <article className="agent-message-assistant" ref={articleRef}>
+      <span className="agent-message-avatar">
+        <Sparkles className="size-3.5" />
+      </span>
+      <AgentResponseNavigator
+        content={content}
+        threadRef={threadRef}
+        articleRef={articleRef}
+      />
+      <div className="agent-message-body">
+        <span className="agent-message-label">Agent</span>
+        <AgentMarkdown content={content} streaming={streaming} />
+      </div>
+    </article>
+  )
+}
+
 // AgentChatPage is the built-in coding-agent workspace. It streams the agent
 // loop's progress over SSE and renders each tool call as a timeline step while
 // the final answer streams in. Provider settings live behind the gear button.
@@ -252,6 +383,9 @@ export function AgentChatPage({
   const [prompt, setPrompt] = useStoreState('')
   const [busy, setBusy] = useStoreState(false)
   const [notice, setNotice] = useStoreState('')
+  const [diagnostic, setDiagnostic] = useStoreState<{
+    kind?: string; file?: string; line?: number; message?: string; explanation?: string
+  } | null>(null)
   const [settings, setSettings] = useStoreState(false)
   const [baseURL, setBaseURL] = useStoreState('')
   const [apiKey, setAPIKey] = useStoreState('')
@@ -275,6 +409,10 @@ export function AgentChatPage({
   } | null>(null)
   const [sessions, setSessions] = useStoreState<SessionMeta[]>([])
   const [tasks, setTasks] = useStoreState<TaskMeta[]>([])
+  const [goals, setGoals] = useStoreState<GoalMeta[]>([])
+  const [goalDraft, setGoalDraft] = useStoreState<GoalDraft | null>(null)
+  const [goalRuns, setGoalRuns] = useStoreState<Array<{ id: string; taskId: string; status: string; error?: string; startedAt: string; finishedAt?: string }>>([])
+  const [planDraft, setPlanDraft] = useStoreState<{ taskId: string; goal: string; completion: string; steps: Array<{ id: string; title: string; status: string }> } | null>(null)
   const [sessionId, setSessionId] = useStoreState('')
   const [sessionOpen, setSessionOpen] = useStoreState(false)
   const [models, setModels] = useStoreState<string[]>([])
@@ -293,6 +431,41 @@ export function AgentChatPage({
   const [filePickerMode, setFilePickerMode] = useStoreState<PickerMode>('directory')
   const [fileExtensions, setFileExtensions] = useStoreState('ts, tsx')
   const [slashIndex, setSlashIndex] = useStoreState(-1)
+
+  // Composer popovers are mutually exclusive. Keeping this in one place
+  // prevents the menus from stacking over one another when switching tools.
+  const toggleComposerMenu = (menu: 'more' | 'access' | 'model') => {
+    if (menu === 'more') {
+      setMoreOpen(current => {
+        const next = !current
+        if (next) {
+          setAccessOpen(false)
+          setModelCardOpen(false)
+        }
+        return next
+      })
+      return
+    }
+    if (menu === 'access') {
+      setAccessOpen(current => {
+        const next = !current
+        if (next) {
+          setMoreOpen(false)
+          setModelCardOpen(false)
+        }
+        return next
+      })
+      return
+    }
+    setModelCardOpen(current => {
+      const next = !current
+      if (next) {
+        setMoreOpen(false)
+        setAccessOpen(false)
+      }
+      return next
+    })
+  }
 
   const current = providers.find(item => item.ID === provider)
 
@@ -316,7 +489,7 @@ export function AgentChatPage({
     } catch {
       // 模型列表加载失败不阻塞
     }
-  }, [])
+  }, [setModels, setModel])
 
   const loadProviders = useCallback(async () => {
     const response = await fetch('/api/v1/ai/providers')
@@ -329,7 +502,7 @@ export function AgentChatPage({
       setBaseURL(item.BaseURL)
       void loadModels(item.ID)
     }
-  }, [loadModels])
+  }, [loadModels, setProviders, setProvider, setModel, setBaseURL])
   useEffect(() => {
     void loadProviders()
   }, [loadProviders])
@@ -347,7 +520,7 @@ export function AgentChatPage({
     } catch {
       // 列表加载失败不阻塞对话
     }
-  }, [])
+  }, [setSessions])
   useEffect(() => {
     void loadSessions()
   }, [loadSessions])
@@ -359,12 +532,14 @@ export function AgentChatPage({
     } catch {
       // Task status is auxiliary to the conversation view.
     }
-  }, [])
+  }, [setTasks])
   useEffect(() => {
     void loadTasks()
     const timer = window.setInterval(() => void loadTasks(), 2000)
     return () => window.clearInterval(timer)
   }, [loadTasks])
+  const loadGoals = useCallback(async () => { try { const response = await fetch('/api/v1/agent/goals'); if (response.ok) setGoals((await response.json()) as GoalMeta[]) } catch { /* auxiliary */ } }, [setGoals])
+  useEffect(() => { void loadGoals() }, [loadGoals])
 
   // When opened from the directory session tree, load that conversation.
   // Track the last loaded id so a repeated id is not re-fetched, while a new id
@@ -395,13 +570,14 @@ export function AgentChatPage({
         setNotice('加载会话失败。')
       }
     })()
-  }, [initialSessionId])
+  }, [initialSessionId, setSessionId, setMessages, setActivity, setNotice])
 
   const newSession = () => {
     if (busy) return
     setSessionId('')
     setMessages([])
     setActivity([])
+    setDiagnostic(null)
     setSessionOpen(false)
     // 清除已加载记录，让之后点开同一记录仍能重新加载；并通知 Dashboard
     // 清空 agentSessionId，否则重开同一条记录时 prop 不变、不触发加载。
@@ -453,9 +629,25 @@ export function AgentChatPage({
     await loadTasks()
   }
 
+  const approveTask = async (id: string) => {
+    const response = await fetch(`/api/v1/agent/tasks/${encodeURIComponent(id)}/plan/approve`, { method: 'POST' })
+    setNotice(response.ok ? '计划已批准，任务开始执行。' : '计划批准失败。')
+    await loadTasks()
+  }
+  const editPlan = (task: TaskMeta) => { if (task.plan) setPlanDraft({ taskId: task.id, goal: task.plan.goal, completion: task.plan.completion, steps: task.plan.steps.map(step => ({ ...step })) }) }
+  const savePlan = async () => { if (!planDraft) return; const response = await fetch(`/api/v1/agent/tasks/${encodeURIComponent(planDraft.taskId)}/plan`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ goal: planDraft.goal, completion: planDraft.completion, currentStep: 0, approved: false, steps: planDraft.steps }) }); setNotice(response.ok ? '计划已保存，需要重新批准。' : '计划保存失败。'); setPlanDraft(null); await loadTasks() }
+
   const rollbackTask = async (id: string) => {
     const response = await fetch(`/api/v1/agent/tasks/${encodeURIComponent(id)}/rollback`, { method: 'POST' })
     if (!response.ok) setNotice('回滚失败：可能有文件被外部修改。')
+    await loadTasks()
+  }
+
+  const mergeTask = async (id: string) => {
+    const response = await fetch(`/api/v1/agent/tasks/${encodeURIComponent(id)}/merge`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ confirm: true })
+    })
+    setNotice(response.ok ? 'worktree 修改已合并到主工作区。' : '合并失败，请先查看任务报告。')
     await loadTasks()
   }
 
@@ -465,6 +657,20 @@ export function AgentChatPage({
     const report = (await response.json()) as { summary?: string; modifiedFiles?: string[] }
     setNotice(`${report.summary || '任务报告已生成。'}${report.modifiedFiles?.length ? ` 修改 ${report.modifiedFiles.length} 个文件。` : ''}`)
   }
+
+  const createGoal = () => setGoalDraft({ title: '', prompt: '', root, provider, model, scheduleMinutes: 0, isolation: 'workspace' })
+  const editGoal = (goal: GoalMeta) => setGoalDraft({ id: goal.id, title: goal.title, prompt: goal.prompt, root: goal.root, provider, model, scheduleMinutes: goal.scheduleMinutes || 0, isolation: 'workspace' })
+  const saveGoal = async () => {
+    if (!goalDraft?.prompt.trim() || !goalDraft.root.trim()) { setNotice('目标提示词和项目目录不能为空。'); return }
+    const url = goalDraft.id ? `/api/v1/agent/goals/${encodeURIComponent(goalDraft.id)}` : '/api/v1/agent/goals'
+    const response = await fetch(url, { method: goalDraft.id ? 'PATCH' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...goalDraft, access: 'ask' }) })
+    if (!response.ok) { setNotice('目标保存失败。'); return }
+    setGoalDraft(null); await loadGoals(); setNotice('长期目标已保存。')
+  }
+  const deleteGoal = async (id: string) => { if (!window.confirm('删除目标但保留运行历史？')) return; await fetch(`/api/v1/agent/goals/${encodeURIComponent(id)}`, { method: 'DELETE' }); await loadGoals() }
+  const showGoalRuns = async (id: string) => { const response = await fetch(`/api/v1/agent/goals/${encodeURIComponent(id)}/runs`); if (response.ok) setGoalRuns((await response.json()) as typeof goalRuns); setNotice('已加载目标运行历史。') }
+  const runGoal = async (id: string) => { await fetch(`/api/v1/agent/goals/${encodeURIComponent(id)}/run`, { method: 'POST' }); await loadGoals(); await loadTasks(); setNotice('长期目标已创建任务。') }
+  const toggleGoal = async (goal: GoalMeta) => { await fetch(`/api/v1/agent/goals/${encodeURIComponent(goal.id)}/${goal.status === 'active' ? 'pause' : 'resume'}`, { method: 'POST' }); await loadGoals() }
 
   const handleEvent = useCallback(
     (event: {
@@ -558,7 +764,7 @@ export function AgentChatPage({
           break
       }
     },
-    [loadSessions]
+    [loadSessions, setActivity, setMessages, setNotice, setPendingConfirm, setSessionId, setTimelineOpen]
   )
 
   const send = async () => {
@@ -591,6 +797,14 @@ export function AgentChatPage({
     setTimelineOpen(false)
     setNotice('Agent 正在执行…')
     setBusy(true)
+    if (/当前报错|最近的报错|修复报错/.test(prompt)) {
+      void fetch('/api/v1/agent/diagnostics', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ root, error: prompt })
+      }).then(async response => {
+        if (response.ok) setDiagnostic((await response.json()) as { kind?: string; file?: string; line?: number; message?: string; explanation?: string })
+      }).catch(() => undefined)
+    }
     const controller = new AbortController()
     streamRef.current = controller
     // SSE 流式请求绕过 Vite 代理直连后端：开发模式下 Vite 的 http-proxy
@@ -628,6 +842,10 @@ export function AgentChatPage({
       const created = (await createResponse.json()) as { taskId?: string }
       if (!created.taskId) throw new Error('Agent 未返回任务 ID。')
       taskIdRef.current = created.taskId
+      if ((created as { status?: string }).status === 'plan_pending') {
+        setNotice('任务计划已生成，请批准后开始执行。')
+        return
+      }
       const streamURL = `${taskURL}/${encodeURIComponent(created.taskId)}/events`
       const response = await fetch(streamURL, { signal: controller.signal })
       if (!response.ok) throw new Error('无法订阅 Agent 任务事件。')
@@ -763,7 +981,7 @@ export function AgentChatPage({
         setNotice(approve ? '批准失败：网络错误。' : '拒绝失败：网络错误。')
       }
     },
-    [pendingConfirm]
+    [pendingConfirm, setNotice, setPendingConfirm]
   )
 
   useEffect(() => {
@@ -837,6 +1055,7 @@ export function AgentChatPage({
     .filter(Boolean)
     .join(' · ')
   const activeTask = tasks.find(task => task.sessionId === sessionId && task.status === 'running')
+  const pendingTask = tasks.find(task => task.sessionId === sessionId && task.status === 'plan_pending')
 
   return (
     <section className="agent-workspace">
@@ -877,9 +1096,6 @@ export function AgentChatPage({
           <section className="agent-thread" ref={threadRef}>
             {messages.length === 0 && !busy && (
               <div className="agent-empty">
-                <span className="agent-empty-icon">
-                  <Sparkles className="size-6" />
-                </span>
                 <h3>让 ALemonX 来搞定它</h3>
                 <div className="agent-examples">
                   {PROMPT_EXAMPLES.map(([label, text]) => (
@@ -911,31 +1127,34 @@ export function AgentChatPage({
                   )}
                 </article>
               ) : (
-                <article className="agent-message-assistant" key={index}>
-                  <span className="agent-message-avatar">
-                    <Sparkles className="size-3.5" />
-                  </span>
-                  <div className="agent-message-body">
-                    <span className="agent-message-label">Agent</span>
-                    <AgentMarkdown
-                      content={item.content}
-                      streaming={busy && index === messages.length - 1}
-                    />
-                  </div>
-                </article>
+                <AgentAssistantMessage
+                  content={item.content}
+                  key={index}
+                  streaming={busy && index === messages.length - 1}
+                  threadRef={threadRef}
+                />
               )
             )}
-            {activeTask?.plan && (
+            {diagnostic && (
+              <div className="agent-plan-card agent-diagnostic-card">
+                <strong>错误诊断</strong>
+                <small>{diagnostic.kind || 'unknown'} · {diagnostic.file || '未定位'}{diagnostic.line ? `:${diagnostic.line}` : ''}</small>
+                <p>{diagnostic.message || '已收集错误上下文，Agent 将继续分析。'}</p>
+                {diagnostic.explanation && <small>{diagnostic.explanation}</small>}
+              </div>
+            )}
+            {(activeTask?.plan || pendingTask?.plan) && (
               <div className="agent-plan-card">
-                <strong>任务计划</strong>
-                <small>{activeTask.plan.goal}</small>
+                <strong>{pendingTask ? '等待计划批准' : '任务计划'}</strong>
+                <small>{(activeTask || pendingTask)?.plan?.goal}</small>
                 <div className="agent-plan-steps">
-                  {activeTask.plan.steps.map((step, index) => (
+                  {((activeTask || pendingTask)?.plan?.steps || []).map((step, index) => (
                     <span key={step.id} data-status={step.status}>
                       {index + 1}. {step.title}
                     </span>
                   ))}
                 </div>
+                {pendingTask && <><button className="agent-session-action" onClick={() => editPlan(pendingTask)}>编辑计划</button><button className="agent-session-action" onClick={() => void approveTask(pendingTask.id)}>批准并开始</button></>}
               </div>
             )}
             {activity.length > 0 && (
@@ -1119,7 +1338,7 @@ export function AgentChatPage({
                   <div className="agent-composer-tool">
                     <button
                       className="agent-composer-icon"
-                      onClick={() => setMoreOpen(value => !value)}
+                      onClick={() => toggleComposerMenu('more')}
                       disabled={busy}
                       title="更多功能"
                       aria-label="更多功能"
@@ -1188,7 +1407,7 @@ export function AgentChatPage({
                   <div className="agent-composer-tool">
                     <button
                       className="agent-composer-icon agent-composer-access"
-                      onClick={() => setAccessOpen(value => !value)}
+                      onClick={() => toggleComposerMenu('access')}
                       disabled={busy}
                       title="权限模式"
                       aria-label="权限模式"
@@ -1242,7 +1461,7 @@ export function AgentChatPage({
                   <div className="agent-composer-tool">
                     <button
                       className="agent-composer-model"
-                      onClick={() => setModelCardOpen(value => !value)}
+                      onClick={() => toggleComposerMenu('model')}
                       disabled={busy}
                       title="选择 AI 服务与模型"
                     >
@@ -1453,17 +1672,30 @@ export function AgentChatPage({
                     {task.status === 'completed' && (
                       <>
                         <button className="agent-session-action" onClick={() => void showTaskReport(task.id)} title="查看任务报告">报告</button>
+                        {task.isolation === 'worktree' && <button className="agent-session-action" onClick={() => void mergeTask(task.id)} title="确认合并 worktree 修改">合并</button>}
                         <button className="agent-session-action" onClick={() => void rollbackTask(task.id)} title="回滚 Agent 修改">回滚</button>
                       </>
                     )}
+                    {task.status === 'failed' && <button className="agent-session-action" onClick={() => void showTaskReport(task.id)} title="查看失败报告">报告</button>}
                   </span>
                 ))}
               </div>
             ))}
           </div>
+          <div className="agent-goals-panel">
+            <div className="agent-goals-header"><strong>长期目标</strong><button className="agent-session-action" onClick={() => void createGoal()}>新建</button></div>
+            {goals.map(goal => <div className="agent-goal-item" key={goal.id}><span>{goal.title || goal.prompt}</span><small>{goal.status}{goal.lastError ? ` · ${goal.lastError}` : ''}</small><div><button className="agent-session-action" onClick={() => void runGoal(goal.id)}>运行</button><button className="agent-session-action" onClick={() => void toggleGoal(goal)}>{goal.status === 'active' ? '暂停' : '恢复'}</button><button className="agent-session-action" onClick={() => editGoal(goal)}>编辑</button><button className="agent-session-action" onClick={() => void showGoalRuns(goal.id)}>历史</button><button className="agent-session-action" onClick={() => void deleteGoal(goal.id)}>删除</button></div></div>)}
+          </div>
         </aside>
       )}
 
+      {goalDraft && (
+        <div className="agent-confirm-overlay"><div className="agent-confirm-dialog" role="dialog" aria-modal="true"><header><strong>{goalDraft.id ? '编辑长期目标' : '新建长期目标'}</strong></header><label>名称<input value={goalDraft.title} onChange={event => setGoalDraft({ ...goalDraft, title: event.target.value })} /></label><label>提示词<textarea value={goalDraft.prompt} onChange={event => setGoalDraft({ ...goalDraft, prompt: event.target.value })} /></label><label>项目目录<input value={goalDraft.root} onChange={event => setGoalDraft({ ...goalDraft, root: event.target.value })} /></label><label>调度分钟数<input type="number" min="0" value={goalDraft.scheduleMinutes} onChange={event => setGoalDraft({ ...goalDraft, scheduleMinutes: Math.max(0, Number(event.target.value) || 0) })} /></label><div><button onClick={() => setGoalDraft(null)}>取消</button><button onClick={() => void saveGoal()}>保存</button></div></div></div>
+      )}
+      {goalRuns.length > 0 && (
+        <div className="agent-confirm-overlay"><div className="agent-confirm-dialog" role="dialog" aria-modal="true"><header><strong>目标运行历史</strong></header>{goalRuns.map(run => <p key={run.id}>{run.status} · {run.taskId}{run.error ? ` · ${run.error}` : ''}</p>)}<button onClick={() => setGoalRuns([])}>关闭</button></div></div>
+      )}
+      {planDraft && <div className="agent-confirm-overlay"><div className="agent-confirm-dialog" role="dialog" aria-modal="true"><header><strong>编辑任务计划</strong></header><label>目标<textarea value={planDraft.goal} onChange={event => setPlanDraft({ ...planDraft, goal: event.target.value })} /></label><label>完成条件<textarea value={planDraft.completion} onChange={event => setPlanDraft({ ...planDraft, completion: event.target.value })} /></label>{planDraft.steps.map((step, index) => <label key={step.id}>步骤 {index + 1}<input value={step.title} onChange={event => setPlanDraft({ ...planDraft, steps: planDraft.steps.map((item, itemIndex) => itemIndex === index ? { ...item, title: event.target.value } : item) })} /></label>)}<div><button onClick={() => setPlanDraft(null)}>取消</button><button onClick={() => void savePlan()}>保存计划</button></div></div></div>}
       {pendingConfirm && (
         <div className="agent-confirm-overlay">
           <div

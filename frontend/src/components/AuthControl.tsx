@@ -1,5 +1,5 @@
 import { useStoreState } from '../store/guideStore'
-import { useEffect, type ReactNode } from 'react'
+import { useCallback, useEffect, type ReactNode } from 'react'
 import { LockKeyhole, LogOut, UserRound, X } from 'lucide-react'
 import { Button } from './Button'
 
@@ -39,7 +39,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
   const [password, setPassword] = useStoreState('')
   const [error, setError] = useStoreState('')
   const [busy, setBusy] = useStoreState(false)
-  const refresh = () => {
+  const refresh = useCallback(() => {
     setLoading(true)
     setLoadError('')
     void readStatus()
@@ -51,12 +51,12 @@ export function AuthGate({ children }: { children: ReactNode }) {
         )
       })
       .finally(() => setLoading(false))
-  }
+  }, [setLoadError, setLoading, setStatus])
   useEffect(() => {
     refresh()
     window.addEventListener('alx:auth-changed', refresh)
     return () => window.removeEventListener('alx:auth-changed', refresh)
-  }, [])
+  }, [refresh])
   const login = async () => {
     setBusy(true)
     setError('')
@@ -158,16 +158,16 @@ export function AuthControl() {
   const [confirmation, setConfirmation] = useStoreState('')
   const [error, setError] = useStoreState('')
   const [busy, setBusy] = useStoreState(false)
-  const refresh = () => {
+  const refresh = useCallback(() => {
     void readStatus()
       .then(setStatus)
       .catch(() => setStatus(null))
-  }
+  }, [setStatus])
   useEffect(() => {
     refresh()
     window.addEventListener('alx:auth-changed', refresh)
     return () => window.removeEventListener('alx:auth-changed', refresh)
-  }, [])
+  }, [refresh])
   useEffect(() => {
     const closeWhenAnotherToolOpens = (event: Event) => {
       if ((event as CustomEvent<string>).detail !== 'auth') setOpen(false)
@@ -175,7 +175,7 @@ export function AuthControl() {
     window.addEventListener('alx:top-tool-open', closeWhenAnotherToolOpens)
     return () =>
       window.removeEventListener('alx:top-tool-open', closeWhenAnotherToolOpens)
-  }, [])
+  }, [setOpen])
   const enable = async () => {
     setBusy(true)
     setError('')

@@ -312,7 +312,7 @@ function FlowView({
   }
   useEffect(() => {
     if (routedStep !== step) setStep(routedStep)
-  }, [routedStep, step])
+  }, [routedStep, step, setStep])
   useEffect(() => {
     const variant =
       goal?.id === 'web'
@@ -340,12 +340,12 @@ function FlowView({
       behavior: 'smooth',
       block: 'center'
     })
-  }, [step])
+  }, [step, setStep])
   useEffect(() => {
     if (!releaseApp) return
     setReleaseURL(releases[0]?.url ?? null)
     setSelectedAssetURL(null)
-  }, [releaseApp, releases])
+  }, [releaseApp, releases, setReleaseURL, setSelectedAssetURL])
   const mirrorURL = (mirror: Mirror | null, url: string) => {
     if (!mirror) return url
     const index = mirror.url.indexOf('https://github.com')
