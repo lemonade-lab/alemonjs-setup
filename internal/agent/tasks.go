@@ -25,11 +25,12 @@ type ManagedTask struct {
 }
 
 type TaskManager struct {
-	store     *TaskStore
-	mu        sync.Mutex
-	tasks     map[string]*ManagedTask
-	nextEvent map[string]int64
-	observer  TaskObserver
+	store       *TaskStore
+	mu          sync.Mutex
+	tasks       map[string]*ManagedTask
+	nextEvent   map[string]int64
+	subscribers map[string]map[chan struct{}]struct{}
+	observer    TaskObserver
 }
 
 func (m *TaskManager) SetObserver(observer TaskObserver) {
@@ -39,7 +40,43 @@ func (m *TaskManager) SetObserver(observer TaskObserver) {
 }
 
 func NewTaskManager(store *TaskStore) *TaskManager {
-	return &TaskManager{store: store, tasks: map[string]*ManagedTask{}, nextEvent: map[string]int64{}}
+	return &TaskManager{store: store, tasks: map[string]*ManagedTask{}, nextEvent: map[string]int64{}, subscribers: map[string]map[chan struct{}]struct{}{}}
+}
+
+// Subscribe wakes a consumer after a task event or state change is persisted.
+// Consumers must still read Events/Get after each wake: the durable store is
+// the source of truth across reconnects and missed in-memory notifications.
+func (m *TaskManager) Subscribe(id string) (<-chan struct{}, func(), error) {
+	if _, err := m.Get(id); err != nil {
+		return nil, nil, err
+	}
+	ch := make(chan struct{}, 1)
+	m.mu.Lock()
+	if m.subscribers == nil {
+		m.subscribers = map[string]map[chan struct{}]struct{}{}
+	}
+	if m.subscribers[id] == nil {
+		m.subscribers[id] = map[chan struct{}]struct{}{}
+	}
+	m.subscribers[id][ch] = struct{}{}
+	m.mu.Unlock()
+	return ch, func() {
+		m.mu.Lock()
+		delete(m.subscribers[id], ch)
+		if len(m.subscribers[id]) == 0 {
+			delete(m.subscribers, id)
+		}
+		m.mu.Unlock()
+	}, nil
+}
+
+func (m *TaskManager) notifyLocked(id string) {
+	for ch := range m.subscribers[id] {
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
+	}
 }
 
 func (m *TaskManager) Create(task AgentTask, runner TaskRunner) (AgentTask, error) {
@@ -50,6 +87,21 @@ func (m *TaskManager) Create(task AgentTask, runner TaskRunner) (AgentTask, erro
 	}
 	if task.Status == "" {
 		task.Status = TaskQueued
+	}
+	if task.IdempotencyKey != "" {
+		for _, existing := range m.tasks {
+			if existing.Task.IdempotencyKey == task.IdempotencyKey {
+				return existing.Task, nil
+			}
+		}
+		if persisted, err := m.store.ListTasks(); err == nil {
+			for _, existing := range persisted {
+				if existing.IdempotencyKey == task.IdempotencyKey {
+					m.tasks[existing.ID] = &ManagedTask{Task: existing}
+					return existing, nil
+				}
+			}
+		}
 	}
 	if task.Created.IsZero() {
 		task.Created = time.Now()
@@ -101,8 +153,14 @@ func (m *TaskManager) Start(id string) error {
 	managed.Task.Status = TaskRunning
 	managed.Task.Updated = time.Now()
 	task := managed.Task
-	_ = m.store.SaveTask(task)
+	saved := m.store.SaveTask(task)
+	if saved == nil {
+		m.notifyLocked(id)
+	}
 	m.mu.Unlock()
+	if saved != nil {
+		return saved
+	}
 	go m.run(ctx, id, task, managed.Runner)
 	return nil
 }
@@ -133,6 +191,7 @@ func (m *TaskManager) ApprovePlan(id string) (AgentTask, error) {
 	if err := m.store.SaveTask(managed.Task); err != nil {
 		return AgentTask{}, err
 	}
+	m.notifyLocked(id)
 	return managed.Task, nil
 }
 
@@ -156,8 +215,14 @@ func (m *TaskManager) Resume(id string, runner TaskRunner) error {
 	managed.Task.Status = TaskQueued
 	managed.Task.LastError = ""
 	managed.Task.Updated = time.Now()
-	_ = m.store.SaveTask(managed.Task)
+	saved := m.store.SaveTask(managed.Task)
+	if saved == nil {
+		m.notifyLocked(id)
+	}
 	m.mu.Unlock()
+	if saved != nil {
+		return saved
+	}
 	return m.Start(id)
 }
 
@@ -182,6 +247,9 @@ func (m *TaskManager) SetStatus(id string, status TaskStatus, lastError string) 
 	managed.Task.LastError = lastError
 	managed.Task.Updated = time.Now()
 	err := m.store.SaveTask(managed.Task)
+	if err == nil {
+		m.notifyLocked(id)
+	}
 	current, observer := managed.Task, m.observer
 	m.mu.Unlock()
 	if err == nil && observer != nil {
@@ -242,10 +310,13 @@ func (m *TaskManager) UpdatePlan(id string, plan TaskPlan) (AgentTask, error) {
 	if err := ValidateTaskPlan(plan); err != nil {
 		return AgentTask{}, err
 	}
-	plan.Approved = false
+	// A changed plan affects execution intent, not tool authorization. Risky
+	// tools are still gated by the task's approver, so editing a paused/pending
+	// plan must not introduce a second, unrelated approval checkpoint.
+	plan.Approved = true
 	managed.Task.Plan = plan
-	if managed.Task.Status != TaskPlanPending {
-		managed.Task.Status = TaskPlanPending
+	if managed.Task.Status == TaskPlanPending {
+		managed.Task.Status = TaskQueued
 	}
 	managed.Task.Updated = time.Now()
 	if err := m.store.SaveTask(managed.Task); err != nil {
@@ -308,7 +379,11 @@ func (m *TaskManager) run(ctx context.Context, id string, task AgentTask, runner
 		if errors.Is(ctx.Err(), context.Canceled) && managed.Task.Status != TaskPaused {
 			managed.Task.Status = TaskCancelled
 		} else if err != nil {
-			managed.Task.Status = TaskFailed
+			if IsRecoverable(err) {
+				managed.Task.Status = TaskPaused
+			} else {
+				managed.Task.Status = TaskFailed
+			}
 			managed.Task.LastError = err.Error()
 		} else {
 			complete := true
@@ -326,7 +401,9 @@ func (m *TaskManager) run(ctx context.Context, id string, task AgentTask, runner
 			}
 		}
 		managed.Task.Updated = time.Now()
-		_ = m.store.SaveTask(managed.Task)
+		if m.store.SaveTask(managed.Task) == nil {
+			m.notifyLocked(id)
+		}
 		current = managed.Task
 		observer = m.observer
 	}
@@ -356,7 +433,11 @@ func (m *TaskManager) emit(id string, event Event) {
 		_ = m.store.SaveTask(managed.Task)
 	}
 	m.mu.Unlock()
-	_ = m.store.AppendEvent(id, envelope)
+	if m.store.AppendEvent(id, envelope) == nil {
+		m.mu.Lock()
+		m.notifyLocked(id)
+		m.mu.Unlock()
+	}
 }
 
 func (m *TaskManager) EmitExternal(id string, event Event) { m.emit(id, event) }
@@ -378,10 +459,12 @@ func (m *TaskManager) Cancel(id string) error {
 func (m *TaskManager) Get(id string) (AgentTask, error) {
 	m.mu.Lock()
 	managed, ok := m.tasks[id]
-	m.mu.Unlock()
 	if ok {
-		return managed.Task, nil
+		task := managed.Task
+		m.mu.Unlock()
+		return task, nil
 	}
+	m.mu.Unlock()
 	return m.store.LoadTask(id)
 }
 
@@ -410,17 +493,49 @@ func (m *TaskManager) PauseRunning() error {
 	m.mu.Lock()
 	ids := make([]string, 0)
 	for id, managed := range m.tasks {
-		if managed.Task.Status == TaskRunning { ids = append(ids, id) }
+		if managed.Task.Status == TaskRunning {
+			ids = append(ids, id)
+		}
 	}
 	m.mu.Unlock()
 	for _, id := range ids {
 		m.mu.Lock()
 		managed := m.tasks[id]
 		if managed != nil && managed.Task.Status == TaskRunning {
-			if managed.Cancel != nil { managed.Cancel() }
+			if managed.Cancel != nil {
+				managed.Cancel()
+			}
 			managed.Task.Status = TaskPaused
 			managed.Task.Updated = time.Now()
-			if err := m.store.SaveTask(managed.Task); err != nil { m.mu.Unlock(); return err }
+			if err := m.store.SaveTask(managed.Task); err != nil {
+				m.mu.Unlock()
+				return err
+			}
+		}
+		m.mu.Unlock()
+	}
+	return nil
+}
+
+// ReconcileStartup converts persisted running tasks into paused tasks. The
+// process cannot safely resume a model/tool call without renewed permission.
+func (m *TaskManager) ReconcileStartup() error {
+	tasks, err := m.store.ListTasks()
+	if err != nil {
+		return err
+	}
+	for _, task := range tasks {
+		if task.Status != TaskRunning {
+			continue
+		}
+		task.Status, task.LastError, task.Updated = TaskPaused, "服务重启后等待显式恢复", time.Now()
+		if err := m.store.SaveTask(task); err != nil {
+			return err
+		}
+		m.mu.Lock()
+		if managed, ok := m.tasks[task.ID]; ok {
+			managed.Task = task
+			managed.Cancel = nil
 		}
 		m.mu.Unlock()
 	}

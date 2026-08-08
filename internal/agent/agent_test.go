@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -316,8 +317,8 @@ func TestLoopEmitsEventsInOrder(t *testing.T) {
 	}
 }
 
-// TestLoopEmitsErrorEventOnProviderFailure ensures a provider error surfaces
-// as an error event so a streaming client can show it.
+// TestLoopEmitsErrorEventOnProviderFailure ensures a provider failure pauses
+// safely without leaking the provider's raw implementation message to users.
 func TestLoopEmitsErrorEventOnProviderFailure(t *testing.T) {
 	withTransport(t, func(req *http.Request) (*http.Response, error) {
 		return &http.Response{StatusCode: 500, Body: io.NopCloser(strings.NewReader(`{"error":{"message":"服务不可用"}}`)), Header: http.Header{}, Request: req}, nil
@@ -335,8 +336,84 @@ func TestLoopEmitsErrorEventOnProviderFailure(t *testing.T) {
 	if len(events) == 0 || events[len(events)-1].Type != "error" {
 		t.Fatalf("应发出 error 事件：%+v", events)
 	}
-	if !strings.Contains(events[len(events)-1].Text, "服务不可用") {
-		t.Errorf("error 事件应含 provider 消息：%+v", events[len(events)-1])
+	if events[len(events)-1].Text != userSafeModelFailure {
+		t.Errorf("error 事件应使用脱敏提示：%+v", events[len(events)-1])
+	}
+	if !IsRecoverable(err) {
+		t.Errorf("provider 故障应标记为可恢复：%T %v", err, err)
+	}
+}
+
+// TestLoopMixedToolCallsKeepResponsesContiguous guards the OpenAI/DeepSeek
+// protocol invariant that every result of an assistant tool_calls batch is
+// emitted together before the synthetic verification exchange begins.
+func TestLoopMixedToolCallsKeepResponsesContiguous(t *testing.T) {
+	var requests []struct {
+		Messages []map[string]any `json:"messages"`
+	}
+	withTransport(t, func(req *http.Request) (*http.Response, error) {
+		var payload struct {
+			Messages []map[string]any `json:"messages"`
+		}
+		if err := json.NewDecoder(req.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		requests = append(requests, payload)
+		if len(requests) == 1 {
+			return jsonResponse(t, req, `{"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{"id":"write","type":"function","function":{"name":"agent_edit_file","arguments":"{}"}},{"id":"read","type":"function","function":{"name":"agent_read_file","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`)
+		}
+		return jsonResponse(t, req, `{"choices":[{"message":{"role":"assistant","content":"完成"},"finish_reason":"stop"}]}`)
+	})
+
+	registry := NewRegistry()
+	registry.AddWrite(Tool{Name: "agent_edit_file", Parameters: map[string]any{"type": "object"}}, func(context.Context, json.RawMessage) (string, error) { return "已修改", nil })
+	registry.Add(Tool{Name: "agent_read_file", Parameters: map[string]any{"type": "object"}}, func(context.Context, json.RawMessage) (string, error) { return "已读取", nil })
+	registry.Add(Tool{Name: verifyToolName, Parameters: map[string]any{"type": "object"}}, func(context.Context, json.RawMessage) (string, error) { return "验证通过", nil })
+	loop := NewLoop(ai.Resolved{BaseURL: "https://provider.test", Model: "m", APIKey: "k"}, registry, "", 3).WithAutoVerify()
+	if _, err := loop.Run(context.Background(), []Message{{Role: "user", Content: "修改并读取"}}); err != nil {
+		t.Fatal(err)
+	}
+	if len(requests) != 2 {
+		t.Fatalf("应有两次模型请求，实际 %d", len(requests))
+	}
+	var roles []string
+	for _, message := range requests[1].Messages {
+		roles = append(roles, message["role"].(string))
+	}
+	// user, assistant(original calls), tool(write), tool(read), assistant(verify), tool(verify)
+	want := "user,assistant,tool,tool,assistant,tool"
+	if got := strings.Join(roles, ","); got != want {
+		t.Fatalf("工具结果必须连续且验证在其后，得到 %s，应为 %s", got, want)
+	}
+}
+
+func TestLoopRetriesRecoverableToolProtocolFailure(t *testing.T) {
+	requests := 0
+	withTransport(t, func(req *http.Request) (*http.Response, error) {
+		requests++
+		if requests == 1 {
+			return &http.Response{StatusCode: 400, Body: io.NopCloser(strings.NewReader(`{"error":{"message":"An assistant message with tool_calls must be followed by tool messages"}}`)), Header: http.Header{}, Request: req}, nil
+		}
+		return jsonResponse(t, req, `{"choices":[{"message":{"role":"assistant","content":"已自动恢复并继续完成。"},"finish_reason":"stop"}]}`)
+	})
+	var events []Event
+	loop := NewLoop(ai.Resolved{BaseURL: "https://provider.test", Model: "m", APIKey: "k"}, NewRegistry(), "", 2)
+	loop.WithObserver(func(event Event) { events = append(events, event) })
+	result, err := loop.Run(context.Background(), []Message{{Role: "user", Content: "继续"}})
+	if err != nil {
+		t.Fatalf("协议错误应自动恢复：%v", err)
+	}
+	if requests != 2 || result.Answer != "已自动恢复并继续完成。" {
+		t.Fatalf("应重试一次并完成，请求=%d，结果=%+v", requests, result)
+	}
+	foundRetry := false
+	for _, event := range events {
+		if event.Type == "text" && strings.Contains(event.Text, "自动重试") {
+			foundRetry = true
+		}
+	}
+	if !foundRetry {
+		t.Fatalf("应向用户给出不含原始错误的重试进度：%+v", events)
 	}
 }
 
@@ -625,6 +702,77 @@ func TestPruneOrphanToolsRemovesUnansweredCalls(t *testing.T) {
 	}
 	if len(pruned) != 2 {
 		t.Errorf("应保留 user 和最终回答：%+v", rolesOf(pruned))
+	}
+}
+
+func TestPruneOrphanToolsRequiresContiguousResponses(t *testing.T) {
+	messages := []Message{
+		{Role: "user", Content: "问题"},
+		{Role: "assistant", ToolCalls: []ToolCall{{ID: "t1", Name: "read_project_file"}}},
+		// The matching ID exists, but a user turn cut the required contiguous
+		// assistant/tool group. This is rejected by OpenAI-compatible APIs.
+		{Role: "user", Content: "补充说明"},
+		{Role: "tool", ToolCallID: "t1", Content: "结果"},
+		{Role: "assistant", Content: "继续"},
+	}
+	pruned := PruneOrphanTools(messages)
+	for _, message := range pruned {
+		if len(message.ToolCalls) > 0 || message.Role == "tool" {
+			t.Fatalf("不应保留被打断的工具交换：%+v", message)
+		}
+	}
+	if got := rolesOf(pruned); !reflect.DeepEqual(got, []string{"user", "user", "assistant"}) {
+		t.Fatalf("清理后的角色序列 = %v", got)
+	}
+}
+
+func TestPruneToolCallsMissingReasoningKeepsSurroundingConversation(t *testing.T) {
+	messages := []Message{
+		{Role: "user", Content: "检查项目"},
+		{Role: "assistant", ToolCalls: []ToolCall{{ID: "legacy", Name: "agent_repo_map"}}},
+		{Role: "tool", ToolCallID: "legacy", Content: "旧索引结果"},
+		{Role: "user", Content: "继续"},
+		{Role: "assistant", ReasoningContent: "完整推理", ToolCalls: []ToolCall{{ID: "new", Name: "agent_search"}}},
+		{Role: "tool", ToolCallID: "new", Content: "新结果"},
+	}
+	pruned, changed := PruneToolCallsMissingReasoning(messages)
+	if !changed {
+		t.Fatal("缺少 reasoning_content 的工具回合应被识别")
+	}
+	if got := rolesOf(pruned); !reflect.DeepEqual(got, []string{"user", "user", "assistant", "tool"}) {
+		t.Fatalf("清理后角色序列 = %v", got)
+	}
+	if pruned[2].ReasoningContent != "完整推理" {
+		t.Fatalf("完整的 thinking 工具回合不应被删除：%+v", pruned[2])
+	}
+}
+
+func TestLoopRecoversFromLegacyThinkingToolCall(t *testing.T) {
+	calls := 0
+	withTransport(t, func(req *http.Request) (*http.Response, error) {
+		calls++
+		var payload struct {
+			Messages []map[string]any `json:"messages"`
+		}
+		_ = json.NewDecoder(req.Body).Decode(&payload)
+		for _, message := range payload.Messages {
+			if message["role"] == "assistant" && message["tool_calls"] != nil && message["reasoning_content"] == nil {
+				return jsonResponse(t, req, `{"error":{"message":"The reasoning_content in the thinking mode must be passed back to the API."}}`)
+			}
+		}
+		return jsonResponse(t, req, `{"choices":[{"message":{"role":"assistant","content":"已从恢复点继续"},"finish_reason":"stop"}]}`)
+	})
+	loop := NewLoop(ai.Resolved{BaseURL: "https://provider.test", Model: "deepseek-reasoner", APIKey: "k"}, NewRegistry(), "", 3)
+	result, err := loop.Run(context.Background(), []Message{
+		{Role: "user", Content: "恢复任务"},
+		{Role: "assistant", ToolCalls: []ToolCall{{ID: "legacy", Name: "agent_repo_map"}}},
+		{Role: "tool", ToolCallID: "legacy", Content: "旧结果"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Answer != "已从恢复点继续" || calls != 2 {
+		t.Fatalf("应在清理旧工具回合后恢复，answer=%q calls=%d", result.Answer, calls)
 	}
 }
 

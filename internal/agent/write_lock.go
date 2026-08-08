@@ -68,7 +68,17 @@ func AcquireProjectWriteLockAt(root, owner, dir string) (func(), error) {
 	raw, _ := json.Marshal(lease)
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, raw, 0600); err != nil {
-		return nil, err
+		// Read-only sandboxes and locked user config directories should not make
+		// a task unusable; fall back to the process temp directory.
+		dir = filepath.Join(os.TempDir(), "alx-agent", "locks")
+		if mkErr := os.MkdirAll(dir, 0700); mkErr != nil {
+			return nil, err
+		}
+		path = lockPath(dir, key)
+		tmp = path + ".tmp"
+		if writeErr := os.WriteFile(tmp, raw, 0600); writeErr != nil {
+			return nil, writeErr
+		}
 	}
 	if err := os.Rename(tmp, path); err != nil {
 		_ = os.Remove(tmp)

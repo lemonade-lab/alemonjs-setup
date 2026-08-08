@@ -5941,11 +5941,15 @@ button > svg,
   /* The thread grows with content so console-page scrolls the whole page;
      the composer sticks to the visible bottom while scrolling. */
   position: relative;
+  min-width: 0;
+  width: 100%;
+  container-type: inline-size;
 }
 .agent-workspace > .agent-body {
   display: flex;
   flex-direction: column;
-  flex: 1;
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 /* Header: floating card, like the robot control card */
@@ -6035,6 +6039,9 @@ button > svg,
   min-height: 0;
   overflow: visible;
   padding: 0 32px 14px;
+  min-width: 0;
+  width: 100%;
+  justify-items: stretch;
 }
 
 /* User message: soft bubble, right aligned */
@@ -6042,6 +6049,8 @@ button > svg,
   align-self: end;
   justify-self: end;
   max-width: 78%;
+  min-width: 0;
+  width: fit-content;
 }
 .agent-message-user > div {
   background: var(--theme-surface-raised);
@@ -6057,11 +6066,12 @@ button > svg,
 /* Assistant message: avatar + label + markdown body */
 .agent-message-assistant {
   align-self: start;
-  display: grid;
-  grid-template-columns: 30px 12px minmax(0, 1fr);
+  display: flex;
+  align-items: flex-start;
   gap: 10px;
   justify-self: start;
-  max-width: 84%;
+  max-width: 100%;
+  min-width: 0;
   width: 100%;
 }
 .agent-message-avatar {
@@ -6074,9 +6084,13 @@ button > svg,
   height: 30px;
   justify-content: center;
   width: 30px;
+  flex: 0 0 30px;
 }
 .agent-message-body {
+  flex: 1 1 auto;
   min-width: 0;
+  max-width: 100%;
+  width: 100%;
 }
 .agent-message-label {
   color: var(--theme-text-muted);
@@ -6085,79 +6099,14 @@ button > svg,
   font-weight: 600;
   margin: 2px 0 7px;
 }
-.agent-response-navigator {
-  align-self: stretch;
-  min-height: 44px;
-  position: relative;
-}
-.agent-response-minimap {
-  align-content: space-between;
-  display: grid;
-  height: 100%;
-  justify-items: center;
-  min-height: 44px;
-  padding: 4px 0;
-}
-.agent-response-minimap::before {
-  background: var(--theme-border-strong);
-  bottom: 4px;
-  content: '';
-  left: 50%;
-  position: absolute;
-  top: 4px;
-  transform: translateX(-50%);
-  width: 1px;
-}
-.agent-response-minimap button {
-  background: var(--theme-text-faint);
-  border: 0;
-  cursor: pointer;
-  height: 1px;
-  padding: 0;
-  position: relative;
-  transition: background 0.15s ease, height 0.15s ease, width 0.15s ease;
-  width: 6px;
-  z-index: 1;
-}
-.agent-response-minimap button:hover,
-.agent-response-minimap button.active {
-  background: var(--theme-accent);
-  height: 2px;
-  width: 11px;
-}
-.agent-response-preview {
-  background: var(--theme-surface-panel);
-  border: 1px solid var(--theme-border-default);
-  border-radius: 10px;
-  box-shadow: var(--theme-shadow-pop);
-  display: grid;
-  gap: 4px;
-  left: 18px;
-  max-width: 290px;
-  min-width: 220px;
-  padding: 10px 12px;
-  position: absolute;
-  top: 0;
-  transform: translateY(-14px);
-  z-index: 20;
-}
-.agent-response-preview strong {
-  color: var(--theme-text-strong);
-  font-size: 0.76rem;
-}
-.agent-response-preview span {
-  color: var(--theme-text-muted);
-  display: -webkit-box;
-  font-size: 0.7rem;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  overflow: hidden;
-}
 .agent-markdown {
   color: var(--theme-text-primary);
   font-size: 0.875rem;
   line-height: 1.75;
   overflow-wrap: break-word;
+  min-width: 0;
+  width: 100%;
+  word-break: normal;
 }
 .agent-markdown > :first-child {
   margin-top: 0;
@@ -6241,6 +6190,126 @@ button > svg,
   color: var(--theme-accent-text);
   text-decoration: underline;
   text-underline-offset: 2px;
+}
+
+/* Task plan card: keep the goal, completion rule and steps visually separate
+   so a plan never collapses into one unstructured line of text. */
+.agent-plan-card {
+  align-self: start;
+  background: var(--theme-surface-panel);
+  border: 1px solid var(--theme-border-default);
+  border-radius: 12px;
+  box-shadow: var(--theme-shadow-soft);
+  display: grid;
+  gap: 6px;
+  justify-self: stretch;
+  max-width: min(960px, 100%);
+  min-width: 0;
+  padding: 11px 13px;
+  width: 100%;
+}
+.agent-plan-heading {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+}
+.agent-plan-heading strong {
+  color: var(--theme-text-strong);
+  font-size: 0.8rem;
+  line-height: 1.35;
+}
+.agent-plan-state {
+  background: var(--theme-accent-soft);
+  border: 1px solid var(--theme-accent-soft-border);
+  border-radius: 999px;
+  color: var(--theme-accent-soft-text);
+  font-size: 0.68rem;
+  padding: 2px 8px;
+  white-space: nowrap;
+}
+.agent-plan-goal {
+  color: var(--theme-text-primary);
+  font-size: 0.78rem;
+  line-height: 1.4;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.agent-plan-completion {
+  color: var(--theme-text-muted);
+  font-size: 0.66rem;
+  line-height: 1.35;
+}
+.agent-plan-steps {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  margin-top: 1px;
+}
+.agent-plan-steps > span {
+  align-items: center;
+  background: var(--theme-surface-raised);
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: 8px;
+  color: var(--theme-text-secondary);
+  display: grid;
+  gap: 8px;
+  grid-template-columns: 22px minmax(0, 1fr) auto;
+  min-width: 0;
+  padding: 5px 8px;
+}
+.agent-plan-steps > span[data-status='running'] {
+  border-color: var(--theme-accent-soft-border);
+  background: var(--theme-accent-soft);
+}
+.agent-plan-steps > span[data-status='failed'] {
+  border-color: var(--theme-danger);
+}
+.agent-plan-steps b {
+  align-items: center;
+  background: var(--theme-surface-panel);
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: 999px;
+  display: inline-flex;
+  font-size: 0.68rem;
+  height: 20px;
+  justify-content: center;
+  width: 20px;
+}
+.agent-plan-steps > span > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.agent-plan-steps em {
+  color: var(--theme-text-muted);
+  font-size: 0.66rem;
+  font-style: normal;
+  white-space: nowrap;
+}
+.agent-plan-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  justify-content: flex-end;
+  margin-top: 3px;
+}
+.agent-plan-button {
+  border: 1px solid var(--theme-border-default);
+  border-radius: 7px;
+  cursor: pointer;
+  font-size: 0.72rem;
+  line-height: 1;
+  padding: 6px 10px;
+}
+.agent-plan-button.secondary {
+  background: transparent;
+  color: var(--theme-text-secondary);
+}
+.agent-plan-button.primary {
+  background: var(--theme-accent);
+  border-color: var(--theme-accent);
+  color: var(--theme-on-accent);
 }
 .agent-markdown table {
   border-collapse: collapse;
@@ -6649,9 +6718,6 @@ button > svg,
   cursor: not-allowed;
   opacity: 0.35;
 }
-.agent-composer-access {
-  border-color: var(--theme-border-default);
-}
 .agent-composer-model {
   align-items: center;
   background: var(--theme-surface-raised);
@@ -7030,6 +7096,8 @@ button > svg,
 .agent-body {
   display: block;
   min-height: 0;
+  min-width: 0;
+  width: 100%;
 }
 .agent-body:has(.agent-sessions) {
   display: grid;
@@ -7039,14 +7107,124 @@ button > svg,
 .agent-main {
   display: flex;
   flex-direction: column;
-  flex: 1;
+  flex: 1 1 auto;
   min-height: 0;
+  min-width: 0;
+  width: 100%;
+  position: relative;
+}
+.agent-main:has(.agent-question-rail) {
+  display: grid;
+  align-items: start;
+  padding-left: 0;
+}
+.agent-question-rail {
+  align-self: start;
+  background: transparent;
+  border: 0;
+  box-sizing: border-box;
+  display: block;
+  left: 0;
+  grid-column: 1;
+  grid-row: 1 / span 2;
+  height: min(360px, calc(100dvh - 80px));
+  min-height: 0;
+  padding: 0 2px;
+  position: fixed;
+  top: 50dvh;
+  transform: translateY(-50%);
+  z-index: 2;
+}
+.agent-question-list {
+  align-items: center;
+  display: flex;
+  flex-direction: column;
+  gap: var(--agent-question-gap, 8px);
+  height: 100%;
+  justify-content: center;
+  min-height: 0;
+  position: relative;
+}
+.agent-question-list button {
+  align-items: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  cursor: pointer;
+  display: flex;
+  flex: 0 0 var(--agent-question-slot, 10px);
+  justify-content: center;
+  min-height: 2px;
+  padding: 0;
+  position: relative;
+  width: 16px;
+  z-index: 1;
+}
+.agent-question-list button:hover {
+  background: var(--theme-surface-hover);
+}
+.agent-question-list button.active {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+}
+.agent-question-marker {
+  background: var(--theme-text-faint);
+  display: block;
+  height: 1px;
+  transition: background 0.15s ease, width 0.15s ease;
+  width: 8px;
+}
+.agent-question-list button:hover .agent-question-marker,
+.agent-question-list button.active .agent-question-marker {
+  background: var(--theme-text-strong);
+  width: 12px;
+}
+.agent-question-preview {
+  background: var(--theme-surface-panel);
+  border: 1px solid var(--theme-border-default);
+  border-radius: 12px;
+  box-shadow: var(--theme-shadow-pop);
+  color: var(--theme-text-primary);
+  display: grid;
+  gap: 5px;
+  left: calc(100% + 10px);
+  max-width: calc(100vw - 96px);
+  min-width: 210px;
+  padding: 12px 14px;
+  position: absolute;
+  top: calc(50% + var(--agent-question-preview-offset, 0px));
+  transform: translateY(-50%);
+  width: 270px;
+  z-index: 20;
+}
+.agent-question-preview strong {
+  color: var(--theme-text-strong);
+  font-size: 0.78rem;
+  font-weight: 650;
+  line-height: 1.45;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-question-preview span {
+  color: var(--theme-text-muted);
+  font-size: 0.7rem;
+  line-height: 1.5;
+}
+.agent-main:has(.agent-question-rail) > .agent-thread,
+.agent-main:has(.agent-question-rail) > .agent-composer {
+  grid-column: 2;
 }
 .agent-main > .agent-composer {
+  align-self: stretch;
+  box-sizing: border-box;
   margin-top: auto;
+  max-width: none;
   /* Sticks to the visible bottom of the console-page scroll container. */
   position: sticky;
   bottom: 0;
+  width: 100%;
 }
 .agent-sessions {
   background: var(--theme-surface-raised);
@@ -7150,6 +7328,9 @@ button > svg,
 /* Agent 消息编辑按钮 */
 .agent-message-user {
   position: relative;
+  /* Reserve a compact action row below the bubble, so controls never cover
+     the user's text and stay inside the message's visual footprint. */
+  padding-bottom: 28px;
 }
 .agent-message-edit {
   align-items: center;
@@ -7159,18 +7340,17 @@ button > svg,
   color: var(--theme-text-muted);
   cursor: pointer;
   display: flex;
-  height: 26px;
+  height: 22px;
   justify-content: center;
   opacity: 0;
   padding: 0;
   position: absolute;
-  right: -36px;
-  top: 50%;
-  transform: translateY(-50%);
+  bottom: 0;
+  left: 0;
   transition:
     opacity 0.15s ease,
     color 0.15s ease;
-  width: 26px;
+  width: 22px;
 }
 .agent-message-user:hover .agent-message-edit,
 .agent-message-edit:focus-visible {
@@ -7332,7 +7512,6 @@ button > svg,
     grid-template-columns: 30px minmax(0, 1fr);
     gap: 9px;
   }
-  .agent-response-navigator { display: none; }
   .agent-composer {
     padding: 8px 10px 12px;
   }
@@ -7355,6 +7534,33 @@ button > svg,
     max-height: calc(100dvh - 24px);
     overflow: auto;
     padding: 16px;
+  }
+}
+
+/* The Agent can also live in a narrow dashboard column while the browser
+   viewport itself is wide. Use the component's actual width so the session
+   rail never squeezes the conversation down to a character-wide column. */
+@container (max-width: 720px) {
+  .agent-body:has(.agent-sessions) {
+    display: block;
+  }
+  .agent-sessions {
+    border-bottom: 1px solid var(--theme-border-default);
+    border-right: 0;
+    max-height: 190px;
+  }
+  .agent-message-assistant,
+  .agent-message-user,
+  .agent-plan-card,
+  .agent-timeline-wrap {
+    max-width: 100%;
+  }
+  .agent-thread {
+    padding-left: 14px;
+    padding-right: 14px;
+  }
+  .agent-question-preview {
+    max-width: calc(100vw - 82px);
   }
 }
 

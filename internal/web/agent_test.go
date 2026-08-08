@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"alemonx/internal/agent"
 )
 
 // TestAgentChatRejectsInvalidRoot verifies the endpoint wiring: an invalid
@@ -71,6 +73,35 @@ func TestAgentTasksRejectInvalidRoot(t *testing.T) {
 	newTestServer().ServeHTTP(response, request)
 	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "机器人目录") {
 		t.Fatalf("任务接口应拒绝无效目录：%d %s", response.Code, response.Body.String())
+	}
+}
+
+func TestAgentTaskWriteIntentClassification(t *testing.T) {
+	if requiresWriteSteps("读取项目结构，介绍入口") {
+		t.Fatal("只读询问不应生成写入步骤")
+	}
+	if !requiresWriteSteps("修复启动错误") {
+		t.Fatal("修复任务必须生成写入步骤")
+	}
+}
+
+func TestLatestUserMessageOnlyReturnsNewestUserTurn(t *testing.T) {
+	messages := []map[string]string{
+		{"role": "user", "content": "第一句"},
+		{"role": "assistant", "content": "回复"},
+		{"role": "user", "content": "  第二句  "},
+	}
+	if got := latestUserMessage(messages); got != "第二句" {
+		t.Fatalf("最新用户消息 = %q，期望第二句", got)
+	}
+}
+
+func TestSessionMessagesContainAnswer(t *testing.T) {
+	if sessionMessagesContainAnswer([]agent.Message{{Role: "user", Content: "问题"}}) {
+		t.Fatal("只有提问的会话不应被视为已有回答")
+	}
+	if !sessionMessagesContainAnswer([]agent.Message{{Role: "assistant", Content: "  回答  "}}) {
+		t.Fatal("非空 assistant 消息应被视为已有回答")
 	}
 }
 

@@ -60,3 +60,14 @@ func TestOpsPolicyRequiresAutoWhitelist(t *testing.T) {
 		t.Fatalf("observe policy should save, got %d %s", rec.Code, rec.Body.String())
 	}
 }
+
+func TestOpsPrometheusMetrics(t *testing.T) {
+	store := agent.NewOpsStoreAt(t.TempDir())
+	s := &server{opsStore: store}
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/ops/metrics/prometheus", nil)
+	rec := httptest.NewRecorder()
+	s.opsHandler(rec, req)
+	if rec.Code != http.StatusOK || !bytes.Contains(rec.Body.Bytes(), []byte("incident_total")) {
+		t.Fatalf("prometheus response: %d %s", rec.Code, rec.Body.String())
+	}
+}

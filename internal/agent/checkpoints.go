@@ -26,22 +26,23 @@ const (
 )
 
 type AgentTask struct {
-	ID           string      `json:"id"`
-	SessionID    string      `json:"sessionId"`
-	GoalID       string      `json:"goalId,omitempty"`
-	Root         string      `json:"root"`
-	Provider     string      `json:"provider"`
-	Model        string      `json:"model"`
-	Access       string      `json:"access"`
-	Status       TaskStatus  `json:"status"`
-	Turn         int         `json:"turn"`
-	LastError    string      `json:"lastError,omitempty"`
-	Created      time.Time   `json:"created"`
-	Updated      time.Time   `json:"updated"`
-	Plan         TaskPlan    `json:"plan"`
-	Isolation    string      `json:"isolation,omitempty"`
-	WorktreeRoot string      `json:"worktreeRoot,omitempty"`
-	Report       *TaskReport `json:"report,omitempty"`
+	ID             string      `json:"id"`
+	IdempotencyKey string      `json:"idempotencyKey,omitempty"`
+	SessionID      string      `json:"sessionId"`
+	GoalID         string      `json:"goalId,omitempty"`
+	Root           string      `json:"root"`
+	Provider       string      `json:"provider"`
+	Model          string      `json:"model"`
+	Access         string      `json:"access"`
+	Status         TaskStatus  `json:"status"`
+	Turn           int         `json:"turn"`
+	LastError      string      `json:"lastError,omitempty"`
+	Created        time.Time   `json:"created"`
+	Updated        time.Time   `json:"updated"`
+	Plan           TaskPlan    `json:"plan"`
+	Isolation      string      `json:"isolation,omitempty"`
+	WorktreeRoot   string      `json:"worktreeRoot,omitempty"`
+	Report         *TaskReport `json:"report,omitempty"`
 }
 
 type TaskPlan struct {

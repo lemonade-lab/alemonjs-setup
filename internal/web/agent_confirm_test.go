@@ -44,8 +44,8 @@ func TestAgentConfirmManagerMissing(t *testing.T) {
 // resolves the pending confirmation, and asserts the approver returns nil.
 func TestAskApproverBlocksAndApproves(t *testing.T) {
 	m := newAgentConfirmManager()
-	var emitted []agent.Event
-	emit := func(event agent.Event) { emitted = append(emitted, event) }
+	emitted := make(chan agent.Event, 1)
+	emit := func(event agent.Event) { emitted <- event }
 	approver := askApprover(m, emit, "sessionX")
 
 	var err error
@@ -54,16 +54,17 @@ func TestAskApproverBlocksAndApproves(t *testing.T) {
 		err = approver(context.Background(), agent.ToolCall{ID: "call1", Name: "agent_edit_file", Arguments: []byte(`{"path":"a.ts"}`)})
 		close(done)
 	}()
-	// Wait for the emit (proves the approver reached the confirm point).
-	deadline := time.Now().Add(time.Second)
-	for len(emitted) == 0 && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
+	var event agent.Event
+	select {
+	case event = <-emitted:
+	case <-time.After(time.Second):
+		t.Fatal("未发出 confirm 事件")
 	}
-	if len(emitted) != 1 || emitted[0].Type != "confirm" {
-		t.Fatalf("应发出 confirm 事件：%+v", emitted)
+	if event.Type != "confirm" {
+		t.Fatalf("应发出 confirm 事件：%+v", event)
 	}
-	if emitted[0].Tool != "sessionX:call1" {
-		t.Errorf("confirm 事件应带确认 ID：%+v", emitted[0])
+	if event.Tool != "sessionX:call1" {
+		t.Errorf("confirm 事件应带确认 ID：%+v", event)
 	}
 	if !m.resolve("sessionX:call1", true) {
 		t.Fatal("应能解析确认")

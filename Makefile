@@ -5,7 +5,27 @@
 help: ## Show available commands
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
 
-dev: ## Start the setup guide
+dev: ## Start the setup guide (replaces an older local ALemonX backend)
+	@set -e; \
+	port=17390; \
+	pids="$$(lsof -tiTCP:$$port -sTCP:LISTEN 2>/dev/null || true)"; \
+	for pid in $$pids; do \
+		command="$$(ps -p "$$pid" -o comm= | xargs basename)"; \
+		if [ "$$command" != "alemonx" ] && [ "$$command" != "app" ]; then \
+			echo "端口 $$port 已被 $$command (PID $$pid) 占用；为避免误杀，未停止该进程。"; \
+			exit 1; \
+		fi; \
+		echo "停止旧 ALemonX 后端（PID $$pid，端口 $$port）…"; \
+		kill "$$pid"; \
+	done; \
+	for attempt in 1 2 3 4 5; do \
+		[ -z "$$(lsof -tiTCP:$$port -sTCP:LISTEN 2>/dev/null || true)" ] && break; \
+		sleep 1; \
+	done; \
+	if [ -n "$$(lsof -tiTCP:$$port -sTCP:LISTEN 2>/dev/null || true)" ]; then \
+		echo "旧 ALemonX 后端未能在预期时间内退出，取消启动。"; \
+		exit 1; \
+	fi; \
 	go run .
 
 build: ## Build the production binary

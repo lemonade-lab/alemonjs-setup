@@ -19,19 +19,54 @@ import (
 )
 
 type agentTaskInput struct {
-	Provider  string              `json:"provider"`
-	Model     string              `json:"model"`
-	Root      string              `json:"root"`
-	SessionID string              `json:"sessionId"`
-	GoalID    string              `json:"goalId,omitempty"`
-	Access    string              `json:"access"`
-	Messages  []map[string]string `json:"messages"`
-	Isolation string              `json:"isolation,omitempty"`
+	Provider       string              `json:"provider"`
+	Model          string              `json:"model"`
+	Root           string              `json:"root"`
+	SessionID      string              `json:"sessionId"`
+	GoalID         string              `json:"goalId,omitempty"`
+	Access         string              `json:"access"`
+	Messages       []map[string]string `json:"messages"`
+	Isolation      string              `json:"isolation,omitempty"`
+	IdempotencyKey string              `json:"idempotencyKey,omitempty"`
+}
+
+const safeModelFailureMessage = "模型服务暂时无法继续处理，已保留当前进度。请稍后继续任务。"
+
+// publicTask prevents historical checkpoints/tasks from leaking provider
+// protocol errors into the UI. The full diagnostic stays on disk and in the
+// server log for operators; the conversation gets a useful recovery action.
+func publicTask(task agent.AgentTask) agent.AgentTask {
+	task.LastError = publicAgentError(task.LastError)
+	for index := range task.Plan.Steps {
+		task.Plan.Steps[index].Result = publicAgentError(task.Plan.Steps[index].Result)
+	}
+	return task
+}
+
+func publicAgentError(text string) string {
+	lower := strings.ToLower(text)
+	if strings.Contains(lower, "ai 请求失败") ||
+		strings.Contains(lower, "tool_calls") ||
+		strings.Contains(lower, "tool_call_id") ||
+		strings.Contains(lower, "insufficient tool") {
+		return safeModelFailureMessage
+	}
+	return text
+}
+
+func publicTaskEvent(event agent.TaskEvent) agent.TaskEvent {
+	event.Text = publicAgentError(event.Text)
+	event.Output = publicAgentError(event.Output)
+	return event
 }
 
 func (s *server) agentTasksHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
-		writeJSON(w, http.StatusOK, s.agentTasks.List())
+		tasks := s.agentTasks.List()
+		for index := range tasks {
+			tasks[index] = publicTask(tasks[index])
+		}
+		writeJSON(w, http.StatusOK, tasks)
 		return
 	}
 	if r.Method != http.MethodPost {
@@ -44,6 +79,9 @@ func (s *server) agentTasksHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	legacy := r.Header.Get("X-Legacy-Agent") == "1"
+	if input.IdempotencyKey == "" {
+		input.IdempotencyKey = strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	}
 	created, err := s.createAgentTask(input, legacy)
 	if err != nil {
 		status := http.StatusInternalServerError
@@ -56,15 +94,19 @@ func (s *server) agentTasksHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, status, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusAccepted, map[string]any{"taskId": created.ID, "sessionId": created.SessionID, "status": created.Status, "task": created})
+	writeJSON(w, http.StatusAccepted, map[string]any{"taskId": created.ID, "sessionId": created.SessionID, "status": created.Status, "task": publicTask(created)})
 }
 
-func (s *server) createAgentTask(input agentTaskInput, legacy bool) (agent.AgentTask, error) {
+func (s *server) createAgentTask(input agentTaskInput, _ bool) (agent.AgentTask, error) {
 	if len(input.Messages) == 0 {
 		return agent.AgentTask{}, errors.New("请填写要发送的消息。")
 	}
 	if input.Access == "" {
-		input.Access = "ask"
+		// Interactive tasks should feel useful immediately for first-time users.
+		// "auto" still stays within the project's safe tool allowlist; users can
+		// explicitly choose ask/full in the UI. Scheduled and resumed goals keep
+		// their stricter ask mode at their dedicated call sites.
+		input.Access = "auto"
 	}
 	if input.Access != "ask" && input.Access != "auto" && input.Access != "full" {
 		return agent.AgentTask{}, errors.New("权限模式无效。")
@@ -85,7 +127,7 @@ func (s *server) createAgentTask(input agentTaskInput, legacy bool) (agent.Agent
 		}
 		sessionID = session.ID
 	}
-	task := agent.AgentTask{SessionID: sessionID, GoalID: input.GoalID, Root: input.Root, Provider: input.Provider, Model: input.Model, Access: input.Access}
+	task := agent.AgentTask{SessionID: sessionID, GoalID: input.GoalID, Root: input.Root, Provider: input.Provider, Model: input.Model, Access: input.Access, IdempotencyKey: input.IdempotencyKey}
 	if input.Isolation == "" {
 		input.Isolation = "workspace"
 	}
@@ -95,12 +137,17 @@ func (s *server) createAgentTask(input agentTaskInput, legacy bool) (agent.Agent
 	task.Isolation = input.Isolation
 	goal := input.Messages[len(input.Messages)-1]["content"]
 	task.Plan = defaultTaskPlan(goal)
-	if legacy {
-		task.Plan.Approved = true
-		task.Status = agent.TaskQueued
-	} else {
-		task.Status = agent.TaskPlanPending
+	if !requiresWriteSteps(goal) {
+		// Read-only questions use a shorter plan. A write-intent task still starts
+		// immediately: the individual write/command tool is where ask-mode asks
+		// the user for permission, rather than treating a plan as a permission.
+		task.Plan = readOnlyTaskPlan(goal)
 	}
+	// “Approved” here means that the durable plan is executable by the state
+	// machine. It is deliberately not user authorization for file changes:
+	// askApprover continues to require confirmation for each risky tool call.
+	task.Plan.Approved = true
+	task.Status = agent.TaskQueued
 	initial := make([]agent.Message, 0, len(input.Messages))
 	for _, message := range input.Messages {
 		initial = append(initial, agent.Message{Role: message["role"], Content: message["content"]})
@@ -113,25 +160,85 @@ func (s *server) createAgentTask(input agentTaskInput, legacy bool) (agent.Agent
 	if err != nil {
 		return agent.AgentTask{}, err
 	}
-	checkpoint.TaskID = created.ID
-	_ = s.agentTaskStore.SaveCheckpoint(checkpoint)
-	if task.Status != agent.TaskPlanPending {
-		if err := s.taskService.Start(created.ID); err != nil {
-			return agent.AgentTask{}, err
+	// Task checkpoints are for recovery, but they are not the user-facing
+	// conversation history. Persist this task's new user turn separately so a
+	// plan_pending task, a cancelled task, and a completed task all remain
+	// visible after reopening the session.
+	if user := latestUserMessage(input.Messages); user != "" {
+		if err := s.agentSessions.Append(sessionID, agent.Message{Role: "user", Content: user}); err != nil {
+			_ = s.agentTasks.SetStatus(created.ID, agent.TaskPaused, "保存会话记录失败："+err.Error())
+			return agent.AgentTask{}, errors.New("保存会话记录失败：" + err.Error())
 		}
 	}
-	if task.Status != agent.TaskPlanPending {
-		created.Status = agent.TaskRunning
+	checkpoint.TaskID = created.ID
+	_ = s.agentTaskStore.SaveCheckpoint(checkpoint)
+	if err := s.taskService.Start(created.ID); err != nil {
+		return agent.AgentTask{}, err
 	}
+	created.Status = agent.TaskRunning
 	return created, nil
+}
+
+// latestUserMessage returns only the new user turn submitted for a task. The
+// client includes prior turns as model context; appending all of them here
+// would duplicate the transcript every time the user sends a message.
+func latestUserMessage(messages []map[string]string) string {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i]["role"] == "user" {
+			return strings.TrimSpace(messages[i]["content"])
+		}
+	}
+	return ""
 }
 
 func defaultTaskPlan(goal string) agent.TaskPlan {
 	return agent.TaskPlan{Goal: goal, Completion: "目标完成且验证命令通过", Steps: []agent.PlanStep{{ID: "understand", Title: "理解项目", Description: "使用项目地图和必要文件确认实现入口", Status: "pending"}, {ID: "implement", Title: "实现变更", Description: "按用户目标修改最少的相关文件", Status: "pending"}, {ID: "verify", Title: "验证结果", Description: "运行相关验证并修复失败", Status: "pending"}}, CurrentStep: 0}
 }
 
+func requiresWriteSteps(goal string) bool {
+	lower := strings.ToLower(strings.TrimSpace(goal))
+	for _, keyword := range []string{"修改", "修复", "创建", "新增", "添加", "删除", "重构", "实现", "改动", "写入", "fix", "edit", "create", "add", "delete", "refactor", "implement", "change", "write"} {
+		if strings.Contains(lower, keyword) {
+			return true
+		}
+	}
+	return false
+}
+
+func readOnlyTaskPlan(goal string) agent.TaskPlan {
+	return agent.TaskPlan{Goal: goal, Completion: "已回答问题并给出依据", Steps: []agent.PlanStep{{ID: "answer", Title: "分析并回答", Description: "读取项目相关信息并直接回答用户问题", Status: "pending"}}, CurrentStep: 0}
+}
+
 func (s *server) makeAgentTaskRunner(cfg ai.Resolved, checkpoint agent.AgentCheckpoint, access string) agent.TaskRunner {
 	return func(ctx context.Context, task agent.AgentTask, emit func(agent.Event)) (string, error) {
+		var projectLease agent.LeaseManager
+		if requiresWriteSteps(task.Plan.Goal) && s.opsStore != nil {
+			projectLease = agent.NewLeaseManager(s.opsStore)
+			leaseKey := "project:" + filepath.Clean(task.Root)
+			if err := projectLease.Acquire(ctx, leaseKey, task.ID, 30*time.Minute); err != nil {
+				return "", errors.New("项目写租约获取失败：" + err.Error())
+			}
+			leaseCtx, stopLease := context.WithCancel(ctx)
+			ctx = leaseCtx
+			defer stopLease()
+			go func() {
+				ticker := time.NewTicker(5 * time.Minute)
+				defer ticker.Stop()
+				for {
+					select {
+					case <-leaseCtx.Done():
+						return
+					case <-ticker.C:
+						if err := projectLease.Renew(leaseCtx, leaseKey, task.ID, 30*time.Minute); err != nil {
+							emit(agent.Event{Type: "error", Text: "项目写租约续期失败，任务将暂停：" + err.Error()})
+							stopLease()
+							return
+						}
+					}
+				}
+			}()
+			defer func() { _ = projectLease.Release(context.Background(), leaseKey, task.ID) }()
+		}
 		checkpoint.TaskID = task.ID
 		checkpoint.Status = agent.TaskRunning
 		checkpoint.Plan = task.Plan
@@ -224,8 +331,19 @@ func (s *server) makeAgentTaskRunner(cfg ai.Resolved, checkpoint agent.AgentChec
 			updated, _ := s.agentTasks.Get(task.ID)
 			stepState := updated.Plan.Steps[updated.Plan.CurrentStep]
 			if stepState.Status == "running" {
-				if stepID == "understand" && !writeSeen {
-					_, _ = (agent.StepExecutor{Manager: s.agentTasks}).Complete(task.ID, "项目结构理解完成")
+				if (stepID == "understand" || stepID == "answer" || stepID == "verify") && !writeSeen {
+					// Read-only steps still follow the durable state machine. They
+					// don't need a shell verification, but must pass through
+					// verifying before Complete; otherwise MarkStep rejects the
+					// transition and the task is incorrectly marked failed after
+					// the model has already emitted its final answer.
+					executor := agent.StepExecutor{Manager: s.agentTasks}
+					if _, err := executor.MarkVerifying(task.ID, "已生成并检查回答"); err != nil {
+						return "", err
+					}
+					if _, err := executor.Complete(task.ID, "已生成并检查回答"); err != nil {
+						return "", err
+					}
 				} else if !verifySeen {
 					err := errors.New("步骤未完成验证")
 					_, _ = (agent.StepExecutor{Manager: s.agentTasks}).Fail(task.ID, err.Error())
@@ -273,6 +391,14 @@ func (s *server) makeAgentTaskRunner(cfg ai.Resolved, checkpoint agent.AgentChec
 		checkpoint.Messages = result.Messages
 		checkpoint.Updated = time.Now()
 		_ = s.agentTaskStore.SaveCheckpoint(checkpoint)
+		if answer := strings.TrimSpace(result.Answer); answer != "" {
+			if err := s.agentSessions.Append(task.SessionID, agent.Message{Role: "assistant", Content: answer}); err != nil {
+				checkpoint.Status = agent.TaskFailed
+				checkpoint.LastError = "保存会话记录失败：" + err.Error()
+				_ = s.agentTaskStore.SaveCheckpoint(checkpoint)
+				return "", errors.New(checkpoint.LastError)
+			}
+		}
 		return result.Answer, nil
 	}
 }
@@ -295,7 +421,7 @@ func (s *server) agentTaskHandler(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, err.Error())
 			return
 		}
-		writeJSON(w, http.StatusOK, task)
+		writeJSON(w, http.StatusOK, publicTask(task))
 		return
 	}
 	if len(parts) == 2 && parts[1] == "plan" {
@@ -309,6 +435,7 @@ func (s *server) agentTaskHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if r.Method == http.MethodPatch {
+			wasPlanPending := task.Status == agent.TaskPlanPending
 			var plan agent.TaskPlan
 			if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&plan); err != nil {
 				writeError(w, http.StatusBadRequest, "计划格式无效。")
@@ -318,6 +445,13 @@ func (s *server) agentTaskHandler(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				writeError(w, http.StatusBadRequest, err.Error())
 				return
+			}
+			if wasPlanPending {
+				if err := s.agentTasks.Start(taskID); err != nil {
+					writeError(w, http.StatusBadRequest, err.Error())
+					return
+				}
+				updated, _ = s.agentTasks.Get(taskID)
 			}
 			writeJSON(w, http.StatusOK, updated.Plan)
 			return
@@ -346,7 +480,7 @@ func (s *server) agentTaskHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		updated.Status = agent.TaskRunning
-		writeJSON(w, http.StatusAccepted, updated)
+		writeJSON(w, http.StatusAccepted, publicTask(updated))
 		return
 	}
 	if len(parts) == 4 && parts[1] == "step" && parts[3] == "retry" && r.Method == http.MethodPost {
@@ -458,7 +592,7 @@ func (s *server) agentTaskHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		task, _ = s.agentTasks.Get(taskID)
-		writeJSON(w, http.StatusAccepted, task)
+		writeJSON(w, http.StatusAccepted, publicTask(task))
 		return
 	}
 	if len(parts) == 2 && parts[1] == "rollback" && r.Method == http.MethodPost {
@@ -478,7 +612,7 @@ func (s *server) agentTaskHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		task, _ = s.agentTasks.Get(taskID)
-		writeJSON(w, http.StatusOK, task)
+		writeJSON(w, http.StatusOK, publicTask(task))
 		return
 	}
 	writeError(w, http.StatusNotFound, "任务操作不存在。")
@@ -497,6 +631,14 @@ func (s *server) agentTaskEvents(w http.ResponseWriter, r *http.Request, id stri
 	}
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
+	wake, unsubscribe, subscribeErr := s.agentTasks.Subscribe(id)
+	if subscribeErr != nil {
+		writeError(w, http.StatusNotFound, subscribeErr.Error())
+		return
+	}
+	defer unsubscribe()
+	heartbeat := time.NewTicker(25 * time.Second)
+	defer heartbeat.Stop()
 	last := after
 	for {
 		events, err := s.agentTasks.Events(id, last)
@@ -505,6 +647,7 @@ func (s *server) agentTaskEvents(w http.ResponseWriter, r *http.Request, id stri
 			return
 		}
 		for _, event := range events {
+			event = publicTaskEvent(event)
 			raw, _ := json.Marshal(event)
 			_, _ = w.Write([]byte("id: " + strconv.FormatInt(event.ID, 10) + "\ndata: " + string(raw) + "\n\n"))
 			last = event.ID
@@ -520,7 +663,12 @@ func (s *server) agentTaskEvents(w http.ResponseWriter, r *http.Request, id stri
 		select {
 		case <-r.Context().Done():
 			return
-		case <-time.After(500 * time.Millisecond):
+		case <-wake:
+		case <-heartbeat.C:
+			if _, err := w.Write([]byte(": ping\n\n")); err != nil {
+				return
+			}
+			flusher.Flush()
 		}
 	}
 }

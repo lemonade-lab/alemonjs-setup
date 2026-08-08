@@ -102,6 +102,25 @@ func TestPlanPendingRequiresApproval(t *testing.T) {
 	}
 }
 
+func TestUpdatePlanKeepsExecutionReady(t *testing.T) {
+	manager := NewTaskManager(NewTaskStoreAt(t.TempDir()))
+	plan := TaskPlan{Goal: "g", Completion: "c", CurrentStep: 0, Steps: []PlanStep{{ID: "a", Status: "pending"}}}
+	task, err := manager.Create(AgentTask{ID: "edit-plan", Status: TaskPlanPending, Plan: plan}, func(context.Context, AgentTask, func(Event)) (string, error) { return "ok", nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, err := manager.UpdatePlan(task.ID, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !updated.Plan.Approved {
+		t.Fatal("编辑计划不应撤销任务的执行就绪状态")
+	}
+	if updated.Status != TaskQueued {
+		t.Fatalf("编辑待批准计划后状态 = %q，期望 queued", updated.Status)
+	}
+}
+
 func TestSnapshotRollbackDetectsExternalChange(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "a.txt")
@@ -161,6 +180,37 @@ func TestTaskManagerCancel(t *testing.T) {
 	t.Fatal("任务未进入 cancelled 状态")
 }
 
+func TestTaskManagerSubscribeWakesAfterPersistedEventAndStatus(t *testing.T) {
+	manager := NewTaskManager(NewTaskStoreAt(t.TempDir()))
+	task, err := manager.Create(AgentTask{ID: "subscribe", Status: TaskQueued}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wake, unsubscribe, err := manager.Subscribe(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unsubscribe()
+	manager.EmitExternal(task.ID, Event{Type: "turn", Text: "first"})
+	select {
+	case <-wake:
+	case <-time.After(time.Second):
+		t.Fatal("persisted event did not wake subscriber")
+	}
+	events, err := manager.Events(task.ID, 0)
+	if err != nil || len(events) != 1 || events[0].Text != "first" {
+		t.Fatalf("events = %+v, %v", events, err)
+	}
+	if err := manager.SetStatus(task.ID, TaskCancelled, ""); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-wake:
+	case <-time.After(time.Second):
+		t.Fatal("status change did not wake subscriber")
+	}
+}
+
 func TestTaskManagerRejectsCompletedRestart(t *testing.T) {
 	manager := NewTaskManager(NewTaskStoreAt(t.TempDir()))
 	task, err := manager.Create(AgentTask{ID: "done", Status: TaskCompleted}, func(context.Context, AgentTask, func(Event)) (string, error) { return "", nil })
@@ -169,5 +219,20 @@ func TestTaskManagerRejectsCompletedRestart(t *testing.T) {
 	}
 	if err := manager.Start(task.ID); err == nil {
 		t.Fatal("completed 任务不应重新启动")
+	}
+}
+
+func TestTaskManagerIdempotencyKeyReturnsExistingTask(t *testing.T) {
+	manager := NewTaskManager(NewTaskStoreAt(t.TempDir()))
+	first, err := manager.Create(AgentTask{ID: "first", IdempotencyKey: "incident:i1:0"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := manager.Create(AgentTask{ID: "second", IdempotencyKey: "incident:i1:0"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.ID != first.ID {
+		t.Fatalf("幂等请求创建了新任务：first=%s second=%s", first.ID, second.ID)
 	}
 }

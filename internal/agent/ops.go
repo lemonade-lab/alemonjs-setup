@@ -43,6 +43,26 @@ type ErrorEvent struct {
 	Stack       string    `json:"stack,omitempty"`
 }
 
+type OpsSignal struct {
+	ProjectRoot string    `json:"projectRoot"`
+	ProcessName string    `json:"processName"`
+	Kind        string    `json:"kind"`
+	Status      string    `json:"status"`
+	Message     string    `json:"message"`
+	Timestamp   time.Time `json:"timestamp"`
+}
+
+type LogCursor struct {
+	ProjectRoot string    `json:"projectRoot"`
+	ProcessName string    `json:"processName"`
+	LogPath     string    `json:"logPath,omitempty"`
+	Device      int64     `json:"device,omitempty"`
+	Inode       uint64    `json:"inode,omitempty"`
+	Offset      int64     `json:"offset"`
+	WindowHash  string    `json:"windowHash"`
+	Updated     time.Time `json:"updated"`
+}
+
 type Incident struct {
 	ID             string         `json:"id"`
 	ProjectRoot    string         `json:"projectRoot"`
@@ -66,7 +86,7 @@ type Incident struct {
 
 type OpsPolicy struct {
 	ProjectRoot         string    `json:"projectRoot"`
-	Mode                string    `json:"mode"`
+	Mode                string    `json:"mode"` // off/observe/canary/auto/strict
 	AutoAllowed         bool      `json:"autoAllowed"`
 	AllowCodeChanges    bool      `json:"allowCodeChanges"`
 	AllowPM2Control     bool      `json:"allowPm2Control"`
@@ -82,6 +102,7 @@ type OpsPolicy struct {
 	VerificationCommand string    `json:"verificationCommand,omitempty"`
 	Updated             time.Time `json:"updated"`
 	Version             int       `json:"version"`
+	SingleApproval      bool      `json:"singleApproval"`
 }
 
 type OpsBudget struct {
@@ -106,24 +127,27 @@ type AutoFixDecision struct {
 }
 
 type MaintenanceRun struct {
-	ID                 string          `json:"id"`
-	IncidentID         string          `json:"incidentId"`
-	TaskID             string          `json:"taskId,omitempty"`
-	Decision           AutoFixDecision `json:"decision"`
-	PM2Actions         []string        `json:"pm2Actions,omitempty"`
-	ModifiedFiles      []string        `json:"modifiedFiles,omitempty"`
-	VerificationOutput string          `json:"verificationOutput,omitempty"`
-	ObservationStarted time.Time       `json:"observationStarted,omitempty"`
-	ObservationUntil   time.Time       `json:"observationUntil,omitempty"`
-	Status             string          `json:"status"`
-	RollbackPerformed  bool            `json:"rollbackPerformed"`
-	Error              string          `json:"error,omitempty"`
-	Created            time.Time       `json:"created"`
-	Finished           *time.Time      `json:"finished,omitempty"`
-	RetryCount         int             `json:"retryCount"`
-	PM2ActionCount     int             `json:"pm2ActionCount"`
-	TokenUsage         int             `json:"tokenUsage"`
-	DurationSeconds    int64           `json:"durationSeconds"`
+	ID                 string           `json:"id"`
+	IncidentID         string           `json:"incidentId"`
+	TaskID             string           `json:"taskId,omitempty"`
+	Decision           AutoFixDecision  `json:"decision"`
+	PM2Actions         []string         `json:"pm2Actions,omitempty"`
+	ModifiedFiles      []string         `json:"modifiedFiles,omitempty"`
+	VerificationOutput string           `json:"verificationOutput,omitempty"`
+	ObservationStarted time.Time        `json:"observationStarted,omitempty"`
+	ObservationUntil   time.Time        `json:"observationUntil,omitempty"`
+	Status             string           `json:"status"`
+	RollbackPerformed  bool             `json:"rollbackPerformed"`
+	Error              string           `json:"error,omitempty"`
+	Created            time.Time        `json:"created"`
+	Finished           *time.Time       `json:"finished,omitempty"`
+	RetryCount         int              `json:"retryCount"`
+	PM2ActionCount     int              `json:"pm2ActionCount"`
+	TokenUsage         int              `json:"tokenUsage"`
+	DurationSeconds    int64            `json:"durationSeconds"`
+	Score              MaintenanceScore `json:"score"`
+	ApprovalSource     string           `json:"approvalSource,omitempty"` // ai/human/automatic
+	NodeID             string           `json:"nodeId,omitempty"`
 }
 
 type OpsTodo struct {
@@ -151,6 +175,15 @@ type OpsMetrics struct {
 	Resolved              int     `json:"resolved"`
 	AverageRecoverySecs   float64 `json:"averageRecoverySecs"`
 	SeenEventFingerprints int     `json:"seenEventFingerprints"`
+	IncidentDeduplicated  int     `json:"incidentDeduplicated"`
+	AIWakeups             int     `json:"aiWakeups"`
+	MaintenanceFailures   int     `json:"maintenanceFailures"`
+	PM2ActionFailures     int     `json:"pm2ActionFailures"`
+	BudgetExhausted       int     `json:"budgetExhausted"`
+	AlertDeliveryTotal    int     `json:"alertDeliveryTotal"`
+	AlertDeliveryFailures int     `json:"alertDeliveryFailures"`
+	LeaseTakeovers        int     `json:"leaseTakeovers"`
+	RecoveryConflicts     int     `json:"recoveryConflicts"`
 }
 
 var volatileLogParts = regexp.MustCompile(`(?i)(\b(?:request|user|trace|correlation|session)?[_ -]?id\s*[=:]\s*)[^\s,;]+|(\buser\s*[=:]\s*)[^\s,;]+|\b[0-9a-f]{8}-[0-9a-f-]{27,}\b|\b\d{2,}\b|\b(?:\d{1,3}\.){3}\d{1,3}:\d+\b`)
@@ -252,6 +285,72 @@ func (s *OpsStore) AppendEvent(incidentID string, event ErrorEvent) error {
 	_, err = f.Write(append(data, '\n'))
 	return err
 }
+func (s *OpsStore) AppendSignal(signal OpsSignal) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.ensure(); err != nil {
+		return err
+	}
+	path := filepath.Join(s.dir, "signals.jsonl")
+	data, err := json.Marshal(signal)
+	if err != nil {
+		return err
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = f.Write(append(data, '\n'))
+	return err
+}
+func (s *OpsStore) ListSignals() ([]OpsSignal, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	data, err := os.ReadFile(filepath.Join(s.dir, "signals.jsonl"))
+	if errors.Is(err, os.ErrNotExist) {
+		return []OpsSignal{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var out []OpsSignal
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		var signal OpsSignal
+		if json.Unmarshal([]byte(line), &signal) == nil {
+			out = append(out, signal)
+		}
+	}
+	return out, nil
+}
+
+func (s *OpsStore) logCursorPath(projectRoot, processName string) string {
+	key := sha256Hex(filepath.Clean(projectRoot) + "\x00" + processName)
+	return filepath.Join(s.dir, "cursor-"+key+".json")
+}
+
+func (s *OpsStore) SaveLogCursor(cursor LogCursor) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.ensure(); err != nil {
+		return err
+	}
+	if cursor.Updated.IsZero() {
+		cursor.Updated = time.Now()
+	}
+	return atomicJSONFile(s.logCursorPath(cursor.ProjectRoot, cursor.ProcessName), cursor)
+}
+
+func (s *OpsStore) GetLogCursor(projectRoot, processName string) (LogCursor, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var cursor LogCursor
+	err := readJSONFile(s.logCursorPath(projectRoot, processName), &cursor)
+	return cursor, err
+}
 func (s *OpsStore) ListEvents(incidentID string) ([]ErrorEvent, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -349,27 +448,46 @@ func (s *OpsStore) ListPolicies() ([]OpsPolicy, error) {
 }
 func (s *OpsStore) GetBudget(root string) (OpsBudget, error) {
 	policy, err := s.GetPolicy(root)
-	if err != nil { return OpsBudget{}, err }
+	if err != nil {
+		return OpsBudget{}, err
+	}
 	return OpsBudget{TokenLimit: policy.TokenBudget, UsedTokens: policy.UsedTokens, MaxRetries: policy.FailureCircuitBreak, RetryCount: policy.RetryCount, MaxPM2Actions: policy.MaxPM2Actions, UsedPM2Actions: policy.UsedPM2Actions, MaxChangedFiles: policy.MaxModifiedFiles}, nil
 }
+
 // ConsumeBudget updates all counters under one store lock. A failed consume
 // never partially increments any counter.
 func (s *OpsStore) ConsumeBudget(root string, tokens, pm2Actions, retries int) (OpsBudget, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var policy OpsPolicy
-	if err := readJSONFile(s.policyPath(root), &policy); err != nil { return OpsBudget{}, err }
-	if policy.TokenBudget > 0 && policy.UsedTokens+tokens > policy.TokenBudget { return OpsBudget{}, errors.New("AI Token 预算已耗尽") }
-	if policy.MaxPM2Actions > 0 && policy.UsedPM2Actions+pm2Actions > policy.MaxPM2Actions { return OpsBudget{}, errors.New("PM2 操作预算已耗尽") }
-	if policy.FailureCircuitBreak > 0 && policy.RetryCount+retries > policy.FailureCircuitBreak { return OpsBudget{}, errors.New("自动重试预算已耗尽") }
-	policy.UsedTokens += tokens; policy.UsedPM2Actions += pm2Actions; policy.RetryCount += retries; policy.Updated = time.Now()
-	if err := atomicJSONFile(s.policyPath(root), policy); err != nil { return OpsBudget{}, err }
+	if err := readJSONFile(s.policyPath(root), &policy); err != nil {
+		return OpsBudget{}, err
+	}
+	if policy.TokenBudget > 0 && policy.UsedTokens+tokens > policy.TokenBudget {
+		return OpsBudget{}, errors.New("AI Token 预算已耗尽")
+	}
+	if policy.MaxPM2Actions > 0 && policy.UsedPM2Actions+pm2Actions > policy.MaxPM2Actions {
+		return OpsBudget{}, errors.New("PM2 操作预算已耗尽")
+	}
+	if policy.FailureCircuitBreak > 0 && policy.RetryCount+retries > policy.FailureCircuitBreak {
+		return OpsBudget{}, errors.New("自动重试预算已耗尽")
+	}
+	policy.UsedTokens += tokens
+	policy.UsedPM2Actions += pm2Actions
+	policy.RetryCount += retries
+	policy.Updated = time.Now()
+	if err := atomicJSONFile(s.policyPath(root), policy); err != nil {
+		return OpsBudget{}, err
+	}
 	return OpsBudget{TokenLimit: policy.TokenBudget, UsedTokens: policy.UsedTokens, MaxRetries: policy.FailureCircuitBreak, RetryCount: policy.RetryCount, MaxPM2Actions: policy.MaxPM2Actions, UsedPM2Actions: policy.UsedPM2Actions, MaxChangedFiles: policy.MaxModifiedFiles}, nil
 }
 func (s *OpsStore) ResetBudget(root string) error {
-	s.mu.Lock(); defer s.mu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	var policy OpsPolicy
-	if err := readJSONFile(s.policyPath(root), &policy); err != nil { return err }
+	if err := readJSONFile(s.policyPath(root), &policy); err != nil {
+		return err
+	}
 	policy.UsedTokens, policy.UsedPM2Actions, policy.RetryCount, policy.Updated = 0, 0, 0, time.Now()
 	return atomicJSONFile(s.policyPath(root), policy)
 }
@@ -473,6 +591,7 @@ func (s *OpsStore) Metrics() (OpsMetrics, error) {
 		}
 		if run.Status == "failed" {
 			metrics.PM2Failures++
+			metrics.MaintenanceFailures++
 		}
 		if run.Finished != nil {
 			recoveryTotal += run.Finished.Sub(run.Created)
@@ -527,12 +646,12 @@ func opsJSONTime[T any](item T) time.Time {
 }
 
 type IncidentAggregator struct {
-	store  *OpsStore
+	store  OpsRepository
 	mu     sync.Mutex
 	window time.Duration
 }
 
-func NewIncidentAggregator(store *OpsStore) *IncidentAggregator {
+func NewIncidentAggregator(store OpsRepository) *IncidentAggregator {
 	return &IncidentAggregator{store: store, window: 5 * time.Minute}
 }
 func (a *IncidentAggregator) Ingest(event ErrorEvent) (Incident, bool, error) {
@@ -606,7 +725,7 @@ func DecideAutoFix(incident Incident, policy OpsPolicy) AutoFixDecision {
 		return decision
 	}
 	if policy.Mode == "off" {
-		decision.Action, decision.Reason = "observe_only", "项目已关闭 AI 运维"
+		decision.Action, decision.Reason = "observe_only", "项目已关闭 运维"
 		return decision
 	}
 	if policy.Mode == "observe" {
@@ -617,8 +736,12 @@ func DecideAutoFix(incident Incident, policy OpsPolicy) AutoFixDecision {
 		decision.Reason = "严格确认模式要求人工批准"
 		return decision
 	}
-	if policy.Mode == "auto" && !policy.AutoAllowed {
+	if (policy.Mode == "auto" || policy.Mode == "canary") && !policy.AutoAllowed {
 		decision.Reason = "项目尚未加入自动维护白名单"
+		return decision
+	}
+	if policy.Mode == "canary" && incident.Occurrences > 1 {
+		decision.Reason = "canary 模式仅允许单次 Incident，重复事件转人工"
 		return decision
 	}
 	if policy.AllowCodeChanges && incident.File != "" && incident.Line > 0 && policy.VerificationCommand != "" {

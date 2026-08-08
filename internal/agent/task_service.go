@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"errors"
-	"time"
 )
 
 type TaskResult struct {
@@ -25,8 +24,11 @@ func (s *TaskService) Start(id string) error                     { return s.Mana
 func (s *TaskService) Resume(id string, runner TaskRunner) error { return s.Manager.Resume(id, runner) }
 func (s *TaskService) Cancel(id string) error                    { return s.Manager.Cancel(id) }
 func (s *TaskService) Wait(ctx context.Context, id string) (TaskResult, error) {
-	ticker := time.NewTicker(100 * time.Millisecond)
-	defer ticker.Stop()
+	wake, unsubscribe, err := s.Manager.Subscribe(id)
+	if err != nil {
+		return TaskResult{TaskID: id}, err
+	}
+	defer unsubscribe()
 	for {
 		task, err := s.Manager.Get(id)
 		if err != nil {
@@ -49,7 +51,7 @@ func (s *TaskService) Wait(ctx context.Context, id string) (TaskResult, error) {
 		select {
 		case <-ctx.Done():
 			return result, ctx.Err()
-		case <-ticker.C:
+		case <-wake:
 		}
 	}
 }

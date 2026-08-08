@@ -269,16 +269,16 @@ func (s *SessionStore) Append(id string, message Message) error {
 func (s *SessionStore) Load(id string) ([]Message, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	messages := make([]Message, 0)
 	path := s.sessionPath(id)
 	file, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
+		return messages, nil
 	}
 	if err != nil {
 		return nil, err
 	}
 	defer file.Close()
-	var messages []Message
 	scanner := bufio.NewScanner(file)
 	buf := make([]byte, 0, 64*1024)
 	scanner.Buffer(buf, 1024*1024)

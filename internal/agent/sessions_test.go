@@ -29,6 +29,21 @@ func TestSessionStoreCreateAndList(t *testing.T) {
 	}
 }
 
+func TestSessionStoreLoadEmptyTranscriptReturnsEmptySlice(t *testing.T) {
+	store := newTestStore(t)
+	session, err := store.Create("/path/to/robot", "deepseek", "deepseek-chat", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	messages, err := store.Load(session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if messages == nil || len(messages) != 0 {
+		t.Fatalf("空会话应返回非 nil 空切片，实际：%#v", messages)
+	}
+}
+
 func TestSessionStoreUpdateProgress(t *testing.T) {
 	store := newTestStore(t)
 	session, _ := store.Create("/p", "deepseek", "m", "")

@@ -26,10 +26,17 @@ import {
   Unlock,
   X
 } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { AgentMarkdown } from './AgentMarkdown'
 import { Modal } from './Modal'
 import cn from 'classnames'
+
+// 开发环境默认走 Vite 的同源 /api 代理：后端通常监听 localhost，不能
+// 假定 127.0.0.1 可用。只有部署方明确提供地址时才绕过同源代理。
+const AGENT_API_BASE = (import.meta.env.VITE_AGENT_API_BASE ?? '').replace(/\/$/, '')
+const AGENT_TASKS_BASE = import.meta.env.DEV
+  ? 'http://localhost:17390/api/v1/agent/tasks'
+  : `${AGENT_API_BASE}/api/v1/agent/tasks`
 
 type Provider = {
   ID: string
@@ -243,130 +250,102 @@ function StepStatus({ status }: { status: Activity['status'] }) {
   )
 }
 
-type ResponseSection = { title: string; preview: string }
-
-function responseSections(content: string): ResponseSection[] {
-  const lines = content.split('\n')
-  const sections: Array<ResponseSection & { body: string[] }> = []
-  let current: (ResponseSection & { body: string[] }) | null = null
-  for (const rawLine of lines) {
-    const line = rawLine.trim()
-    if (!line) continue
-    const heading = line.match(/^(?:#{1,4}\s+|(?:\d+[.、]|[-*])\s+)(.+)$/)
-    if (heading) {
-      if (current) sections.push(current)
-      current = { title: heading[1], preview: '', body: [] }
-      continue
-    }
-    if (!current) current = { title: line, preview: '', body: [] }
-    else current.body.push(line)
-  }
-  if (current) sections.push(current)
-  return sections
-    .map(section => ({
-      title: section.title.slice(0, 42),
-      preview: section.body.join(' ').slice(0, 110) || section.title
-    }))
-    .filter(section => section.title)
-    .slice(0, 18)
-}
-
-function AgentResponseNavigator({
-  content,
-  threadRef,
-  articleRef
-}: {
-  content: string
-  threadRef: React.RefObject<HTMLElement | null>
-  articleRef: React.RefObject<HTMLElement | null>
-}) {
-  const sections = useMemo(() => responseSections(content), [content])
-  const [active, setActive] = useState(0)
-  const [hovered, setHovered] = useState<number | null>(null)
-
-  useEffect(() => {
-    const thread = threadRef.current
-    if (!thread || sections.length < 2) return
-    const update = () => {
-      const article = articleRef.current
-      if (!article) return
-      const position = Math.max(
-        0,
-        Math.min(0.999, (thread.scrollTop - article.offsetTop + thread.clientHeight * 0.28) / Math.max(article.offsetHeight, 1))
-      )
-      setActive(Math.min(sections.length - 1, Math.floor(position * sections.length)))
-    }
-    update()
-    thread.addEventListener('scroll', update, { passive: true })
-    return () => thread.removeEventListener('scroll', update)
-  }, [articleRef, sections.length, threadRef])
-
-  if (sections.length < 2) return null
-  const preview = hovered === null ? null : sections[hovered]
-  return (
-    <nav className="agent-response-navigator" aria-label="回复结构导航">
-      <div className="agent-response-minimap">
-        {sections.map((section, index) => (
-          <button
-            className={index === active ? 'active' : ''}
-            key={`${section.title}-${index}`}
-            onClick={() => {
-              const thread = threadRef.current
-              const article = articleRef.current
-              if (!thread || !article) return
-              thread.scrollTo({
-                top: article.offsetTop + (article.offsetHeight * index) / sections.length - 20,
-                behavior: 'smooth'
-              })
-              setActive(index)
-            }}
-            onMouseEnter={() => setHovered(index)}
-            onMouseLeave={() => setHovered(null)}
-            aria-label={`跳转到：${section.title}`}
-          />
-        ))}
-      </div>
-      {preview && (
-        <div
-          className="agent-response-preview"
-          role="status"
-          style={{
-            top: `${(hovered! / Math.max(sections.length - 1, 1)) * 100}%`
-          }}
-        >
-          <strong>{preview.title}</strong>
-          <span>{preview.preview}</span>
-        </div>
-      )}
-    </nav>
-  )
-}
-
 function AgentAssistantMessage({
   content,
-  streaming,
-  threadRef
+  streaming
 }: {
   content: string
   streaming: boolean
-  threadRef: React.RefObject<HTMLElement | null>
 }) {
-  const articleRef = useRef<HTMLElement | null>(null)
   return (
-    <article className="agent-message-assistant" ref={articleRef}>
+    <article className="agent-message-assistant">
       <span className="agent-message-avatar">
         <Sparkles className="size-3.5" />
       </span>
-      <AgentResponseNavigator
-        content={content}
-        threadRef={threadRef}
-        articleRef={articleRef}
-      />
       <div className="agent-message-body">
         <span className="agent-message-label">Agent</span>
         <AgentMarkdown content={content} streaming={streaming} />
       </div>
     </article>
+  )
+}
+
+function AgentQuestionRail({
+  messages,
+  threadRef
+}: {
+  messages: ChatMessage[]
+  threadRef: React.RefObject<HTMLElement | null>
+}) {
+  const questions = messages
+    .map((message, index) => ({ message, index }))
+    .filter(item => item.message.role === 'user')
+  const [active, setActive] = useState(questions.length ? questions.length - 1 : 0)
+  const [preview, setPreview] = useState<number | null>(null)
+  const railRef = useRef<HTMLElement | null>(null)
+  const [railLeft, setRailLeft] = useState<number | null>(null)
+
+  // A sticky element keeps its original document-flow position until scrolling
+  // reaches it. The question rail is navigation, so anchor it to the visible
+  // chat viewport instead and only derive its horizontal offset from agent-main.
+  useLayoutEffect(() => {
+    const rail = railRef.current
+    const host = rail?.closest<HTMLElement>('.agent-main')
+    if (!rail || !host) return
+    const update = () => setRailLeft(host.getBoundingClientRect().left)
+    update()
+    const observer = new ResizeObserver(update)
+    observer.observe(host)
+    window.addEventListener('resize', update)
+    return () => {
+      observer.disconnect()
+      window.removeEventListener('resize', update)
+    }
+  }, [questions.length])
+
+  if (questions.length === 0) return null
+  // The rail has a fixed visual budget. As question history grows, shrink the
+  // gap/hit area instead of making a second, arbitrarily tall timeline.
+  const slot = Math.min(20, Math.max(5, Math.floor(360 / questions.length)))
+  const gap = questions.length === 1 ? 0 : Math.min(8, Math.max(1, Math.floor(slot * 0.3)))
+  const previewOffset = preview === null ? 0 : (preview - (questions.length - 1) / 2) * slot
+  const railStyle = {
+    '--agent-question-gap': `${gap}px`,
+    '--agent-question-slot': `${Math.max(2, slot - gap)}px`,
+    '--agent-question-preview-offset': `${previewOffset}px`,
+    left: railLeft === null ? undefined : `${railLeft}px`
+  } as CSSProperties
+  const previewQuestion = preview === null ? null : questions[preview]
+  return (
+    <aside className="agent-question-rail" aria-label="问题记录导航" ref={railRef} style={railStyle}>
+      <div className="agent-question-list" role="list">
+        {questions.map(({ message, index }, questionIndex) => (
+          <button
+            className={questionIndex === active ? 'active' : ''}
+            key={index}
+            title={message.content}
+            aria-label={`问题 ${questionIndex + 1}：${message.content.trim() || '空问题'}`}
+            onBlur={() => setPreview(null)}
+            onFocus={() => setPreview(questionIndex)}
+            onMouseEnter={() => setPreview(questionIndex)}
+            onMouseLeave={() => setPreview(null)}
+            onClick={() => {
+              const target = threadRef.current?.querySelector<HTMLElement>(`[data-agent-message-index="${index}"]`)
+              target?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+              setActive(questionIndex)
+            }}
+          >
+            <span className="agent-question-marker" aria-hidden="true" />
+          </button>
+        ))}
+      </div>
+      {previewQuestion && (
+        <div className="agent-question-preview" role="status">
+          <strong>{previewQuestion.message.content.trim() || '空问题'}</strong>
+          <span>跳转到这次提问及其回答</span>
+        </div>
+      )}
+    </aside>
   )
 }
 
@@ -398,8 +377,9 @@ export function AgentChatPage({
   const taskIdRef = useRef('')
   const activityId = useRef(0)
   const promptRef = useRef<HTMLTextAreaElement | null>(null)
+	const composerRef = useRef<HTMLElement | null>(null)
   const threadRef = useRef<HTMLElement | null>(null)
-  const [access, setAccess] = useStoreState<'ask' | 'auto' | 'full'>('ask')
+	const [access, setAccess] = useStoreState<'ask' | 'auto' | 'full'>('auto')
   const [timelineOpen, setTimelineOpen] = useStoreState(false)
   const [pendingConfirm, setPendingConfirm] = useStoreState<{
     id: string
@@ -431,6 +411,9 @@ export function AgentChatPage({
   const [moreOpen, setMoreOpen] = useStoreState(false)
   const [accessOpen, setAccessOpen] = useStoreState(false)
   const [editingIndex, setEditingIndex] = useStoreState(-1)
+  // Keep the unsent composer text while temporarily replacing it with a
+  // historical message for editing. Cancelling must restore this exact draft.
+  const [editDraft, setEditDraft] = useStoreState('')
   // 斜杠命令：slashOpen 控制 / 菜单，slashDialog 是当前命令弹窗。
   const [slashOpen, setSlashOpen] = useStoreState(false)
   const [slashDialog, setSlashDialog] = useStoreState<
@@ -478,6 +461,34 @@ export function AgentChatPage({
     })
   }
 
+	const closeComposerMenus = useCallback(() => {
+		setMoreOpen(false)
+		setAccessOpen(false)
+		setModelCardOpen(false)
+		setSlashOpen(false)
+		setSlashIndex(-1)
+	}, [setAccessOpen, setModelCardOpen, setMoreOpen, setSlashIndex, setSlashOpen])
+
+	// Composer popovers should behave like native menus: a click anywhere else
+	// in the chat closes them. Capture pointerdown so the close happens even
+	// when the outside target later stops click propagation.
+	useEffect(() => {
+		if (!moreOpen && !accessOpen && !modelCardOpen && !slashOpen) return
+		const onPointerDown = (event: PointerEvent) => {
+			if (composerRef.current?.contains(event.target as Node)) return
+			closeComposerMenus()
+		}
+		const onKeyDown = (event: KeyboardEvent) => {
+			if (event.key === 'Escape') closeComposerMenus()
+		}
+		document.addEventListener('pointerdown', onPointerDown, true)
+		document.addEventListener('keydown', onKeyDown)
+		return () => {
+			document.removeEventListener('pointerdown', onPointerDown, true)
+			document.removeEventListener('keydown', onKeyDown)
+		}
+	}, [accessOpen, closeComposerMenus, modelCardOpen, moreOpen, slashOpen])
+
   const current = providers.find(item => item.ID === provider)
 
   const loadModels = useCallback(async (id: string) => {
@@ -524,7 +535,7 @@ export function AgentChatPage({
 
   const loadSessions = useCallback(async () => {
     try {
-      const response = await fetch('/api/v1/agent/sessions')
+      const response = await fetch(`${AGENT_API_BASE}/api/v1/agent/sessions`)
       if (!response.ok) return
       const data = (await response.json()) as SessionMeta[]
       setSessions(data)
@@ -546,8 +557,17 @@ export function AgentChatPage({
   }, [setTasks])
   useEffect(() => {
     void loadTasks()
-    const timer = window.setInterval(() => void loadTasks(), 2000)
-    return () => window.clearInterval(timer)
+    const refresh = () => {
+      if (document.visibilityState === 'visible') void loadTasks()
+    }
+    window.addEventListener('focus', refresh)
+    document.addEventListener('visibilitychange', refresh)
+    window.addEventListener('alx:agent-task-changed', refresh)
+    return () => {
+      window.removeEventListener('focus', refresh)
+      document.removeEventListener('visibilitychange', refresh)
+      window.removeEventListener('alx:agent-task-changed', refresh)
+    }
   }, [loadTasks])
   const loadGoals = useCallback(async () => { try { const response = await fetch('/api/v1/agent/goals'); if (response.ok) setGoals((await response.json()) as GoalMeta[]) } catch { /* auxiliary */ } }, [setGoals])
   useEffect(() => { void loadGoals() }, [loadGoals])
@@ -561,7 +581,12 @@ export function AgentChatPage({
       if (metrics.ok) setOpsMetrics((await metrics.json()) as OpsMetrics)
     } catch { /* 运维面板是辅助信息，不阻塞对话 */ }
   }, [root, setOpsIncidents, setOpsTodos, setOpsMaintenance, setOpsPolicy, setOpsMetrics])
-  useEffect(() => { void loadOps(); const timer = window.setInterval(() => void loadOps(), 10000); return () => window.clearInterval(timer) }, [loadOps])
+  useEffect(() => {
+    void loadOps()
+    const refresh = () => void loadOps()
+    window.addEventListener('alx:ops-changed', refresh)
+    return () => window.removeEventListener('alx:ops-changed', refresh)
+  }, [loadOps])
 
   // When opened from the directory session tree, load that conversation.
   // Track the last loaded id so a repeated id is not re-fetched, while a new id
@@ -578,15 +603,19 @@ export function AgentChatPage({
     void (async () => {
       try {
         const response = await fetch(
-          `/api/v1/agent/sessions/${initialSessionId}`
+          `${AGENT_API_BASE}/api/v1/agent/sessions/${encodeURIComponent(initialSessionId)}`
         )
-        if (!response.ok) return
+        if (!response.ok) {
+          const error = (await response.json().catch(() => ({}))) as { error?: string }
+          setNotice(error.error || '会话记录不存在或已损坏。')
+          return
+        }
         const data = (await response.json()) as {
           session: SessionMeta
-          messages: Array<{ role: string; content: string }>
+          messages: Array<{ role: string; content: string }> | null
         }
         setSessionId(data.session.id)
-        setMessages(sessionToMessages(data.messages))
+        setMessages(sessionToMessages(data.messages ?? []))
         setActivity([])
       } catch {
         setNotice('加载会话失败。')
@@ -615,14 +644,18 @@ export function AgentChatPage({
       return
     }
     try {
-      const response = await fetch(`/api/v1/agent/sessions/${id}`)
-      if (!response.ok) return
+      const response = await fetch(`${AGENT_API_BASE}/api/v1/agent/sessions/${encodeURIComponent(id)}`)
+      if (!response.ok) {
+        const error = (await response.json().catch(() => ({}))) as { error?: string }
+        setNotice(error.error || '会话记录不存在或已损坏。')
+        return
+      }
       const data = (await response.json()) as {
         session: SessionMeta
-        messages: Array<{ role: string; content: string }>
+        messages: Array<{ role: string; content: string }> | null
       }
       setSessionId(data.session.id)
-      setMessages(sessionToMessages(data.messages))
+      setMessages(sessionToMessages(data.messages ?? []))
       setActivity([])
       setSessionOpen(false)
     } catch {
@@ -637,7 +670,7 @@ export function AgentChatPage({
       return
     }
     try {
-      await fetch(`/api/v1/agent/sessions/${id}`, { method: 'DELETE' })
+      await fetch(`${AGENT_API_BASE}/api/v1/agent/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' })
       if (id === sessionId) newSession()
       await loadSessions()
     } catch {
@@ -652,12 +685,20 @@ export function AgentChatPage({
   }
 
   const approveTask = async (id: string) => {
-    const response = await fetch(`/api/v1/agent/tasks/${encodeURIComponent(id)}/plan/approve`, { method: 'POST' })
-    setNotice(response.ok ? '计划已批准，任务开始执行。' : '计划批准失败。')
+    const response = await fetch(`${AGENT_TASKS_BASE}/${encodeURIComponent(id)}/plan/approve`, { method: 'POST' })
+    if (!response.ok) {
+      const body = (await response.json().catch(() => ({}))) as { error?: string }
+      setNotice(body.error || '计划批准失败。')
+      await loadTasks()
+      return
+    }
+    setBusy(true)
+    setNotice('计划已批准，正在连接任务执行进度…')
+    void subscribeTaskEvents(id)
     await loadTasks()
   }
   const editPlan = (task: TaskMeta) => { if (task.plan) setPlanDraft({ taskId: task.id, goal: task.plan.goal, completion: task.plan.completion, steps: task.plan.steps.map(step => ({ ...step })) }) }
-  const savePlan = async () => { if (!planDraft) return; const response = await fetch(`/api/v1/agent/tasks/${encodeURIComponent(planDraft.taskId)}/plan`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ goal: planDraft.goal, completion: planDraft.completion, currentStep: 0, approved: false, steps: planDraft.steps }) }); setNotice(response.ok ? '计划已保存，需要重新批准。' : '计划保存失败。'); setPlanDraft(null); await loadTasks() }
+  const savePlan = async () => { if (!planDraft) return; const response = await fetch(`/api/v1/agent/tasks/${encodeURIComponent(planDraft.taskId)}/plan`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ goal: planDraft.goal, completion: planDraft.completion, currentStep: 0, steps: planDraft.steps }) }); setNotice(response.ok ? '计划已保存，任务将按更新后的计划继续执行。' : '计划保存失败。'); setPlanDraft(null); await loadTasks() }
 
   const rollbackTask = async (id: string) => {
     const response = await fetch(`/api/v1/agent/tasks/${encodeURIComponent(id)}/rollback`, { method: 'POST' })
@@ -693,10 +734,10 @@ export function AgentChatPage({
   const showGoalRuns = async (id: string) => { const response = await fetch(`/api/v1/agent/goals/${encodeURIComponent(id)}/runs`); if (response.ok) setGoalRuns((await response.json()) as typeof goalRuns); setNotice('已加载目标运行历史。') }
   const runGoal = async (id: string) => { await fetch(`/api/v1/agent/goals/${encodeURIComponent(id)}/run`, { method: 'POST' }); await loadGoals(); await loadTasks(); setNotice('长期目标已创建任务。') }
   const toggleGoal = async (goal: GoalMeta) => { await fetch(`/api/v1/agent/goals/${encodeURIComponent(goal.id)}/${goal.status === 'active' ? 'pause' : 'resume'}`, { method: 'POST' }); await loadGoals() }
-  const analyzeOps = async (id: string) => { await fetch(`/api/v1/ops/incidents/${encodeURIComponent(id)}/analyze`, { method: 'POST' }); await loadOps(); setNotice('已提交 AI 运维分析。') }
+  const analyzeOps = async (id: string) => { await fetch(`/api/v1/ops/incidents/${encodeURIComponent(id)}/analyze`, { method: 'POST' }); await loadOps(); setNotice('已提交 运维分析。') }
   const createOpsTodo = async (id: string) => { await fetch(`/api/v1/ops/incidents/${encodeURIComponent(id)}/todo`, { method: 'POST' }); await loadOps(); setNotice('已加入运维待办。') }
-  const toggleOpsMonitor = async () => { const next = !opsPaused; await fetch(`/api/v1/ops/monitor/${next ? 'pause' : 'resume'}`, { method: 'POST' }); setOpsPaused(next); setNotice(next ? 'AI 运维已暂停采集。' : 'AI 运维已恢复采集。') }
-  const saveOpsPolicy = async () => { await fetch('/api/v1/ops/policy', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(opsPolicy) }); setNotice('AI 运维策略已保存。') }
+  const toggleOpsMonitor = async () => { const next = !opsPaused; await fetch(`/api/v1/ops/monitor/${next ? 'pause' : 'resume'}`, { method: 'POST' }); setOpsPaused(next); setNotice(next ? '运维已暂停采集。' : '运维已恢复采集。') }
+  const saveOpsPolicy = async () => { await fetch('/api/v1/ops/policy', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(opsPolicy) }); setNotice('运维策略已保存。') }
 
   const handleEvent = useCallback(
     (event: {
@@ -751,13 +792,16 @@ export function AgentChatPage({
             { role: 'assistant', content: event.text || '完成。' }
           ])
           setNotice('')
+          void loadTasks()
           break
         case 'error':
           setTimelineOpen(false)
           setNotice(event.text || 'Agent 执行出错。')
+          void loadTasks()
           break
         case 'plan':
           setNotice(event.text ? `当前步骤：${event.text}` : '任务计划已更新。')
+          void loadTasks()
           break
         case 'review':
           try {
@@ -790,8 +834,49 @@ export function AgentChatPage({
           break
       }
     },
-    [loadSessions, setActivity, setMessages, setNotice, setPendingConfirm, setSessionId, setTimelineOpen]
+    [loadSessions, loadTasks, setActivity, setMessages, setNotice, setPendingConfirm, setSessionId, setTimelineOpen]
   )
+
+  // A plan-pending task has no SSE subscription yet. Once the user approves
+  // it, reconnect from the durable event log so fast early events are replayed
+  // rather than leaving the UI at “approved” with no visible execution.
+  const subscribeTaskEvents = useCallback(async (taskID: string) => {
+    streamRef.current?.abort()
+    const controller = new AbortController()
+    streamRef.current = controller
+    try {
+      const response = await fetch(`${AGENT_TASKS_BASE}/${encodeURIComponent(taskID)}/events`, {
+        signal: controller.signal
+      })
+      if (!response.ok || !response.body) {
+        throw new Error('无法订阅 Agent 任务事件。')
+      }
+      const reader = response.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+      for (;;) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        buffer = lines.pop() ?? ''
+        for (const line of lines) {
+          const trimmed = line.trim()
+          if (!trimmed.startsWith('data: ')) continue
+          handleEvent(JSON.parse(trimmed.slice(6)) as Parameters<typeof handleEvent>[0])
+        }
+      }
+    } catch (reason) {
+      if (!(reason instanceof DOMException && reason.name === 'AbortError')) {
+        setNotice(reason instanceof Error ? reason.message : '任务事件连接已断开。')
+      }
+    } finally {
+      if (streamRef.current === controller) streamRef.current = null
+      setBusy(false)
+      void loadTasks()
+      void loadSessions()
+    }
+  }, [handleEvent, loadSessions, loadTasks, setBusy, setNotice])
 
   const send = async () => {
     if (!prompt.trim() || busy) return
@@ -819,6 +904,7 @@ export function AgentChatPage({
     setMessages(next)
     setPrompt('')
     setEditingIndex(-1)
+    setEditDraft('')
     setActivity([])
     setTimelineOpen(false)
     setNotice('Agent 正在执行…')
@@ -833,20 +919,8 @@ export function AgentChatPage({
     }
     const controller = new AbortController()
     streamRef.current = controller
-    // SSE 流式请求绕过 Vite 代理直连后端：开发模式下 Vite 的 http-proxy
-    // 会破坏 chunked 的 text/event-stream（"Invalid character in chunk
-    // size"）。后端对 5173 来源加了 dev CORS。生产环境前端与后端同源。
-    const taskURL = import.meta.env.DEV
-      ? 'http://localhost:17390/api/v1/agent/tasks'
-      : '/api/v1/agent/tasks'
     try {
-      console.log(
-        '[agent] taskURL =',
-        taskURL,
-        'DEV =',
-        import.meta.env.DEV
-      )
-      const createResponse = await fetch(taskURL, {
+      const createResponse = await fetch(AGENT_TASKS_BASE, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -865,44 +939,23 @@ export function AgentChatPage({
         }
         throw new Error(data.error || 'Agent 请求失败。')
       }
-      const created = (await createResponse.json()) as { taskId?: string }
+      const created = (await createResponse.json()) as { taskId?: string; sessionId?: string; status?: string }
       if (!created.taskId) throw new Error('Agent 未返回任务 ID。')
       taskIdRef.current = created.taskId
-      if ((created as { status?: string }).status === 'plan_pending') {
+      if (created.sessionId && created.sessionId !== sessionId) setSessionId(created.sessionId)
+      if (created.status === 'plan_pending') {
+        await loadTasks()
         setNotice('任务计划已生成，请批准后开始执行。')
         return
       }
-      const streamURL = `${taskURL}/${encodeURIComponent(created.taskId)}/events`
-      const response = await fetch(streamURL, { signal: controller.signal })
-      if (!response.ok) throw new Error('无法订阅 Agent 任务事件。')
-      if (!response.body) throw new Error('当前浏览器不支持流式读取。')
-      const reader = response.body.getReader()
-      const decoder = new TextDecoder()
-      let buffer = ''
-      for (;;) {
-        const { done, value } = await reader.read()
-        if (done) break
-        buffer += decoder.decode(value, { stream: true })
-        const lines = buffer.split('\n')
-        buffer = lines.pop() ?? ''
-        for (const line of lines) {
-          const trimmed = line.trim()
-          if (!trimmed.startsWith('data: ')) continue
-          const event = JSON.parse(trimmed.slice(6)) as {
-            type: string
-            text?: string
-            tool?: string
-            callId?: string
-            output?: string
-          }
-          handleEvent(event)
-        }
-      }
+      // The task starts before this request subscribes; SSE replays its
+      // persisted events from the beginning so no tool/result update is lost.
+      await subscribeTaskEvents(created.taskId)
     } catch (reason) {
       if (!(reason instanceof DOMException && reason.name === 'AbortError')) {
         const message =
           reason instanceof Error ? reason.message : 'Agent 请求失败。'
-        console.error('[agent] 请求错误：', reason, 'taskURL =', taskURL)
+        console.error('[agent] 请求错误：', reason)
         setMessages(value => [
           ...value,
           { role: 'assistant', content: '⚠ ' + message }
@@ -919,10 +972,7 @@ export function AgentChatPage({
   const cancel = () => {
     const taskId = taskIdRef.current
     if (taskId) {
-      const taskURL = import.meta.env.DEV
-        ? 'http://localhost:17390/api/v1/agent/tasks'
-        : '/api/v1/agent/tasks'
-      void fetch(`${taskURL}/${encodeURIComponent(taskId)}/cancel`, {
+      void fetch(`${AGENT_TASKS_BASE}/${encodeURIComponent(taskId)}/cancel`, {
         method: 'POST'
       })
     }
@@ -1119,6 +1169,7 @@ export function AgentChatPage({
 
       <div className="agent-body">
         <div className="agent-main">
+          <AgentQuestionRail messages={messages} threadRef={threadRef} />
           <section className="agent-thread" ref={threadRef}>
             {messages.length === 0 && !busy && (
               <div className="agent-empty">
@@ -1135,12 +1186,13 @@ export function AgentChatPage({
             )}
             {messages.map((item, index) =>
               item.role === 'user' ? (
-                <article className="agent-message-user" key={index}>
+                <article className="agent-message-user" data-agent-message-index={index} key={index}>
                   <div>{item.content}</div>
                   {index === lastUserIndex && !busy && (
                     <button
                       className="agent-message-edit"
                       onClick={() => {
+                        if (editingIndex < 0) setEditDraft(prompt)
                         setEditingIndex(index)
                         setPrompt(item.content)
                         promptRef.current?.focus()
@@ -1157,7 +1209,6 @@ export function AgentChatPage({
                   content={item.content}
                   key={index}
                   streaming={busy && index === messages.length - 1}
-                  threadRef={threadRef}
                 />
               )
             )}
@@ -1170,17 +1221,21 @@ export function AgentChatPage({
               </div>
             )}
             {(activeTask?.plan || pendingTask?.plan) && (
-              <div className="agent-plan-card">
-                <strong>{pendingTask ? '等待计划批准' : '任务计划'}</strong>
-                <small>{(activeTask || pendingTask)?.plan?.goal}</small>
+              <div className={`agent-plan-card${pendingTask ? ' agent-plan-card-pending' : ''}`}>
+                <div className="agent-plan-heading">
+                  <strong>{pendingTask ? '执行计划' : '任务进度'}</strong>
+                  {pendingTask && <span className="agent-plan-state">待批准</span>}
+                </div>
+                <p className="agent-plan-goal">{(activeTask || pendingTask)?.plan?.goal}</p>
+                <small className="agent-plan-completion">完成条件 · {(activeTask || pendingTask)?.plan?.completion || '验证通过'}</small>
                 <div className="agent-plan-steps">
                   {((activeTask || pendingTask)?.plan?.steps || []).map((step, index) => (
                     <span key={step.id} data-status={step.status}>
-                      {index + 1}. {step.title}
+                      <b>{index + 1}</b><span>{step.title}</span><em>{step.status === 'completed' ? '已完成' : step.status === 'running' ? '进行中' : step.status === 'failed' ? '失败' : '待执行'}</em>
                     </span>
                   ))}
                 </div>
-                {pendingTask && <><button className="agent-session-action" onClick={() => editPlan(pendingTask)}>编辑计划</button><button className="agent-session-action" onClick={() => void approveTask(pendingTask.id)}>批准并开始</button></>}
+                {pendingTask && <div className="agent-plan-actions"><button className="agent-plan-button secondary" onClick={() => editPlan(pendingTask)}>编辑</button><button className="agent-plan-button primary" onClick={() => void approveTask(pendingTask.id)}>批准并开始</button></div>}
               </div>
             )}
             {activity.length > 0 && (
@@ -1261,12 +1316,21 @@ export function AgentChatPage({
               </div>
             )}
           </section>
-          <footer className="agent-composer">
+		  <footer className="agent-composer" ref={composerRef}>
             {editingIndex >= 0 && (
               <div className="agent-composer-editbar">
                 <Pencil className="size-3" />
                 正在编辑这条消息
-                <button onClick={() => setEditingIndex(-1)}>取消</button>
+                <button
+                  onClick={() => {
+                    setPrompt(editDraft)
+                    setEditDraft('')
+                    setEditingIndex(-1)
+                    promptRef.current?.focus()
+                  }}
+                >
+                  取消
+                </button>
               </div>
             )}
             {notice && (
@@ -1384,7 +1448,10 @@ export function AgentChatPage({
                           选择目录或文件
                         </button>
                         <button
-                          onClick={() => newSession()}
+						  onClick={() => {
+							newSession()
+							setMoreOpen(false)
+						  }}
                           disabled={busy}
                         >
                           <Plus className="size-3.5" />
@@ -1421,7 +1488,10 @@ export function AgentChatPage({
                           压缩
                         </button>
                         <button
-                          onClick={() => setSettings(true)}
+						  onClick={() => {
+							setSettings(true)
+							setMoreOpen(false)
+						  }}
                           disabled={busy}
                         >
                           <Settings2 className="size-3.5" />
@@ -1432,7 +1502,7 @@ export function AgentChatPage({
                   </div>
                   <div className="agent-composer-tool">
                     <button
-                      className="agent-composer-icon agent-composer-access"
+                      className="agent-composer-icon"
                       onClick={() => toggleComposerMenu('access')}
                       disabled={busy}
                       title="权限模式"
@@ -1453,7 +1523,7 @@ export function AgentChatPage({
                             ['ask', '请求批准', '每次修改文件前都征求你的同意'],
                             [
                               'auto',
-                              '替我审核',
+							  '帮我审批',
                               '自动批准文件修改，你只看到结果'
                             ],
                             ['full', '完全访问', '全部操作自动执行，不做确认']
@@ -1479,7 +1549,7 @@ export function AgentChatPage({
                     {access === 'ask'
                       ? '请求批准'
                       : access === 'auto'
-                        ? '替我审核'
+						? '帮我审批'
                         : '完全访问'}
                   </small>
                 </div>
@@ -1713,7 +1783,7 @@ export function AgentChatPage({
             {goals.map(goal => <div className="agent-goal-item" key={goal.id}><span>{goal.title || goal.prompt}</span><small>{goal.status}{goal.lastError ? ` · ${goal.lastError}` : ''}</small><div><button className="agent-session-action" onClick={() => void runGoal(goal.id)}>运行</button><button className="agent-session-action" onClick={() => void toggleGoal(goal)}>{goal.status === 'active' ? '暂停' : '恢复'}</button><button className="agent-session-action" onClick={() => editGoal(goal)}>编辑</button><button className="agent-session-action" onClick={() => void showGoalRuns(goal.id)}>历史</button><button className="agent-session-action" onClick={() => void deleteGoal(goal.id)}>删除</button></div></div>)}
           </div>
           <div className="agent-goals-panel agent-ops-panel">
-            <div className="agent-goals-header"><strong>AI 运维</strong><small>{opsPaused ? '已暂停' : '运行中'} · {opsTodos.length} 个待办</small><button className="agent-session-action" onClick={() => void toggleOpsMonitor()}>{opsPaused ? '恢复' : '暂停'}</button></div>
+            <div className="agent-goals-header"><strong>运维</strong><small>{opsPaused ? '已暂停' : '运行中'} · {opsTodos.length} 个待办</small><button className="agent-session-action" onClick={() => void toggleOpsMonitor()}>{opsPaused ? '恢复' : '暂停'}</button></div>
             {opsMetrics && <small>事件 {opsMetrics.incidents} · 已恢复 {opsMetrics.resolved} · 回滚 {opsMetrics.rollbacks} · 平均 {Math.round(opsMetrics.averageRecoverySecs)} 秒</small>}
             {opsIncidents.slice(0, 5).map(incident => <div className="agent-goal-item" key={incident.id}><span>{incident.processName} · {incident.severity}</span><small>{incident.status} · {incident.occurrences} 次</small><div><button className="agent-session-action" onClick={() => void analyzeOps(incident.id)}>分析</button><button className="agent-session-action" onClick={() => void createOpsTodo(incident.id)}>加入待办</button></div></div>)}
             {opsIncidents.length === 0 && <p className="agent-sessions-empty">暂无生产事件。</p>}

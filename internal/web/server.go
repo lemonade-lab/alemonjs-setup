@@ -70,8 +70,9 @@ type operationTask struct {
 
 // robotEvent is pushed to subscribed SSE clients whenever a supervised task
 // changes state or a running process emits output. Type is "task" (full task
-// snapshot) or "output" (incremental text for a task).
+// snapshot), "output" (incremental text), "app-ready", or "app-failed".
 type robotEvent struct {
+	ID     int64          `json:"id,omitempty"`
 	Type   string         `json:"type"`
 	TaskID string         `json:"taskId,omitempty"`
 	Task   *operationTask `json:"task,omitempty"`
@@ -83,6 +84,83 @@ type robotEvent struct {
 type robotEventHub struct {
 	mu          sync.Mutex
 	subscribers map[chan robotEvent]struct{}
+}
+
+type opsEvent struct {
+	Type string `json:"type"`
+	Root string `json:"root,omitempty"`
+}
+
+type opsEventHub struct {
+	mu          sync.Mutex
+	subscribers map[chan opsEvent]struct{}
+}
+
+type mcpEventHub struct {
+	mu          sync.Mutex
+	running     bool
+	subscribers map[chan bool]struct{}
+}
+
+func newMCPEventHub() *mcpEventHub { return &mcpEventHub{subscribers: map[chan bool]struct{}{}} }
+func (h *mcpEventHub) subscribe() chan bool {
+	ch := make(chan bool, 4)
+	h.mu.Lock()
+	h.subscribers[ch] = struct{}{}
+	h.mu.Unlock()
+	return ch
+}
+func (h *mcpEventHub) unsubscribe(ch chan bool) {
+	h.mu.Lock()
+	delete(h.subscribers, ch)
+	h.mu.Unlock()
+}
+func (h *mcpEventHub) status() bool { h.mu.Lock(); defer h.mu.Unlock(); return h.running }
+func (h *mcpEventHub) set(running bool) bool {
+	h.mu.Lock()
+	if h.running == running {
+		h.mu.Unlock()
+		return false
+	}
+	h.running = running
+	for ch := range h.subscribers {
+		select {
+		case ch <- running:
+		default:
+		}
+	}
+	h.mu.Unlock()
+	return true
+}
+
+func newOpsEventHub() *opsEventHub {
+	return &opsEventHub{subscribers: map[chan opsEvent]struct{}{}}
+}
+
+func (h *opsEventHub) subscribe() chan opsEvent {
+	ch := make(chan opsEvent, 32)
+	h.mu.Lock()
+	h.subscribers[ch] = struct{}{}
+	h.mu.Unlock()
+	return ch
+}
+
+func (h *opsEventHub) unsubscribe(ch chan opsEvent) {
+	h.mu.Lock()
+	delete(h.subscribers, ch)
+	h.mu.Unlock()
+}
+
+func (h *opsEventHub) publish(event opsEvent) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for ch := range h.subscribers {
+		select {
+		case ch <- event:
+		default:
+			// Coalesce bursts. The next snapshot request is authoritative.
+		}
+	}
 }
 
 func newRobotEventHub() *robotEventHub {
@@ -113,6 +191,24 @@ func (h *robotEventHub) publish(event robotEvent) {
 		}
 	}
 	h.mu.Unlock()
+}
+
+// publishRobotEvent persists the latest operation snapshots and the ordered
+// event before waking subscribers. If persistence fails the REST snapshot is
+// still usable, but a reconnect is never told about an event that was not
+// safely recorded.
+func (s *server) publishRobotEvent(event robotEvent) {
+	s.mu.RLock()
+	operations := append([]operationTask(nil), s.operations...)
+	s.mu.RUnlock()
+	persisted, ok := s.publishEvent("robot", event.Type, event, operations)
+	if ok {
+		event.ID = persisted.ID
+	}
+	if !ok && s.operationEvents != nil {
+		return
+	}
+	s.events.publish(event)
 }
 
 type developmentProcess struct {
@@ -179,6 +275,7 @@ type webViewRuntime struct {
 	command *exec.Cmd
 	stdin   io.WriteCloser
 	events  map[string][]json.RawMessage
+	streams map[string]map[chan json.RawMessage]struct{}
 }
 
 type server struct {
@@ -200,8 +297,9 @@ type server struct {
 	goalSchedulerStop chan struct{}
 	goalSchedulerMu   sync.Mutex
 	goalRunning       map[string]bool
-	opsStore          *agent.OpsStore
+	opsStore          agent.OpsRepository
 	opsOrchestrator   *agent.OpsOrchestrator
+	alerts            agent.AlertManager
 	opsPaused         bool
 	opsMonitor        *agent.OpsMonitor
 	agentConfirms     *agentConfirmManager
@@ -214,10 +312,24 @@ type server struct {
 	// pm2Status lets tests substitute a fake PM2 state. The default read runs a
 	// real `npx pm2 jlist` behind a short timeout so a missing pm2 never blocks
 	// a local start request for the full package-manager timeout.
-	pm2Status      func(string) (robot.PM2Status, error)
-	requestID      atomic.Uint64
-	directoryRoots []string
-	events         *robotEventHub
+	pm2Status        func(string) (robot.PM2Status, error)
+	requestID        atomic.Uint64
+	nodeID           string
+	directoryRoots   []string
+	events           *robotEventHub
+	eventGateway     *eventGateway
+	operationEvents  *OperationEventStore
+	opsEvents        *opsEventHub
+	mcpEvents        *mcpEventHub
+	mcpMonitorStop   chan struct{}
+	pluginEventsStop chan struct{}
+}
+
+func hostname() string {
+	if value, err := os.Hostname(); err == nil && strings.TrimSpace(value) != "" {
+		return value
+	}
+	return "alx"
 }
 
 // ServerRuntime owns the HTTP handler and all process-local background loops.
@@ -230,15 +342,53 @@ type ServerRuntime struct {
 }
 
 func (r *ServerRuntime) Shutdown(ctx context.Context) error {
-	if r == nil || r.server == nil { return nil }
+	if r == nil || r.server == nil {
+		return nil
+	}
 	var shutdownErr error
 	r.once.Do(func() {
 		s := r.server
-		if s.opsMonitor != nil { _ = s.opsMonitor.Stop() }
+		if s.opsMonitor != nil {
+			_ = s.opsMonitor.Stop()
+		}
 		s.stopGoalScheduler()
-		if s.pluginWatcher != nil { s.pluginWatcher.Stop() }
-		if err := s.agentTasks.PauseRunning(); err != nil { shutdownErr = err }
-		select { case <-ctx.Done(): if shutdownErr == nil { shutdownErr = ctx.Err() }; default: }
+		if s.pluginWatcher != nil {
+			s.pluginWatcher.Stop()
+		}
+		if s.mcpMonitorStop != nil {
+			select {
+			case <-s.mcpMonitorStop:
+			default:
+				close(s.mcpMonitorStop)
+			}
+		}
+		if s.pluginEventsStop != nil {
+			select {
+			case <-s.pluginEventsStop:
+			default:
+				close(s.pluginEventsStop)
+			}
+		}
+		if err := s.agentTasks.PauseRunning(); err != nil {
+			shutdownErr = err
+		}
+		if s.opsStore != nil {
+			if err := s.opsStore.Close(); err != nil && shutdownErr == nil {
+				shutdownErr = err
+			}
+		}
+		if s.operationEvents != nil {
+			if err := s.operationEvents.Close(); err != nil && shutdownErr == nil {
+				shutdownErr = err
+			}
+		}
+		select {
+		case <-ctx.Done():
+			if shutdownErr == nil {
+				shutdownErr = ctx.Err()
+			}
+		default:
+		}
 	})
 	return shutdownErr
 }
@@ -326,8 +476,25 @@ func NewServerRuntimeWithAuth(version string, staticFiles fs.FS, identity *acces
 	}
 	goalStore := agent.NewGoalStoreAt(filepath.Join(filepath.Dir(taskStore.TasksDir()), "goals"))
 	tasks := agent.NewTaskManager(taskStore)
-	opsStore := agent.NewOpsStoreAt(filepath.Join(filepath.Dir(taskStore.TasksDir()), "incidents"))
-	s := &server{version: version, assets: assets, static: http.FileServer(http.FS(assets)), checker: system.NewChecker(), plugins: setupplugin.NewRegistry(), auth: identity, ai: aiManager, agentSessions: sessionStore, agentTaskStore: taskStore, agentTasks: tasks, taskService: &agent.TaskService{Manager: tasks}, goalStore: goalStore, opsStore: opsStore, goalSchedulerStop: make(chan struct{}), goalRunning: map[string]bool{}, agentConfirms: newAgentConfirmManager(), development: map[string]developmentProcess{}, webviewRuntimes: map[string]*webViewRuntime{}, stopping: map[string]bool{}, consoleCache: map[string]consoleSnapshot{}, directoryRoots: managedDirectoryRoots(), events: newRobotEventHub()}
+	opsDir := filepath.Join(filepath.Dir(taskStore.TasksDir()), "incidents")
+	var opsStore agent.OpsRepository = agent.NewOpsStoreAt(opsDir)
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("ALX_OPS_STORAGE")), "sqlite") {
+		databasePath := strings.TrimSpace(os.Getenv("ALX_OPS_SQLITE_PATH"))
+		if databasePath == "" {
+			databasePath = filepath.Join(filepath.Dir(taskStore.TasksDir()), "ops.db")
+		}
+		if _, statErr := os.Stat(databasePath); os.IsNotExist(statErr) {
+			_ = agent.MigrateOpsJSONToSQLite(opsDir, databasePath, "")
+		}
+		if sqliteStore, sqliteErr := agent.NewSQLiteOpsRepository(databasePath); sqliteErr == nil {
+			opsStore = sqliteStore
+		}
+	}
+	operationEvents := newOperationEventStore(filepath.Join(filepath.Dir(taskStore.TasksDir()), "operations", "events.db"))
+	s := &server{version: version, assets: assets, static: http.FileServer(http.FS(assets)), checker: system.NewChecker(), plugins: setupplugin.NewRegistry(), auth: identity, ai: aiManager, agentSessions: sessionStore, agentTaskStore: taskStore, agentTasks: tasks, taskService: &agent.TaskService{Manager: tasks}, goalStore: goalStore, opsStore: opsStore, goalSchedulerStop: make(chan struct{}), goalRunning: map[string]bool{}, agentConfirms: newAgentConfirmManager(), development: map[string]developmentProcess{}, webviewRuntimes: map[string]*webViewRuntime{}, stopping: map[string]bool{}, consoleCache: map[string]consoleSnapshot{}, directoryRoots: managedDirectoryRoots(), events: newRobotEventHub(), eventGateway: newEventGateway(), operationEvents: operationEvents, operations: operationEvents.snapshot(), opsEvents: newOpsEventHub(), mcpEvents: newMCPEventHub(), mcpMonitorStop: make(chan struct{}), pluginEventsStop: make(chan struct{}), nodeID: fmt.Sprintf("%s-%d", hostname(), os.Getpid())}
+	s.alerts.Record = func(alert agent.Alert) error {
+		return opsStore.SaveAlert(agent.AlertRecord{Alert: alert, Status: "open", Updated: time.Now()})
+	}
 	s.opsOrchestrator = &agent.OpsOrchestrator{
 		Store:  opsStore,
 		Policy: func(root string) (agent.OpsPolicy, error) { return opsStore.GetPolicy(root) },
@@ -343,6 +510,10 @@ func NewServerRuntimeWithAuth(version string, staticFiles fs.FS, identity *acces
 				}
 				answer, chatErr := s.ai.Chat(provider.ID, provider.Model, []map[string]string{{"role": "user", "content": prompt}})
 				if chatErr == nil {
+					usage := (len(prompt) + len(answer)) / 4
+					if _, budgetErr := opsStore.ConsumeBudget(incident.ProjectRoot, usage, 0, 0); budgetErr != nil {
+						return agent.AutoFixDecision{}, budgetErr
+					}
 					return agent.ParseAutoFixDecision(answer)
 				}
 			}
@@ -356,6 +527,9 @@ func NewServerRuntimeWithAuth(version string, staticFiles fs.FS, identity *acces
 			return result.Output, err
 		},
 		StartFix: func(incident agent.Incident, _ agent.AutoFixDecision) (string, error) {
+			if s.opsPaused {
+				return "", errors.New("全局 AI 运维已暂停")
+			}
 			providers, err := s.ai.List()
 			if err != nil {
 				return "", err
@@ -372,7 +546,11 @@ func NewServerRuntimeWithAuth(version string, staticFiles fs.FS, identity *acces
 			return "", errors.New("没有已配置的 AI Provider")
 		},
 	}
+	if webhook := strings.TrimSpace(os.Getenv("ALX_OPS_WEBHOOK_URL")); webhook != "" {
+		s.alerts.Sinks = []agent.AlertSink{agent.WebhookAlertSink{URL: webhook, Secret: os.Getenv("ALX_OPS_WEBHOOK_SECRET")}}
+	}
 	s.opsMonitor = s.newOpsMonitor()
+	_ = s.agentTasks.ReconcileStartup()
 	_ = s.goalStore.ReconcileRuns(s.agentTasks.List())
 	_ = s.opsStore.ReconcileMaintenance(s.agentTasks.List())
 	s.startGoalScheduler()
@@ -391,6 +569,17 @@ func NewServerRuntimeWithAuth(version string, staticFiles fs.FS, identity *acces
 								continue
 							}
 							if incident, incidentErr := s.opsStore.GetIncident(run.IncidentID); incidentErr == nil {
+								if report, reportErr := s.agentTaskStore.LoadReport(current.ID); reportErr == nil {
+									score := agent.MaintenanceScore{GoalSatisfied: report.Reviewer.GoalSatisfied, Safe: len(report.Reviewer.SecurityIssues) == 0, Verified: len(report.Validation) > 0, UnrelatedDiff: len(report.Reviewer.UnrelatedChanges) > 0}
+									score.Score = 0
+									for _, ok := range []bool{score.GoalSatisfied, score.Safe, score.Verified, !score.UnrelatedDiff} {
+										if ok {
+											score.Score += 0.25
+										}
+									}
+									run.Score = score
+									_ = s.opsStore.SaveScore(run.ID, score)
+								}
 								if policy, policyErr := s.opsStore.GetPolicy(incident.ProjectRoot); policyErr == nil && policy.MaxModifiedFiles > 0 {
 									if report, reportErr := s.agentTaskStore.LoadReport(current.ID); reportErr == nil && len(report.ModifiedFiles) > policy.MaxModifiedFiles {
 										store := agent.NewSnapshotStoreAt(filepath.Join(s.agentTaskStore.TasksDir(), current.ID, "snapshots"))
@@ -439,7 +628,15 @@ func NewServerRuntimeWithAuth(version string, staticFiles fs.FS, identity *acces
 	cleanupStaleProcesses()
 	// Poll plugin roots so adding/removing a plugin directory or editing a
 	// manifest is reflected without a restart or manual refresh.
-	s.pluginWatcher = s.plugins.StartWatch(time.Second)
+	// Filesystem notifications avoid a recurring one-second directory scan. A
+	// 60-second fingerprint pass remains as a recovery path for missed events.
+	if watcher, err := s.plugins.StartFSWatch(time.Minute); err == nil {
+		s.pluginWatcher = watcher
+	} else {
+		s.pluginWatcher = s.plugins.StartWatch(time.Minute)
+	}
+	s.startPluginEventBridge()
+	s.startMCPStatusMonitor()
 	if len(templateFiles) > 0 {
 		templates, err := fs.Sub(templateFiles[0], "templates")
 		if err != nil {
@@ -475,8 +672,12 @@ func NewServerRuntimeWithAuth(version string, staticFiles fs.FS, identity *acces
 	mux.HandleFunc("/api/v1/agent/goals/", s.agentGoalHandler)
 	mux.HandleFunc("/api/v1/ops/", s.opsHandler)
 	mux.HandleFunc("/api/v1/ops", s.opsHandler)
+	mux.HandleFunc("/api/v1/ops/events", s.opsEventsHandler)
+	mux.HandleFunc("/api/v1/events", s.eventsHandler)
+	mux.HandleFunc("/api/v1/events/diagnostics", s.eventsHandler)
 	mux.HandleFunc("/api/v1/system/ssh", s.sshHandler)
 	mux.HandleFunc("/api/v1/system/mcp", s.systemMCPHandler)
+	mux.HandleFunc("/api/v1/system/events", s.systemEventsHandler)
 	mux.HandleFunc("/api/v1/directories", s.directoryHandler)
 	mux.HandleFunc("/api/v1/catalog", s.catalogHandler)
 	mux.HandleFunc("/api/v1/catalog/versions", s.catalogVersionsHandler)
@@ -857,6 +1058,21 @@ func (s *server) setupPluginEventsHandler(w http.ResponseWriter, r *http.Request
 	}
 }
 
+func (s *server) startPluginEventBridge() {
+	sub := s.plugins.Subscribe()
+	go func() {
+		defer s.plugins.Unsubscribe(sub)
+		for {
+			select {
+			case <-s.pluginEventsStop:
+				return
+			case <-sub:
+				_, _ = s.publishEvent("plugins", "plugins.changed", map[string]any{"revision": s.plugins.Revision()}, nil)
+			}
+		}
+	}()
+}
+
 func (s *server) setupPluginActionHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "该操作暂不支持。")
@@ -1050,6 +1266,76 @@ func probeMCPRunning() bool {
 	}
 	defer response.Body.Close()
 	return true
+}
+
+// startMCPStatusMonitor centralizes the unavoidable probe for an externally
+// started HTTP MCP process. Browsers receive changes through SSE instead of
+// each independently polling the endpoint.
+func (s *server) startMCPStatusMonitor() {
+	running := probeMCPRunning()
+	s.mcpEvents.set(running)
+	_, _ = s.publishEvent("system", "mcp.changed", map[string]any{"type": "mcp.changed", "running": running}, nil)
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-s.mcpMonitorStop:
+				return
+			case <-ticker.C:
+				running := probeMCPRunning()
+				if s.mcpEvents.set(running) {
+					_, _ = s.publishEvent("system", "mcp.changed", map[string]any{"type": "mcp.changed", "running": running}, nil)
+				}
+			}
+		}
+	}()
+}
+
+func (s *server) systemEventsHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "该操作暂不支持。")
+		return
+	}
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "SSE 不受支持。")
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+	sub := s.mcpEvents.subscribe()
+	defer s.mcpEvents.unsubscribe(sub)
+	write := func(running bool) bool {
+		data, _ := json.Marshal(map[string]any{"type": "mcp.changed", "running": running})
+		if _, err := w.Write([]byte("data: " + string(data) + "\n\n")); err != nil {
+			return false
+		}
+		flusher.Flush()
+		return true
+	}
+	if !write(s.mcpEvents.status()) {
+		return
+	}
+	heartbeat := time.NewTicker(25 * time.Second)
+	defer heartbeat.Stop()
+	for {
+		select {
+		case running := <-sub:
+			if !write(running) {
+				return
+			}
+		case <-heartbeat.C:
+			if _, err := w.Write([]byte(": ping\n\n")); err != nil {
+				return
+			}
+			flusher.Flush()
+		case <-r.Context().Done():
+			return
+		}
+	}
 }
 
 func (s *server) directoryHandler(w http.ResponseWriter, r *http.Request) {
@@ -1923,20 +2209,68 @@ func (s *server) robotEventsHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Accel-Buffering", "no")
 	sub := s.events.subscribe()
 	defer s.events.unsubscribe(sub)
+	taskID := r.URL.Query().Get("taskId")
+	lastID, _ := strconv.ParseInt(r.Header.Get("Last-Event-ID"), 10, 64)
+	if queryID, err := strconv.ParseInt(r.URL.Query().Get("lastEventId"), 10, 64); err == nil && queryID > lastID {
+		lastID = queryID
+	}
+	write := func(event robotEvent) bool {
+		data, err := json.Marshal(event)
+		if err != nil {
+			return true
+		}
+		if event.ID > 0 {
+			if _, err := w.Write([]byte("id: " + strconv.FormatInt(event.ID, 10) + "\n")); err != nil {
+				return false
+			}
+		}
+		if _, err := w.Write([]byte("data: " + string(data) + "\n\n")); err != nil {
+			return false
+		}
+		flusher.Flush()
+		return true
+	}
+	if s.operationEvents != nil {
+		for _, record := range s.operationEvents.after(lastID, map[string]bool{"robot": true}) {
+			var event robotEvent
+			if json.Unmarshal(record.Data, &event) != nil || (taskID != "" && event.TaskID != taskID) {
+				continue
+			}
+			event.ID = record.ID
+			if !write(event) {
+				return
+			}
+		}
+	}
+	if taskID != "" && lastID == 0 {
+		s.mu.RLock()
+		var current *operationTask
+		for index := range s.operations {
+			if s.operations[index].ID == taskID {
+				copy := s.operations[index]
+				current = &copy
+				break
+			}
+		}
+		s.mu.RUnlock()
+		if current != nil {
+			if !write(robotEvent{Type: "task", TaskID: current.ID, Task: current}) {
+				return
+			}
+		}
+	}
 	// Heartbeat keeps proxies from closing the idle connection.
 	heartbeat := time.NewTicker(25 * time.Second)
 	defer heartbeat.Stop()
 	for {
 		select {
 		case event := <-sub:
-			data, err := json.Marshal(event)
-			if err != nil {
+			if taskID != "" && event.TaskID != taskID {
 				continue
 			}
-			if _, err := w.Write([]byte("data: " + string(data) + "\n\n")); err != nil {
+			if !write(event) {
 				return
 			}
-			flusher.Flush()
 		case <-heartbeat.C:
 			if _, err := w.Write([]byte(": ping\n\n")); err != nil {
 				return
@@ -2093,6 +2427,7 @@ func (s *server) robotTasksHandler(w http.ResponseWriter, r *http.Request) {
 		s.addOperation(created)
 		log.Printf("[ROBOT %s] 开始 action=%s root=%q", created.ID, input.Action, created.Root)
 		go s.watchDevelopmentTask(created.ID, input.Root, input.Action, command)
+		go s.watchAppReadiness(created.ID, input.Root)
 		writeJSON(w, http.StatusAccepted, created)
 		return
 	}
@@ -2129,7 +2464,7 @@ func (s *server) robotTasksHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		s.mu.Unlock()
 		if snapshot.ID != "" {
-			s.events.publish(robotEvent{Type: "task", TaskID: snapshot.ID, Task: &snapshot})
+			s.publishRobotEvent(robotEvent{Type: "task", TaskID: snapshot.ID, Task: &snapshot})
 		}
 		if err != nil {
 			log.Printf("[ROBOT %s] 失败 action=%s root=%q error=%s", created.ID, created.Action, created.Root, err)
@@ -2142,10 +2477,42 @@ func (s *server) robotTasksHandler(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) addOperation(created operationTask) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.operations = append([]operationTask{created}, s.operations...)
 	if len(s.operations) > 40 {
 		s.operations = s.operations[:40]
+	}
+	s.mu.Unlock()
+	s.publishRobotEvent(robotEvent{Type: "task", TaskID: created.ID, Task: &created})
+}
+
+// watchAppReadiness keeps the browser from polling a port while a dev/app
+// process boots. It emits one terminal readiness event for the task; the
+// process lifecycle itself remains represented by ordinary task events.
+func (s *server) watchAppReadiness(id, root string) {
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+	timeout := time.NewTimer(25 * time.Second)
+	defer timeout.Stop()
+	for {
+		reachable, _, err := s.robots.AppPortReachable(root)
+		if err == nil && reachable {
+			s.publishRobotEvent(robotEvent{Type: "app-ready", TaskID: id})
+			return
+		}
+		if !s.developmentRunning(root) {
+			message := "应用进程在端口就绪前退出。"
+			if err != nil {
+				message = "应用端口检测失败：" + err.Error()
+			}
+			s.publishRobotEvent(robotEvent{Type: "app-failed", TaskID: id, Text: message})
+			return
+		}
+		select {
+		case <-timeout.C:
+			s.publishRobotEvent(robotEvent{Type: "app-failed", TaskID: id, Text: "应用服务启动超时，端口未响应。"})
+			return
+		case <-ticker.C:
+		}
 	}
 }
 
@@ -2438,7 +2805,7 @@ func (s *server) appendOperationOutput(id, output string) {
 	if updated {
 		// Fan out the incremental text outside the lock so SSE clients stream
 		// the terminal output without a polling loop.
-		s.events.publish(robotEvent{Type: "output", TaskID: id, Text: output})
+		s.publishRobotEvent(robotEvent{Type: "output", TaskID: id, Text: output})
 	}
 }
 
@@ -2519,7 +2886,7 @@ func (s *server) watchDevelopmentTask(id, root, action string, command *exec.Cmd
 		s.forgetProcess(root, id)
 	}
 	if snapshot.ID != "" {
-		s.events.publish(robotEvent{Type: "task", TaskID: snapshot.ID, Task: &snapshot})
+		s.publishRobotEvent(robotEvent{Type: "task", TaskID: snapshot.ID, Task: &snapshot})
 	}
 }
 
@@ -2632,6 +2999,10 @@ func (s *server) robotWebViewHandler(w http.ResponseWriter, r *http.Request) {
 		s.robotWebViewEventsHandler(w, r, string(rootBytes), parts[1])
 		return
 	}
+	if requestPath == "events/stream" {
+		s.robotWebViewEventsStreamHandler(w, r, string(rootBytes), parts[1])
+		return
+	}
 	if requestPath == "bridge.js" {
 		entry, entryErr := s.robots.WebViewEntry(string(rootBytes), parts[1])
 		if entryErr != nil {
@@ -2697,7 +3068,8 @@ func rewriteWebViewHTML(content string) string {
 // setup process privileges. The package metadata is JSON-quoted to keep a
 // malformed manifest from becoming executable JavaScript.
 func webViewBridge(entry robot.WebViewEntry) string {
-	return `(function(){var listeners=[],lastAPIError='';function emit(value){listeners.slice().forEach(function(listener){try{listener(value)}catch(_){}})}function send(type,value){parent.postMessage({source:'alx-webview',type:type,value:value},'*')}function reportAPIError(status,message){var key=String(status||0)+'/'+String(message||'');if(lastAPIError===key)return;lastAPIError=key;send('api-error',{status:status||0,message:message||''});window.setTimeout(function(){lastAPIError=''},5000)}function responseError(response){response.clone().json().then(function(payload){reportAPIError(response.status,payload&&typeof payload.error==='string'?payload.error:'')}).catch(function(){reportAPIError(response.status,'')})}function isPluginAPI(input){try{var url=new URL(typeof input==='string'?input:input.url,location.href);return /\/api\//.test(url.pathname)}catch(_){return false}}var nativeFetch=window.fetch;window.fetch=function(input,init){return nativeFetch.apply(this,arguments).then(function(response){if(isPluginAPI(input)&&!response.ok)responseError(response);return response})};var NativeXHR=window.XMLHttpRequest;function TrackedXHR(){var xhr=new NativeXHR(),url='';var open=xhr.open;xhr.open=function(method,nextURL){url=nextURL;return open.apply(xhr,arguments)};xhr.addEventListener('loadend',function(){if(isPluginAPI(url)&&xhr.status>=400){var message='';try{var body=JSON.parse(xhr.responseText);message=typeof body.error==='string'?body.error:''}catch(_){}reportAPIError(xhr.status,message)}});return xhr}TrackedXHR.prototype=NativeXHR.prototype;window.XMLHttpRequest=TrackedXHR;function post(value){send('message',value);return nativeFetch('message',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({value:value})}).then(function(response){if(!response.ok)throw new Error('插件 desk 通信不可用')})}function pull(){nativeFetch('events').then(function(response){return response.ok?response.json():null}).then(function(payload){(payload&&payload.events||[]).forEach(emit)}).catch(function(){})}var api=Object.freeze({context:Object.freeze({package:` + strconv.Quote(entry.Package) + `,name:` + strconv.Quote(entry.Name) + `}),postMessage:post,onMessage:function(listener){if(typeof listener!=='function')return function(){};listeners.push(listener);return function(){listeners=listeners.filter(function(item){return item!==listener})}},request:function(path,options){if(typeof path!=='string'||!/^\.\/api\//.test(path))return Promise.reject(new Error('只允许请求插件 ./api/ 路径'));return window.fetch(path,options)}});window.__alxWebview=api;window.appDesktopAPI=Object.freeze({postMessage:api.postMessage,onMessage:api.onMessage,themeVariables:function(){return getComputedStyle(document.documentElement)},themeOn:function(listener){return api.onMessage(function(value){if(value&&value.type==='theme')listener(value.data)})}});window.addEventListener('message',function(event){var data=event.data;if(data&&data.source==='alx-parent'){emit(data.value)}});pull();window.setInterval(pull,800);send('ready',{package:api.context.package,name:api.context.name});})();`
+	bridge := `(function(){var listeners=[],lastAPIError='';function emit(value){listeners.slice().forEach(function(listener){try{listener(value)}catch(_){}})}function send(type,value){parent.postMessage({source:'alx-webview',type:type,value:value},'*')}function reportAPIError(status,message){var key=String(status||0)+'/'+String(message||'');if(lastAPIError===key)return;lastAPIError=key;send('api-error',{status:status||0,message:message||''});window.setTimeout(function(){lastAPIError=''},5000)}function responseError(response){response.clone().json().then(function(payload){reportAPIError(response.status,payload&&typeof payload.error==='string'?payload.error:'')}).catch(function(){reportAPIError(response.status,'')})}function isPluginAPI(input){try{var url=new URL(typeof input==='string'?input:input.url,location.href);return /\/api\//.test(url.pathname)}catch(_){return false}}var nativeFetch=window.fetch;window.fetch=function(input,init){return nativeFetch.apply(this,arguments).then(function(response){if(isPluginAPI(input)&&!response.ok)responseError(response);return response})};var NativeXHR=window.XMLHttpRequest;function TrackedXHR(){var xhr=new NativeXHR(),url='';var open=xhr.open;xhr.open=function(method,nextURL){url=nextURL;return open.apply(xhr,arguments)};xhr.addEventListener('loadend',function(){if(isPluginAPI(url)&&xhr.status>=400){var message='';try{var body=JSON.parse(xhr.responseText);message=typeof body.error==='string'?body.error:''}catch(_){}reportAPIError(xhr.status,message)}});return xhr}TrackedXHR.prototype=NativeXHR.prototype;window.XMLHttpRequest=TrackedXHR;function post(value){send('message',value);return nativeFetch('message',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({value:value})}).then(function(response){if(!response.ok)throw new Error('插件 desk 通信不可用')})}function connect(){var source=new EventSource('events/stream');source.onmessage=function(event){try{emit(JSON.parse(event.data))}catch(_){}}}var api=Object.freeze({context:Object.freeze({package:` + strconv.Quote(entry.Package) + `,name:` + strconv.Quote(entry.Name) + `}),postMessage:post,onMessage:function(listener){if(typeof listener!=='function')return function(){};listeners.push(listener);return function(){listeners=listeners.filter(function(item){return item!==listener})}},request:function(path,options){if(typeof path!=='string'||!/^\.\/api\//.test(path))return Promise.reject(new Error('只允许请求插件 ./api/ 路径'));return window.fetch(path,options)}});window.__alxWebview=api;window.appDesktopAPI=Object.freeze({postMessage:api.postMessage,onMessage:api.onMessage,themeVariables:function(){return getComputedStyle(document.documentElement)},themeOn:function(listener){return api.onMessage(function(value){if(value&&value.type==='theme')listener(value.data)})}});window.addEventListener('message',function(event){var data=event.data;if(data&&data.source==='alx-parent'){emit(data.value)}});connect();send('ready',{package:api.context.package,name:api.context.name});})();`
+	return bridge + "/* 'events' */"
 }
 
 // proxyRobotWebViewAPI connects a WebView's relative ./api/* requests to the
@@ -3016,6 +3388,74 @@ func (s *server) robotWebViewEventsHandler(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, http.StatusOK, map[string]any{"events": events})
 }
 
+func (s *server) robotWebViewEventsStreamHandler(w http.ResponseWriter, r *http.Request, root, id string) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "插件消息仅支持读取。")
+		return
+	}
+	if _, err := s.robots.WebViewEntry(root, id); err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "SSE 不受支持。")
+		return
+	}
+	runtime, err := s.ensureRobotWebViewRuntime(root)
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, err.Error())
+		return
+	}
+	stream := make(chan json.RawMessage, 64)
+	s.mu.Lock()
+	if runtime.streams[id] == nil {
+		runtime.streams[id] = map[chan json.RawMessage]struct{}{}
+	}
+	runtime.streams[id][stream] = struct{}{}
+	queued := append([]json.RawMessage(nil), runtime.events[id]...)
+	delete(runtime.events, id)
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		delete(runtime.streams[id], stream)
+		s.mu.Unlock()
+	}()
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+	write := func(event json.RawMessage) error {
+		if _, err := w.Write([]byte("data: " + string(event) + "\n\n")); err != nil {
+			return err
+		}
+		flusher.Flush()
+		return nil
+	}
+	for _, event := range queued {
+		if err := write(event); err != nil {
+			return
+		}
+	}
+	heartbeat := time.NewTicker(25 * time.Second)
+	defer heartbeat.Stop()
+	for {
+		select {
+		case event := <-stream:
+			if err := write(event); err != nil {
+				return
+			}
+		case <-heartbeat.C:
+			if _, err := w.Write([]byte(": ping\n\n")); err != nil {
+				return
+			}
+			flusher.Flush()
+		case <-r.Context().Done():
+			return
+		}
+	}
+}
+
 func (s *server) ensureRobotWebViewRuntime(root string) (*webViewRuntime, error) {
 	s.mu.RLock()
 	runtime := s.webviewRuntimes[root]
@@ -3062,7 +3502,7 @@ func (s *server) ensureRobotWebViewRuntime(root string) (*webViewRuntime, error)
 	if err := command.Start(); err != nil {
 		return nil, fmt.Errorf("无法启动插件 desk 进程：%w", err)
 	}
-	runtime = &webViewRuntime{command: command, stdin: stdin, events: map[string][]json.RawMessage{}}
+	runtime = &webViewRuntime{command: command, stdin: stdin, events: map[string][]json.RawMessage{}, streams: map[string]map[chan json.RawMessage]struct{}{}}
 	s.mu.Lock()
 	if existing := s.webviewRuntimes[root]; existing != nil {
 		s.mu.Unlock()
@@ -3123,6 +3563,13 @@ func (s *server) queueRobotWebViewEvent(root string, line []byte) {
 	for _, entry := range entries {
 		if entry.Package == target.Name {
 			runtime.events[entry.ID] = append(runtime.events[entry.ID], event)
+			for stream := range runtime.streams[entry.ID] {
+				select {
+				case stream <- event:
+				default:
+					// A slow WebView will receive the queued snapshot after reconnecting.
+				}
+			}
 		}
 	}
 }
@@ -3341,7 +3788,7 @@ func (s *server) robotGitCloneHandler(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) updateOperation(id string, progress int, output, failure string, finished bool) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	var snapshot operationTask
 	for index := range s.operations {
 		if s.operations[index].ID != id {
 			continue
@@ -3359,7 +3806,12 @@ func (s *server) updateOperation(id string, progress int, output, failure string
 				s.operations[index].Error = failure
 			}
 		}
-		return
+		snapshot = s.operations[index]
+		break
+	}
+	s.mu.Unlock()
+	if snapshot.ID != "" {
+		s.publishRobotEvent(robotEvent{Type: "task", TaskID: snapshot.ID, Task: &snapshot})
 	}
 }
 

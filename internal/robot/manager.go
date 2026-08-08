@@ -2,6 +2,7 @@
 package robot
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -42,6 +43,45 @@ type PM2Status struct {
 	Managed    bool   `json:"managed"`
 	Running    bool   `json:"running"`
 	Status     string `json:"status,omitempty"`
+}
+
+// StreamPM2Logs follows PM2's raw log output until ctx is cancelled or the
+// child exits. Callers own retry/backoff policy; keeping it here makes the
+// process invocation testable and avoids a PM2 Node SDK dependency.
+func (Manager) StreamPM2Logs(ctx context.Context, root string, onLine func(string)) error {
+	path, err := projectPath(root)
+	if err != nil {
+		return err
+	}
+	command := exec.CommandContext(ctx, "npx", "--yes", "pm2", "logs", "--raw", "--lines", "0")
+	command.Dir = path
+	stdout, err := command.StdoutPipe()
+	if err != nil {
+		return err
+	}
+	stderr, err := command.StderrPipe()
+	if err != nil {
+		return err
+	}
+	if err := command.Start(); err != nil {
+		return err
+	}
+	done := make(chan struct{}, 2)
+	read := func(scanner *bufio.Scanner) {
+		defer func() { done <- struct{}{} }()
+		scanner.Buffer(make([]byte, 16*1024), 1024*1024)
+		for scanner.Scan() {
+			if onLine != nil {
+				onLine(scanner.Text())
+			}
+		}
+	}
+	go read(bufio.NewScanner(stdout))
+	go read(bufio.NewScanner(stderr))
+	err = command.Wait()
+	<-done
+	<-done
+	return err
 }
 
 // Validate confirms that a saved robot directory still exists and is an

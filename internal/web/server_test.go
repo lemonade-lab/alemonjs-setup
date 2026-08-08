@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"testing/fstest"
 	"time"
@@ -746,9 +747,16 @@ func TestRobotAppTokenRoundTrip(t *testing.T) {
 // listen).
 type flushWriter struct {
 	*httptest.ResponseRecorder
+	mu sync.Mutex
 }
 
-func (f flushWriter) Flush() {}
+func (f *flushWriter) Flush() {}
+func (f *flushWriter) Write(data []byte) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.ResponseRecorder.Write(data)
+}
+func (f *flushWriter) Snapshot() string { f.mu.Lock(); defer f.mu.Unlock(); return f.Body.String() }
 
 // TestSetupPluginEventsSSE verifies /setup/plugins/events emits a change event
 // when the plugin registry changes and stays quiet otherwise.
@@ -761,7 +769,7 @@ func TestSetupPluginEventsSSE(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	request := httptest.NewRequest(http.MethodGet, "/api/v1/setup/plugins/events", nil).WithContext(ctx)
-	recorder := flushWriter{httptest.NewRecorder()}
+	recorder := &flushWriter{ResponseRecorder: httptest.NewRecorder()}
 	done := make(chan struct{})
 	go func() {
 		s.setupPluginEventsHandler(recorder, request)
@@ -771,9 +779,9 @@ func TestSetupPluginEventsSSE(t *testing.T) {
 	// No initial event is emitted.
 	deadline := time.Now().Add(200 * time.Millisecond)
 	for time.Now().Before(deadline) {
-		if recorder.Body.Len() > 0 {
+		if len(recorder.Snapshot()) > 0 {
 			cancel()
-			t.Fatalf("unexpected early SSE data: %q", recorder.Body.String())
+			t.Fatalf("unexpected early SSE data: %q", recorder.Snapshot())
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -790,13 +798,13 @@ func TestSetupPluginEventsSSE(t *testing.T) {
 	registry.Rescan()
 
 	waitFor := time.Now().Add(time.Second)
-	for !strings.Contains(recorder.Body.String(), "data: {}") && time.Now().Before(waitFor) {
+	for !strings.Contains(recorder.Snapshot(), "data: {}") && time.Now().Before(waitFor) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	cancel()
 	<-done
-	if !strings.Contains(recorder.Body.String(), "data: {}") {
-		t.Fatalf("SSE stream did not emit a change event, body: %q", recorder.Body.String())
+	if !strings.Contains(recorder.Snapshot(), "data: {}") {
+		t.Fatalf("SSE stream did not emit a change event, body: %q", recorder.Snapshot())
 	}
 	if got := recorder.Header().Get("Content-Type"); got != "text/event-stream" {
 		t.Fatalf("Content-Type = %q, want text/event-stream", got)

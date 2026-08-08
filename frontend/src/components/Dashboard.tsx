@@ -80,6 +80,7 @@ import { NpmrcConfigForm } from './NpmrcConfigForm'
 import { EnvConfigForm } from './EnvConfigForm'
 import { BotWorkspace } from './BotWorkspace'
 import { OpsCenter } from './OpsCenter'
+import { OpsOverview } from './OpsOverview'
 import { NpmPublishPanel } from './NpmPublishPanel'
 import { PackageManifestPanel } from './PackageManifestPanel'
 import { SetupUpdateButton } from './SetupUpdateButton'
@@ -181,7 +182,7 @@ const coreFeatureCatalog: Array<{
   label: string
   icon: ReactNode
   status?: string
-}> = [{ id: 'plugins', label: '插件', icon: <Plug /> }, { id: 'ops', label: 'AI 运维', icon: <ShieldCheck /> }]
+}> = [{ id: 'ops-overview', label: '运维总览', icon: <ShieldCheck /> }, { id: 'plugins', label: '插件', icon: <Plug /> }]
 const directoryActions: Array<{
   id: Section | Page
   label: string
@@ -778,6 +779,7 @@ export function Dashboard({
   onCheck,
   onFix
 }: Props) {
+	const dispatch = useDispatch()
   const [page, setPage] = useStoreState<Page>('robot')
   const [sidebarCollapsed, setSidebarCollapsed] = useStoreState(false)
   const [robotNavigationHidden, setRobotNavigationHidden] = useStoreState(false)
@@ -862,7 +864,7 @@ export function Dashboard({
   const environmentChecked = useRef(false)
   const rootParamHandled = useRef(false)
   const eventsRef = useRef<EventSource | null>(null)
-  const dispatch = useDispatch()
+  const opsRefreshTimer = useRef<number | null>(null)
   const rawProjects = useSelector(
     (state: RootState) => state.workspace.projects
   )
@@ -975,6 +977,76 @@ export function Dashboard({
     setOutput(message)
     setOutputFailed(failed)
   }
+  const waitForRobotTask = (
+    taskID: string,
+    options: {
+      appReady?: boolean
+      onTask?: (task: {
+        status?: string
+        progress?: number
+        path?: string
+        output?: string
+        error?: string
+      }) => void
+    } = {}
+  ) =>
+    new Promise<{
+      status?: string
+      progress?: number
+      path?: string
+      output?: string
+      error?: string
+    }>((resolve, reject) => {
+      const timeout = window.setTimeout(
+        () => {
+          window.removeEventListener('alx:unified-event', onEvent)
+          reject(new Error('任务事件连接超时。'))
+        },
+        options.appReady ? 35_000 : 30 * 60 * 1000
+      )
+      const finish = (reason?: Error, task?: Parameters<NonNullable<typeof options.onTask>>[0]) => {
+        window.clearTimeout(timeout)
+        window.removeEventListener('alx:unified-event', onEvent)
+        if (reason) reject(reason)
+        else resolve(task ?? {})
+      }
+      const onEvent = (event: Event) => {
+        try {
+          const envelope = (event as CustomEvent<{ topic?: string; data?: unknown }>).detail
+          if (envelope?.topic !== 'robot') return
+          const payload = envelope.data as {
+            type?: string
+            taskId?: string
+            text?: string
+            task?: Parameters<NonNullable<typeof options.onTask>>[0]
+          }
+          if (payload.taskId !== taskID) return
+          if (payload.type === 'app-ready' && options.appReady) {
+            finish()
+            return
+          }
+          if (payload.type === 'app-failed' && options.appReady) {
+            finish(new Error(payload.text || '应用服务未能启动。'))
+            return
+          }
+          if (payload.type !== 'task' || !payload.task) return
+          options.onTask?.(payload.task)
+          if (payload.task.status === 'running') return
+          if (payload.task.status === 'failed') {
+            finish(new Error(payload.task.error || '操作未完成。'))
+            return
+          }
+          if (options.appReady) {
+            finish(new Error('应用进程在端口就绪前结束。'))
+            return
+          }
+          finish(undefined, payload.task)
+        } catch {
+          // Ignore malformed frames and rely on EventSource reconnection.
+        }
+      }
+      window.addEventListener('alx:unified-event', onEvent)
+    })
   const persistFile = async (
     targetRoot: string,
     targetFile: string,
@@ -1039,7 +1111,7 @@ export function Dashboard({
     try {
       const info = await loadAppPort(root, true).unwrap()
       if (info.configured) {
-        await launchApp(info.port)
+        await launchApp()
       } else {
         setAppPortValue(String(info.port))
         setAppPortDialog(true)
@@ -1064,7 +1136,7 @@ export function Dashboard({
       setAppPortDialog(false)
       // Launch happens after the dialog closes; reflect it on the toolbar icon.
       setAppLaunching(true)
-      await launchApp(port)
+      await launchApp()
     } catch (reason) {
       showOutput(operationErrorMessage(reason, '应用端口保存失败。'), true)
     } finally {
@@ -1072,50 +1144,32 @@ export function Dashboard({
       setAppLaunching(false)
     }
   }
-  const launchApp = async (port: number) => {
+  const launchApp = async () => {
     if (!root) return
     try {
       // If the app is already serving, render it in-page instead of starting
       // another dev/app process (which would conflict with the running one).
-      if (await probeAppPort()) {
+      if (await checkAppReachable()) {
         setAppContentOpen(true)
         return
       }
-      await api('POST', { root, action: 'dev' })
-      // The app listens on 127.0.0.1:port after the dev process boots. Poll the
-      // backend probe until the service responds; if it never comes up, tell
-      // the user instead of showing a blank page.
-      const reachable = await probeAppPort()
-      if (!reachable) {
-        showOutput(
-          `应用服务尚未启动（端口 ${port} 无响应）。请确认开发模式运行正常后再打开。`,
-          true
-        )
-        return
-      }
+      const task = await startRobotTask({ root, action: 'dev' }).unwrap()
+      await waitForRobotTask(task.id, { appReady: true })
       setAppContentOpen(true)
     } catch (reason) {
       showOutput(operationErrorMessage(reason, '应用启动失败。'), true)
     }
   }
-  const probeAppPort = async () => {
-    for (let attempt = 0; attempt < 20; attempt++) {
-      try {
-        const response = await fetch(
-          `/api/v1/robot/app-port?${new URLSearchParams({ root, probe: '1' })}`
-        )
-        const data = (await response.json()) as {
-          reachable?: boolean
-          port?: number
-        }
-        if (response.ok && data.reachable) return true
-        if (!response.ok) return false
-      } catch {
-        return false
-      }
-      await new Promise(resolve => window.setTimeout(resolve, 1000))
+  const checkAppReachable = async () => {
+    try {
+      const response = await fetch(
+        `/api/v1/robot/app-port?${new URLSearchParams({ root, probe: '1' })}`
+      )
+      const data = (await response.json()) as { reachable?: boolean }
+      return response.ok && data.reachable === true
+    } catch {
+      return false
     }
-    return false
   }
   const refreshConfigDraft = async () => {
     if (!root) return
@@ -1134,36 +1188,95 @@ export function Dashboard({
   useEffect(() => {
     if (defaultPage === 'robot') setPage('robot')
   }, [defaultPage, setPage])
-  // Subscribe to robot events over SSE. Task events invalidate the operations
-  // cache so the runtime card and operation log update the moment a task ends,
-  // instead of polling; output events are forwarded for the terminal to append.
+  // One durable event gateway owns the Dashboard's robot, ops, system and
+  // plugin notifications. Its cursor is carried in the reconnect URL so a
+  // temporary network loss replays persisted events before live delivery.
   useEffect(() => {
-    if (eventsRef.current) return
-    const source = new EventSource('/api/v1/robot/events')
-    eventsRef.current = source
-    source.onmessage = event => {
-      try {
-        const payload = JSON.parse(event.data) as {
-          type?: string
-          taskId?: string
-          text?: string
-        }
-        if (payload.type === 'task') {
-          dispatch(workspaceApi.util.invalidateTags(['OperationTasks']))
-        } else if (payload.type === 'output' && payload.taskId) {
-          window.dispatchEvent(
-            new CustomEvent('alx:robot-output', {
-              detail: { taskId: payload.taskId, text: payload.text ?? '' }
-            })
-          )
-        }
-      } catch {
-        // Ignore malformed frames.
+    let source: EventSource | null = null
+    let retry: number | null = null
+    let heartbeat: number | null = null
+    let lastEventID = 0
+    const tabID = crypto.randomUUID()
+    const channel = typeof BroadcastChannel === 'undefined' ? null : new BroadcastChannel('alx-events')
+    const leaseKey = 'alx-events-leader'
+    let leader = false
+    const dispatchEnvelope = (envelope: {
+      id?: number
+      topic?: string
+      type?: string
+      data?: { taskId?: string; text?: string; running?: boolean; task?: unknown }
+    }) => {
+      if (typeof envelope.id === 'number') lastEventID = Math.max(lastEventID, envelope.id)
+      const payload = envelope.data ?? {}
+      window.dispatchEvent(new CustomEvent('alx:unified-event', { detail: envelope }))
+      if (envelope.topic === 'robot') {
+        if (envelope.type === 'task') dispatch(workspaceApi.util.invalidateTags(['OperationTasks']))
+        else if (envelope.type === 'output' && payload.taskId) window.dispatchEvent(new CustomEvent('alx:robot-output', { detail: { taskId: payload.taskId, text: payload.text ?? '' } }))
+      } else if (envelope.topic === 'ops') {
+        if (opsRefreshTimer.current === null) opsRefreshTimer.current = window.setTimeout(() => { opsRefreshTimer.current = null; window.dispatchEvent(new CustomEvent('alx:ops-changed')) }, 100)
+      } else if (envelope.topic === 'plugins') dispatch(workspaceApi.util.invalidateTags(['SetupPlugins']))
+      if (envelope.type === 'system.cursor-expired') {
+        dispatch(workspaceApi.util.invalidateTags(['OperationTasks', 'SetupPlugins']))
+        window.dispatchEvent(new CustomEvent('alx:ops-changed'))
       }
     }
+    const ownsLease = () => {
+      if (!channel) return true
+      try {
+        const current = JSON.parse(localStorage.getItem(leaseKey) || '{}') as { id?: string; expires?: number }
+        const now = Date.now()
+        if (current.id && current.id !== tabID && (current.expires ?? 0) > now) return false
+        localStorage.setItem(leaseKey, JSON.stringify({ id: tabID, expires: now + 3500 }))
+        return true
+      } catch { return true }
+    }
+    const connect = () => {
+      if (!leader) return
+      source = new EventSource(`/api/v1/events?${new URLSearchParams({ topics: 'robot,ops,system,plugins', lastEventId: String(lastEventID) })}`)
+      eventsRef.current = source
+      source.onmessage = event => {
+      try {
+        const envelope = JSON.parse(event.data) as {
+          id?: number
+          topic?: string
+          type?: string
+          data?: {
+            taskId?: string
+            text?: string
+            running?: boolean
+            task?: unknown
+          }
+        }
+        dispatchEnvelope(envelope)
+        channel?.postMessage({ type: 'event', envelope })
+      } catch {
+        // Ignore malformed frames; reconnect remains cursor-based.
+      }
+    }
+      source.onerror = () => {
+        source?.close()
+        if (retry === null) retry = window.setTimeout(() => { retry = null; connect() }, 1000)
+      }
+    }
+    channel?.addEventListener('message', event => {
+      const message = event.data as { type?: string; envelope?: Parameters<typeof dispatchEnvelope>[0] }
+      if (message.type === 'event' && message.envelope) dispatchEnvelope(message.envelope)
+    })
+    const elect = () => {
+      const nextLeader = ownsLease()
+      if (nextLeader && !leader) { leader = true; connect() }
+      if (!nextLeader && leader) { leader = false; source?.close(); source = null }
+    }
+    elect()
+    heartbeat = window.setInterval(elect, 1000)
     return () => {
-      source.close()
+      source?.close()
       eventsRef.current = null
+      if (retry !== null) window.clearTimeout(retry)
+      if (heartbeat !== null) window.clearInterval(heartbeat)
+      if (leader) localStorage.removeItem(leaseKey)
+      channel?.close()
+      if (opsRefreshTimer.current !== null) { window.clearTimeout(opsRefreshTimer.current); opsRefreshTimer.current = null }
     }
   }, [dispatch])
 
@@ -1205,23 +1318,6 @@ export function Dashboard({
   useEffect(() => {
     if (root) void validateRobot(root)
   }, [root, validateRobot])
-  // Plugin list changes stream over SSE; refetch on each "changed" event so the
-  // sidebar keeps its plugin entries fresh without polling the whole list.
-  useEffect(() => {
-    const source = new EventSource('/api/v1/setup/plugins/events')
-    const onChange = () => {
-      dispatch(workspaceApi.util.invalidateTags(['SetupPlugins']))
-    }
-    source.addEventListener('message', onChange)
-    source.addEventListener('error', () => {
-      // EventSource reconnects automatically; a transient error is fine. Only
-      // refetch on a genuine change event, not on connection loss.
-    })
-    return () => {
-      source.removeEventListener('message', onChange)
-      source.close()
-    }
-  }, [dispatch])
   useEffect(() => {
     if (!root || section !== 'config' || hasRobotConfig) return
     void readRobotFile({ root, file: 'alemon.config.yaml' }, true)
@@ -1289,48 +1385,33 @@ export function Dashboard({
         return true
       }
       showOutput('操作已开始，正在等待完成…')
-      for (;;) {
-        await new Promise(resolve => window.setTimeout(resolve, 700))
-        const response = await fetch(
-          `/api/v1/robot/tasks?${new URLSearchParams({ id: task.id })}`
-        )
-        const current = (await response.json()) as {
-          status: string
-          output?: string
-          error?: string
-        }
-        if (current.status === 'running') continue
+      const current = await waitForRobotTask(task.id)
+      dispatch(workspaceApi.util.invalidateTags([{ type: 'Runtime', id: root }]))
+      if (
+        [
+          'install-package',
+          'uninstall-package',
+          'remove-local-package',
+          'replace-local-package',
+          'switch-local-package-version'
+        ].includes(data.action)
+      ) {
+        // The task mutation invalidates when it starts, which is still too
+        // early for a download. Invalidate once it has actually finished so
+        // the backpack updates without a page reload.
         dispatch(
-          workspaceApi.util.invalidateTags([{ type: 'Runtime', id: root }])
+          workspaceApi.util.invalidateTags([
+            { type: 'LocalPackages', id: root },
+            // Installing/uninstalling a connection package changes whether
+            // its alemon.config.yaml section can be parsed, so drop any
+            // cached PackageConfig for this root.
+            { type: 'PackageConfig', id: root },
+            { type: 'PackageConfig', id: `${root}:${data.package ?? ''}` }
+          ])
         )
-        if (current.status === 'failed')
-          throw new Error(current.error ?? '操作未完成。')
-        if (
-          [
-            'install-package',
-            'uninstall-package',
-            'remove-local-package',
-            'replace-local-package',
-            'switch-local-package-version'
-          ].includes(data.action)
-        ) {
-          // The task mutation invalidates when it starts, which is still too
-          // early for a download. Invalidate once it has actually finished so
-          // the backpack updates without a page reload.
-          dispatch(
-            workspaceApi.util.invalidateTags([
-              { type: 'LocalPackages', id: root },
-              // Installing/uninstalling a connection package changes whether
-              // its alemon.config.yaml section can be parsed, so drop any
-              // cached PackageConfig for this root.
-              { type: 'PackageConfig', id: root },
-              { type: 'PackageConfig', id: `${root}:${data.package ?? ''}` }
-            ])
-          )
-        }
-        showOutput(current.output ?? '操作完成。')
-        return true
       }
+      showOutput(current.output ?? '操作完成。')
+      return true
     } catch (reason) {
       showOutput(
         operationErrorMessage(
@@ -1478,31 +1559,20 @@ export function Dashboard({
       }
       if (!response.ok || !data.id)
         throw new Error(data.error || '克隆仓库失败。')
+      const cloneTaskID = data.id
       setCloneStatus(data.output || '正在连接远程仓库…')
-      for (;;) {
-        await new Promise(resolve => window.setTimeout(resolve, 550))
-        const taskResponse = await fetch(
-          `/api/v1/robot/tasks?${new URLSearchParams({ id: data.id })}`
-        )
-        const task = (await taskResponse.json()) as {
-          status?: string
-          progress?: number
-          path?: string
-          output?: string
-          error?: string
+      const task = await waitForRobotTask(cloneTaskID, {
+        onTask: current => {
+          setCloneProgress(current.progress ?? 10)
+          setCloneStatus(current.output || '正在克隆仓库…')
         }
-        setCloneProgress(task.progress ?? 10)
-        setCloneStatus(task.output || '正在克隆仓库…')
-        if (task.status === 'running') continue
-        if (task.status === 'failed')
-          throw new Error(task.error || '克隆仓库失败。')
-        const targetPath = task.path
-        if (!targetPath) throw new Error('克隆完成，但无法识别机器人目录。')
-        showOutput(task.output || '仓库已克隆。')
-        setGitCloneOpen(false)
-        await addSelectedDirectories([targetPath])
-        return
-      }
+      })
+      const targetPath = task.path
+      if (!targetPath) throw new Error('克隆完成，但无法识别机器人目录。')
+      showOutput(task.output || '仓库已克隆。')
+      setGitCloneOpen(false)
+      await addSelectedDirectories([targetPath])
+      return
     } catch (reason) {
       showOutput(
         operationErrorMessage(reason, '克隆仓库失败，请检查 Git 地址和网络。'),
@@ -1834,14 +1904,16 @@ export function Dashboard({
     activeProject && projectValidation && !projectValidation.valid
   )
   const workspace =
-    systemFeature === 'plugins' ? (
+    systemFeature === 'ops-overview' ? (
+      <OpsOverview projects={projects} onOpenProject={id => { dispatch(selectProject(id)); setSystemFeature(null); setPage('robot'); setSection('runtime') }} />
+    ) : systemFeature === 'plugins' ? (
       <SystemPluginCenter
         plugins={setupPlugins}
         onOpen={id => selectSystemFeature(`setup:${id}`)}
         onRefresh={() => void refetchSetupPlugins()}
       />
     ) : systemFeature === 'ops' ? (
-      <OpsCenter root={root} />
+      <OpsCenter root={root} onBack={() => setSystemFeature(null)} />
     ) : systemFeature === 'tasks' ? (
       <OperationTasksPage root={root} />
     ) : systemFeature === 'environment' ? (
@@ -2222,6 +2294,7 @@ export function Dashboard({
                   agentOpen={aiOpen}
                   onOpenConsole={() => setConsoleOpen(true)}
                   onOpenAI={openAI}
+                  onOpenOps={() => selectSystemFeature('ops')}
                   appLaunching={appLaunching}
                   onOpenApp={() => void openApp()}
                   onPage={selectPage}
@@ -3352,12 +3425,7 @@ function McpControl() {
   const [open, setOpen] = useStoreState(false)
   const [transport, setTransport] = useStoreState<'stdio' | 'http'>('stdio')
   const [copied, setCopied] = useStoreState(false)
-  const { data: mcpStatus, refetch: refetchMCP } = useSystemMcpQuery(
-    undefined,
-    {
-      pollingInterval: 10000
-    }
-  )
+  const { data: mcpStatus, refetch: refetchMCP } = useSystemMcpQuery()
   const mcpRunning = mcpStatus?.running ?? false
   const stdioConfig =
     '{\n  "mcpServers": {\n    "alemonx": {\n      "command": "alx",\n      "args": ["mcp"]\n    }\n  }\n}'
@@ -3373,6 +3441,20 @@ function McpControl() {
     }
   }
   const http = transport === 'http'
+  useEffect(() => {
+    const onSystemEvent = (event: Event) => {
+      try {
+        const envelope = (event as CustomEvent<{ topic?: string; data?: unknown }>).detail
+        if (envelope?.topic !== 'system') return
+        const payload = envelope.data as { type?: string; running?: boolean }
+        if (payload.type === 'mcp.changed' && typeof payload.running === 'boolean') void refetchMCP()
+      } catch {
+        // A malformed application event does not affect the last known state.
+      }
+    }
+    window.addEventListener('alx:unified-event', onSystemEvent)
+    return () => window.removeEventListener('alx:unified-event', onSystemEvent)
+  }, [refetchMCP])
   useEffect(() => {
     const closeWhenAnotherToolOpens = (event: Event) => {
       if ((event as CustomEvent<string>).detail !== 'mcp') setOpen(false)
@@ -5993,6 +6075,7 @@ function ControlCard({
   appLaunching,
   onOpenConsole,
   onOpenAI,
+  onOpenOps,
   onOpenApp,
   onPage,
   onSection,
@@ -6011,6 +6094,7 @@ function ControlCard({
   appLaunching: boolean
   onOpenConsole: () => void
   onOpenAI: () => void
+  onOpenOps: () => void
   onOpenApp: () => void
   onPage: (page: Page) => void
   onSection: (section: Section) => void
@@ -6060,8 +6144,10 @@ function ControlCard({
             { id: 'git', label: 'GIT 发布' },
             { id: 'npm', label: 'NPM 发布' }
           ]
-        : activePrimary === 'backpack' || activePrimary === 'runtime'
+      : activePrimary === 'backpack'
           ? []
+          : activePrimary === 'runtime'
+            ? [{ id: 'ops', label: '运维' }]
           : catalog.map(item => ({ id: item.title, label: item.title }))
   const activeSecondary =
     activePrimary === 'config'
@@ -6084,6 +6170,10 @@ function ControlCard({
     }
     if (activePrimary === 'build') {
       onBuildMode(id as 'manifest' | 'npm' | 'git')
+      return
+    }
+    if (activePrimary === 'runtime' && id === 'ops') {
+      onOpenOps()
       return
     }
     onCatalog(id)

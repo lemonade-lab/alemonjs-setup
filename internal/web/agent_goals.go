@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -170,6 +171,15 @@ func (s *server) agentGoalHandler(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) startGoalScheduler() {
 	go func() {
+		var renewLease func() error
+		if s.opsStore != nil {
+			manager := agent.NewLeaseManager(s.opsStore)
+			if err := manager.Acquire(context.Background(), "goal-scheduler", s.nodeID, 45*time.Second); err != nil {
+				return
+			}
+			defer func() { _ = manager.Release(context.Background(), "goal-scheduler", s.nodeID) }()
+			renewLease = func() error { return manager.Renew(context.Background(), "goal-scheduler", s.nodeID, 45*time.Second) }
+		}
 		ticker := time.NewTicker(time.Minute)
 		defer ticker.Stop()
 		for {
@@ -177,6 +187,11 @@ func (s *server) startGoalScheduler() {
 			case <-s.goalSchedulerStop:
 				return
 			case <-ticker.C:
+				if renewLease != nil {
+					if err := renewLease(); err != nil {
+						return
+					}
+				}
 			}
 			goals, _ := s.goalStore.List()
 			for _, goal := range goals {

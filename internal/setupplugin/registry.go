@@ -22,6 +22,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/fsnotify/fsnotify"
 )
 
 const manifestName = "alx.json"
@@ -788,14 +790,14 @@ func supportsCurrentPlatform(platforms []string) bool {
 	return false
 }
 
-// Watcher polls the plugin roots and rescans when a manifest or the plugin
-// directory listing changes, giving hot-plug without a filesystem event
-// library. The poll is cheap: it only stats alx.json files and lists each
-// root's immediate children.
+// Watcher keeps the plugin cache current. StartWatch retains the old polling
+// entry point; StartFSWatch adds filesystem notifications with a low-frequency
+// fingerprint check as a safety net for dropped filesystem events.
 type Watcher struct {
 	registry *Registry
 	stop     chan struct{}
 	done     chan struct{}
+	fs       *fsnotify.Watcher
 }
 
 // StartWatch begins polling at interval. Call Stop to end it. Interval 0
@@ -809,6 +811,24 @@ func (r *Registry) StartWatch(interval time.Duration) *Watcher {
 	}
 	go watcher.loop(interval)
 	return watcher
+}
+
+// StartFSWatch uses filesystem events for immediate plugin refreshes. The
+// fallback fingerprint scan should be deliberately infrequent (60 seconds in
+// production) and only covers platforms/filesystems that miss notifications.
+func (r *Registry) StartFSWatch(fallback time.Duration) (*Watcher, error) {
+	r.ensureLoaded()
+	fsWatcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		return nil, err
+	}
+	w := &Watcher{registry: r, stop: make(chan struct{}), done: make(chan struct{}), fs: fsWatcher}
+	if err := w.refreshWatches(); err != nil {
+		_ = fsWatcher.Close()
+		return nil, err
+	}
+	go w.fsLoop(fallback)
+	return w, nil
 }
 
 func (w *Watcher) loop(interval time.Duration) {
@@ -825,6 +845,84 @@ func (w *Watcher) loop(interval time.Duration) {
 			}
 		}
 	}
+}
+
+func (w *Watcher) fsLoop(fallback time.Duration) {
+	defer close(w.done)
+	defer w.fs.Close()
+	var fallbackTick <-chan time.Time
+	var ticker *time.Ticker
+	if fallback > 0 {
+		ticker = time.NewTicker(fallback)
+		defer ticker.Stop()
+		fallbackTick = ticker.C
+	}
+	var debounce *time.Timer
+	var debounceC <-chan time.Time
+	queueRescan := func() {
+		if debounce == nil {
+			debounce = time.NewTimer(150 * time.Millisecond)
+			debounceC = debounce.C
+			return
+		}
+		if !debounce.Stop() {
+			select {
+			case <-debounce.C:
+			default:
+			}
+		}
+		debounce.Reset(150 * time.Millisecond)
+	}
+	for {
+		select {
+		case <-w.stop:
+			if debounce != nil {
+				debounce.Stop()
+			}
+			return
+		case event, ok := <-w.fs.Events:
+			if !ok {
+				return
+			}
+			// Roots and immediate children are watched. A directory rename/create
+			// changes that watch set; a regular file change only needs a rescan.
+			if event.Op&(fsnotify.Create|fsnotify.Remove|fsnotify.Rename) != 0 {
+				_ = w.refreshWatches()
+			}
+			queueRescan()
+		case <-w.fs.Errors:
+			// The fallback scan repairs any missed event; keep the watcher alive.
+		case <-debounceC:
+			debounceC = nil
+			w.registry.Rescan()
+		case <-fallbackTick:
+			if w.registry.fingerprintChanged() {
+				w.registry.Rescan()
+			}
+		}
+	}
+}
+
+func (w *Watcher) refreshWatches() error {
+	for _, root := range w.registry.roots {
+		if err := os.MkdirAll(root, 0755); err != nil {
+			return err
+		}
+		if err := w.fs.Add(root); err != nil && !errors.Is(err, fsnotify.ErrEventOverflow) {
+			return err
+		}
+		entries, err := os.ReadDir(root)
+		if err != nil {
+			return err
+		}
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+			_ = w.fs.Add(filepath.Join(root, entry.Name()))
+		}
+	}
+	return nil
 }
 
 // Stop ends the polling goroutine and waits for it to exit.
