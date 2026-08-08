@@ -298,18 +298,21 @@ func TestLoopEmitsEventsInOrder(t *testing.T) {
 	for _, e := range events {
 		kinds = append(kinds, e.Type)
 	}
-	want := []string{"tool", "result", "done"}
+	want := []string{"turn", "tool", "result", "turn", "done"}
 	if strings.Join(kinds, ",") != strings.Join(want, ",") {
 		t.Fatalf("事件序列错误：%v，应为 %v", kinds, want)
 	}
-	if events[0].Tool != "read_project_file" {
-		t.Errorf("tool 事件应带工具名：%+v", events[0])
+	if events[1].Tool != "read_project_file" {
+		t.Errorf("tool 事件应带工具名：%+v", events[1])
 	}
-	if events[1].Output != "内容" {
-		t.Errorf("result 事件应带输出：%+v", events[1])
+	if events[1].CallID != "c" || events[2].CallID != "c" {
+		t.Errorf("tool/result 事件应共享 call ID：%+v", events)
 	}
-	if events[2].Text != "最终答案" {
-		t.Errorf("done 事件应带最终答案：%+v", events[2])
+	if events[2].Output != "内容" {
+		t.Errorf("result 事件应带输出：%+v", events[2])
+	}
+	if events[4].Text != "最终答案" {
+		t.Errorf("done 事件应带最终答案：%+v", events[4])
 	}
 }
 
@@ -506,7 +509,7 @@ func TestPruneOrphanTools(t *testing.T) {
 		{Role: "assistant", ToolCalls: []ToolCall{{ID: "t1", Name: "read_project_file", Arguments: nil}}},
 		{Role: "tool", ToolCallID: "t1", Content: "结果"},
 	}
-	pruned := pruneOrphanTools(messages)
+	pruned := PruneOrphanTools(messages)
 	if len(pruned) != 3 {
 		t.Fatalf("应删除孤立 tool，保留 3 条，实际 %d：%+v", len(pruned), pruned)
 	}
@@ -601,5 +604,110 @@ func TestLoopMessagesIncludeFinalAnswer(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("transcript 应包含最终 assistant 回答：%+v", rolesOf(result.Messages))
+	}
+}
+
+// TestPruneOrphanToolsRemovesUnansweredCalls ensures an assistant message
+// carrying tool_calls without matching tool responses is pruned — the exact
+// case DeepSeek rejects with "tool_calls must be followed by tool messages".
+func TestPruneOrphanToolsRemovesUnansweredCalls(t *testing.T) {
+	messages := []Message{
+		{Role: "user", Content: "问题"},
+		{Role: "assistant", Content: "调用工具", ToolCalls: []ToolCall{{ID: "t1", Name: "read_project_file", Arguments: nil}}},
+		// t1 没有对应的 tool 响应 —— 孤立
+		{Role: "assistant", Content: "最终回答"},
+	}
+	pruned := PruneOrphanTools(messages)
+	for _, message := range pruned {
+		if len(message.ToolCalls) > 0 {
+			t.Fatalf("不应保留无响应的 tool_calls：%+v", message)
+		}
+	}
+	if len(pruned) != 2 {
+		t.Errorf("应保留 user 和最终回答：%+v", rolesOf(pruned))
+	}
+}
+
+// TestReasoningContentRoundTrip verifies DeepSeek's reasoning_content is parsed
+// from the response and carried through to the next request.
+func TestReasoningContentRoundTrip(t *testing.T) {
+	// 第一轮：模型返回 reasoning_content + tool_calls
+	// 第二轮：验证请求里带回了 reasoning_content
+	calls := 0
+	withTransport(t, func(req *http.Request) (*http.Response, error) {
+		calls++
+		if calls == 1 {
+			return jsonResponse(t, req, `{"choices":[{"message":{"role":"assistant","content":"","reasoning_content":"思考中…","tool_calls":[{"id":"c1","type":"function","function":{"name":"read_project_file","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`)
+		}
+		var payload struct {
+			Messages []map[string]any `json:"messages"`
+		}
+		_ = json.NewDecoder(req.Body).Decode(&payload)
+		// 检查 assistant tool_calls 消息是否带回 reasoning_content
+		for _, m := range payload.Messages {
+			if m["role"] == "assistant" && m["tool_calls"] != nil {
+				if got, ok := m["reasoning_content"].(string); !ok || got != "思考中…" {
+					t.Fatalf("assistant 消息应带回 reasoning_content，实际 %v", m["reasoning_content"])
+				}
+			}
+		}
+		return jsonResponse(t, req, `{"choices":[{"message":{"role":"assistant","content":"完成"},"finish_reason":"stop"}]}`)
+	})
+	registry := NewRegistry()
+	registry.Add(Tool{Name: "read_project_file", Description: "读", Parameters: map[string]any{"type": "object"}}, func(ctx context.Context, args json.RawMessage) (string, error) {
+		return "内容", nil
+	})
+	cfg := ai.Resolved{BaseURL: "https://provider.test", Model: "m", APIKey: "k"}
+	loop := NewLoop(cfg, registry, "", 10)
+	if _, err := loop.Run(context.Background(), messageFixture()); err != nil {
+		t.Fatal(err)
+	}
+	if calls < 2 {
+		t.Fatalf("应有两轮请求，实际 %d", calls)
+	}
+}
+
+// TestCompressThenPruneRemovesUnansweredCalls ensures that after context
+// compression cuts the transcript, an assistant message with unanswered
+// tool_calls is pruned before the next request.
+func TestCompressThenPruneRemovesUnansweredCalls(t *testing.T) {
+	// 构造超预算的对话，其中一轮 assistant tool_calls 的 tool 响应被压缩掉。
+	bigOutput := strings.Repeat("y", 60000)
+	messages := []Message{
+		{Role: "user", Content: "q"},
+		{Role: "assistant", ToolCalls: []ToolCall{{ID: "t1", Name: "read", Arguments: nil}}},
+		{Role: "tool", ToolCallID: "t1", Content: bigOutput},                                 // 大响应触发压缩
+		{Role: "assistant", ToolCalls: []ToolCall{{ID: "t2", Name: "read", Arguments: nil}}}, // t2 无响应
+		{Role: "user", Content: "继续"},
+	}
+	compressed := compressIfOverBudget(messages, 1000)
+	pruned := PruneOrphanTools(compressed)
+	for _, message := range pruned {
+		if len(message.ToolCalls) > 0 {
+			t.Fatalf("压缩后不应保留无响应的 tool_calls：%+v", message)
+		}
+	}
+}
+
+// TestCompressPreservesReasoningContent ensures assistant messages carrying
+// DeepSeek reasoning_content are never folded away by context compression.
+func TestCompressPreservesReasoningContent(t *testing.T) {
+	// 大 tool 输出触发压缩，但带 reasoning_content 的 assistant 必须保留。
+	messages := []Message{
+		{Role: "user", Content: "q"},
+		{Role: "assistant", Content: "思考中", ReasoningContent: "推理过程", ToolCalls: []ToolCall{{ID: "t1", Name: "read", Arguments: nil}}},
+		{Role: "tool", ToolCallID: "t1", Content: strings.Repeat("x", 80000)},
+		{Role: "user", Content: "继续"},
+	}
+	compressed := compressIfOverBudget(messages, 2000)
+	found := false
+	for _, message := range compressed {
+		if message.ReasoningContent == "推理过程" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("压缩不应丢失 reasoning_content")
 	}
 }

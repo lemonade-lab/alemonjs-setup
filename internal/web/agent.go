@@ -36,16 +36,19 @@ func (s *server) agentChatHandler(w http.ResponseWriter, r *http.Request) {
 		Access    string              `json:"access"`
 		Messages  []map[string]string `json:"messages"`
 	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&input); err != nil {
+		writeError(w, http.StatusBadRequest, "请求无法识别。")
+		return
+	}
+	// Decode before reading Access. The previous order inspected the zero value
+	// of input.Access, so every request silently became "full" and the UI's
+	// per-step confirmation mode could never take effect.
 	access := input.Access
 	if access == "" {
 		access = "full"
 	}
 	if access != "ask" && access != "auto" && access != "full" {
 		writeError(w, http.StatusBadRequest, "权限模式无效（应为 ask/auto/full）。")
-		return
-	}
-	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&input); err != nil {
-		writeError(w, http.StatusBadRequest, "请求无法识别。")
 		return
 	}
 	if len(input.Messages) == 0 {
@@ -80,17 +83,18 @@ func (s *server) agentChatHandler(w http.ResponseWriter, r *http.Request) {
 			sessionID = session.ID
 		}
 	}
-	if sessionID != "" {
-		if len(input.Messages) > 0 {
-			_ = s.agentSessions.Append(sessionID, agent.Message{Role: "user", Content: input.Messages[len(input.Messages)-1]["content"]})
-		}
-	}
+	// 用户消息不在此处持久化：把它推迟到 loop 成功后与 assistant 回复一起
+	// 写入，避免 loop 失败时留下"只有提问没有回答"的残缺记录。
 
 	messages := make([]agent.Message, 0, len(input.Messages))
 	for _, raw := range input.Messages {
 		messages = append(messages, agent.Message{Role: raw["role"], Content: raw["content"]})
 	}
-	files := robotFileService{manager: robot.Manager{}}
+	// 防御：即使前端历史里混入了带 tool_calls 但没有对应 tool 响应的
+	// assistant 消息（如会话恢复不完整），也在此清除，避免 DeepSeek 报
+	// "tool_calls must be followed by tool messages"。
+	messages = agent.PruneOrphanTools(messages)
+	files := &robotFileService{manager: robot.Manager{}}
 	registry := agent.ProjectTools(input.Root, files, agent.NewCommandRunner())
 	systemPrompt := agent.BuildSystemPrompt(input.Root, files, agentBasePrompt())
 	loop := agent.NewLoop(cfg, registry, systemPrompt, 40)
@@ -100,8 +104,31 @@ func (s *server) agentChatHandler(w http.ResponseWriter, r *http.Request) {
 	var emit func(agent.Event)
 	if stream {
 		emit = agentObserver(w, sessionID, r.Context())
-		loop.WithObserver(emit)
 	}
+	// Persist progress independently of SSE so a closed browser still leaves a
+	// useful execution status and last completed turn in the session index.
+	lastTurn := 0
+	loop.WithObserver(func(event agent.Event) {
+		if event.Turn > 0 {
+			lastTurn = event.Turn
+		}
+		if sessionID != "" {
+			status := "running"
+			if event.Type == "done" {
+				status = "completed"
+			} else if event.Type == "error" {
+				status = "failed"
+			}
+			lastError := ""
+			if event.Type == "error" {
+				lastError = event.Text
+			}
+			_, _ = s.agentSessions.UpdateProgress(sessionID, status, lastTurn, lastError)
+		}
+		if emit != nil {
+			emit(event)
+		}
+	})
 
 	// Permission model:
 	//   ask  — each write tool waits for explicit user approval (streaming only).
@@ -138,14 +165,15 @@ func (s *server) agentChatHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// 只有运行成功时 result 非 nil；出错时 result 为 nil，不能遍历。
-	// The user message was already persisted above; skipping it here avoids
-	// duplicating the first turn in the transcript.
+	// 成功后持久化本轮新增的对话：先写用户提问，再写本轮最终 assistant
+	// 回答。工具调用过程不持久化——前端恢复只需要对话轮次，且下轮对话时
+	// 前端会带上完整上下文，避免每轮重复写入全部历史。
 	if sessionID != "" && result != nil {
-		for _, message := range result.Messages {
-			if message.Role == "system" || message.Role == "user" {
-				continue
-			}
-			_ = s.agentSessions.Append(sessionID, message)
+		if len(input.Messages) > 0 {
+			_ = s.agentSessions.Append(sessionID, agent.Message{Role: "user", Content: input.Messages[len(input.Messages)-1]["content"]})
+		}
+		if strings.TrimSpace(result.Answer) != "" {
+			_ = s.agentSessions.Append(sessionID, agent.Message{Role: "assistant", Content: result.Answer})
 		}
 	}
 	if stream {
@@ -215,30 +243,94 @@ func agentObserver(w http.ResponseWriter, sessionID string, ctx context.Context)
 // robotFileService adapts the robot manager's path-safe project file access to
 // the agent's FileService interface.
 type robotFileService struct {
-	manager robot.Manager
+	manager   robot.Manager
+	snapshot  *agent.SnapshotStore
+	taskID    string
+	snapshots []agent.FileSnapshot
+	lockOwner string
+	unlock    func()
 }
 
-func (f robotFileService) ReadFile(root, path string) (string, error) {
+func (f *robotFileService) ReadFile(root, path string) (string, error) {
 	result, err := f.manager.ReadProjectFile(root, path)
 	return result.Output, err
 }
 
-func (f robotFileService) WriteFile(root, path, content string) error {
+func (f *robotFileService) beforeWrite(root, path string) error {
+	if f.unlock == nil {
+		unlock, err := agent.AcquireProjectWriteLock(root, f.lockOwner)
+		if err != nil {
+			return err
+		}
+		f.unlock = unlock
+	}
+	if f.snapshot == nil {
+		return nil
+	}
+	for _, item := range f.snapshots {
+		if item.Path == path {
+			return nil
+		}
+	}
+	snap, err := f.snapshot.Capture(f.taskID, root, path)
+	if err != nil {
+		return err
+	}
+	f.snapshots = append(f.snapshots, snap)
+	return f.snapshot.Save(f.taskID, f.snapshots)
+}
+
+func (f *robotFileService) afterWrite(root, path string) error {
+	if f.snapshot == nil {
+		return nil
+	}
+	result, err := f.manager.ReadProjectFile(root, path)
+	if err != nil {
+		return nil
+	} // deleted files intentionally have no after hash
+	for i := range f.snapshots {
+		if f.snapshots[i].Path == path {
+			f.snapshots[i].AfterHash = agent.HashBytes([]byte(result.Output))
+			break
+		}
+	}
+	return f.snapshot.Save(f.taskID, f.snapshots)
+}
+
+func (f *robotFileService) WriteFile(root, path, content string) error {
+	if err := f.beforeWrite(root, path); err != nil {
+		return err
+	}
 	_, err := f.manager.WriteProjectFile(root, path, content)
+	if err == nil {
+		err = f.afterWrite(root, path)
+	}
 	return err
 }
 
-func (f robotFileService) CreateFile(root, path, content string) error {
+func (f *robotFileService) CreateFile(root, path, content string) error {
+	if err := f.beforeWrite(root, path); err != nil {
+		return err
+	}
 	_, err := f.manager.CreateProjectFile(root, path, content)
+	if err == nil {
+		err = f.afterWrite(root, path)
+	}
 	return err
 }
 
-func (f robotFileService) DeleteFile(root, path string) error {
+func (f *robotFileService) DeleteFile(root, path string) error {
+	if err := f.beforeWrite(root, path); err != nil {
+		return err
+	}
 	_, err := f.manager.DeleteProjectFile(root, path)
+	if err == nil {
+		_ = f.snapshot.Save(f.taskID, f.snapshots)
+	}
 	return err
 }
 
-func (f robotFileService) ListFiles(root string) ([]string, error) {
+func (f *robotFileService) ListFiles(root string) ([]string, error) {
 	return f.manager.ListProjectFiles(root)
 }
 
@@ -273,6 +365,8 @@ func agentBasePrompt() string {
 		"- 少即是多：一次只读取完成任务所需的最小文件集；能用搜索定位就别读整个文件。\n" +
 		"- 并行工具调用：需要读取多个相关文件时，在同一轮里同时调用 read_project_file，不要一次读一个。\n" +
 		"- 修改前先读准目标；一次只改一个文件的一段代码，保持项目现有风格。\n" +
+		"- 先使用 agent_repo_map 了解项目结构；定位实现时优先使用 agent_find_symbol 和 agent_find_references，再使用全文搜索。\n" +
+		"- 按当前任务计划执行；每完成一个步骤都说明结果，验证失败只能修复当前步骤。\n" +
 		"- 每次修改后用 agent_run_command 跑验证；失败必须修复，通过即停止，不要重复验证。"
 }
 

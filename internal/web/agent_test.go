@@ -47,6 +47,33 @@ func TestAgentChatRejectsEmptyMessages(t *testing.T) {
 	}
 }
 
+// TestAgentChatValidatesDecodedAccess ensures the permission mode is read
+// after JSON decoding. This guards the ask/auto/full confirmation contract.
+func TestAgentChatRejectsInvalidAccess(t *testing.T) {
+	body := `{"access":"unsafe","root":"/definitely/not/a/robot","messages":[{"role":"user","content":"你好"}]}`
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/agent/chat", strings.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	newTestServer().ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("状态码 = %d，应为 400", response.Code)
+	}
+	if !strings.Contains(response.Body.String(), "权限模式无效") {
+		t.Fatalf("应返回权限模式错误，实际响应：%s", response.Body.String())
+	}
+}
+
+func TestAgentTasksRejectInvalidRoot(t *testing.T) {
+	body := `{"provider":"deepseek","root":"/definitely/not/a/robot","messages":[{"role":"user","content":"你好"}]}`
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/agent/tasks", strings.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	newTestServer().ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "机器人目录") {
+		t.Fatalf("任务接口应拒绝无效目录：%d %s", response.Code, response.Body.String())
+	}
+}
+
 // TestAgentSessionsInvalidRoot verifies session creation rejects an invalid
 // project root with a clean JSON error.
 func TestAgentSessionsInvalidRoot(t *testing.T) {

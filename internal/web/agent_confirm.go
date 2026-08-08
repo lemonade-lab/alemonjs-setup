@@ -101,7 +101,7 @@ func askApprover(confirms *agentConfirmManager, emit func(agent.Event), confirmI
 		defer cleanup()
 		if emit != nil {
 			diff := editDiff(call.Arguments)
-			emit(agent.Event{Type: "confirm", Tool: id, Text: call.Name, Output: string(call.Arguments), Diff: diff})
+			emit(agent.Event{Type: "confirm", Tool: id, CallID: call.ID, Text: call.Name, Output: string(call.Arguments), Diff: diff})
 		}
 		select {
 		case decision := <-ch:

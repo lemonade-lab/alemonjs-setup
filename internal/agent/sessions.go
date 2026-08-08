@@ -14,13 +14,16 @@ import (
 
 // Session identifies one persisted agent conversation.
 type Session struct {
-	ID       string    `json:"id"`
-	Title    string    `json:"title"`
-	Root     string    `json:"root"`
-	Provider string    `json:"provider"`
-	Model    string    `json:"model"`
-	Archived bool      `json:"archived"`
-	Updated  time.Time `json:"updated"`
+	ID        string    `json:"id"`
+	Title     string    `json:"title"`
+	Root      string    `json:"root"`
+	Provider  string    `json:"provider"`
+	Model     string    `json:"model"`
+	Archived  bool      `json:"archived"`
+	Status    string    `json:"status,omitempty"`
+	Turn      int       `json:"turn,omitempty"`
+	LastError string    `json:"lastError,omitempty"`
+	Updated   time.Time `json:"updated"`
 }
 
 // sessionIndex lists all persisted sessions, newest first.
@@ -126,6 +129,7 @@ func (s *SessionStore) Create(root, provider, model, title string) (Session, err
 		Provider: provider,
 		Model:    model,
 		Updated:  now,
+		Status:   "idle",
 	}
 	session.Title = cleanTitle(title, deriveTitle(root))
 	index, err := s.loadIndex()
@@ -140,6 +144,32 @@ func (s *SessionStore) Create(root, provider, model, title string) (Session, err
 		return Session{}, err
 	}
 	return session, nil
+}
+
+// UpdateProgress records the durable execution state of one Agent run. It is
+// intentionally separate from transcript writes so a disconnected SSE
+// client does not erase the last known task position.
+func (s *SessionStore) UpdateProgress(id, status string, turn int, lastError string) (Session, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	index, err := s.loadIndex()
+	if err != nil {
+		return Session{}, err
+	}
+	for i := range index.Sessions {
+		if index.Sessions[i].ID != id {
+			continue
+		}
+		index.Sessions[i].Status = status
+		index.Sessions[i].Turn = turn
+		index.Sessions[i].LastError = lastError
+		index.Sessions[i].Updated = time.Now()
+		if err := s.saveIndex(index); err != nil {
+			return Session{}, err
+		}
+		return index.Sessions[i], nil
+	}
+	return Session{}, errors.New("会话不存在")
 }
 
 // Rename updates a session's title. It returns an error for unknown ids or

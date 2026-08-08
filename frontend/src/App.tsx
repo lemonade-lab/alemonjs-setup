@@ -562,17 +562,14 @@ function FlowView({
       case 7:
         return (
           <>
-            <h1>选择开发能力包</h1>
-            <p>
-              只安装你现在需要的能力；以后也能在机器人目录的“连接、插件”中单独安装。
-            </p>
+            <h1>选择扩展包</h1>
             <div className="grid gap-2.5 my-5">
               {[
-                ['bubble', '气泡服务', '@alemonjs/bubble'],
                 ['database', '数据存储', '@alemonjs/db'],
-                ['discord', 'Discord 连接', '@alemonjs/discord'],
+                ['qqbot', 'QQ Bot 连接', '@alemonjs/qq-bot'],
                 ['onebot', 'OneBot 连接', '@alemonjs/onebot'],
-                ['qqbot', 'QQ Bot 连接', '@alemonjs/qq-bot']
+                ['bubble', 'bubble服务', '@alemonjs/bubble'],
+                ['discord', 'Discord 连接', '@alemonjs/discord'],
               ].map(([value, label, note]) => (
                 <button
                   className={

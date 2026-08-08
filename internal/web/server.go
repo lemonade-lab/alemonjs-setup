@@ -192,6 +192,8 @@ type server struct {
 	auth            *access.Manager
 	ai              *ai.Manager
 	agentSessions   *agent.SessionStore
+	agentTasks      *agent.TaskManager
+	agentTaskStore  *agent.TaskStore
 	agentConfirms   *agentConfirmManager
 	mu              sync.RWMutex
 	operations      []operationTask
@@ -277,7 +279,11 @@ func NewServerWithAuth(version string, staticFiles fs.FS, identity *access.Manag
 	if err != nil {
 		panic(err)
 	}
-	s := &server{version: version, assets: assets, static: http.FileServer(http.FS(assets)), checker: system.NewChecker(), plugins: setupplugin.NewRegistry(), auth: identity, ai: aiManager, agentSessions: sessionStore, agentConfirms: newAgentConfirmManager(), development: map[string]developmentProcess{}, webviewRuntimes: map[string]*webViewRuntime{}, stopping: map[string]bool{}, consoleCache: map[string]consoleSnapshot{}, directoryRoots: managedDirectoryRoots(), events: newRobotEventHub()}
+	taskStore, err := agent.NewTaskStore()
+	if err != nil {
+		panic(err)
+	}
+	s := &server{version: version, assets: assets, static: http.FileServer(http.FS(assets)), checker: system.NewChecker(), plugins: setupplugin.NewRegistry(), auth: identity, ai: aiManager, agentSessions: sessionStore, agentTaskStore: taskStore, agentTasks: agent.NewTaskManager(taskStore), agentConfirms: newAgentConfirmManager(), development: map[string]developmentProcess{}, webviewRuntimes: map[string]*webViewRuntime{}, stopping: map[string]bool{}, consoleCache: map[string]consoleSnapshot{}, directoryRoots: managedDirectoryRoots(), events: newRobotEventHub()}
 	// Kill any previously supervised robot process that survived a restart so a
 	// stray node cannot keep the app port occupied.
 	cleanupStaleProcesses()
@@ -312,6 +318,8 @@ func NewServerWithAuth(version string, staticFiles fs.FS, identity *access.Manag
 	mux.HandleFunc("/api/v1/agent/sessions", s.agentSessionsHandler)
 	mux.HandleFunc("/api/v1/agent/sessions/", s.agentSessionHandler)
 	mux.HandleFunc("/api/v1/agent/approve", s.agentConfirmHandler)
+	mux.HandleFunc("/api/v1/agent/tasks", s.agentTasksHandler)
+	mux.HandleFunc("/api/v1/agent/tasks/", s.agentTaskHandler)
 	mux.HandleFunc("/api/v1/system/ssh", s.sshHandler)
 	mux.HandleFunc("/api/v1/system/mcp", s.systemMCPHandler)
 	mux.HandleFunc("/api/v1/directories", s.directoryHandler)

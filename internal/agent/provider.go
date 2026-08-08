@@ -36,18 +36,22 @@ type ToolCall struct {
 // Message is one unified turn in a conversation. Role is one of system, user,
 // assistant or tool. An assistant message carries ToolCalls when the model
 // asked to invoke tools; a tool message reports the result of one ToolCallID.
+// ReasoningContent preserves DeepSeek's thinking-mode output, which must be
+// passed back to the API on the next request.
 type Message struct {
-	Role       string     `json:"role"`
-	Content    string     `json:"content,omitempty"`
-	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string     `json:"tool_call_id,omitempty"`
+	Role             string     `json:"role"`
+	Content          string     `json:"content,omitempty"`
+	ToolCalls        []ToolCall `json:"tool_calls,omitempty"`
+	ToolCallID       string     `json:"tool_call_id,omitempty"`
+	ReasoningContent string     `json:"reasoning_content,omitempty"`
 }
 
 // RoundTripResult is the model's response to one request.
 type RoundTripResult struct {
-	Content    string
-	ToolCalls  []ToolCall
-	StopReason string
+	Content          string
+	ToolCalls        []ToolCall
+	StopReason       string
+	ReasoningContent string
 }
 
 // RoundTrip sends one request with tools to the resolved provider and parses
@@ -82,6 +86,11 @@ func openAIRoundTrip(ctx context.Context, cfg ai.Resolved, messages []Message, t
 			} else {
 				item["content"] = message.Content
 			}
+			// DeepSeek thinking mode: the reasoning_content from a prior turn
+			// must be passed back to the API on the next request.
+			if message.ReasoningContent != "" {
+				item["reasoning_content"] = message.ReasoningContent
+			}
 		}
 		wire = append(wire, item)
 	}
@@ -109,8 +118,9 @@ func openAIRoundTrip(ctx context.Context, cfg ai.Resolved, messages []Message, t
 	var data struct {
 		Choices []struct {
 			Message struct {
-				Content   *string `json:"content"`
-				ToolCalls []struct {
+				Content          *string `json:"content"`
+				ReasoningContent string `json:"reasoning_content"`
+				ToolCalls        []struct {
 					ID       string `json:"id"`
 					Function struct {
 						Name      string `json:"name"`
@@ -130,11 +140,15 @@ func openAIRoundTrip(ctx context.Context, cfg ai.Resolved, messages []Message, t
 	if len(data.Choices) == 0 {
 		return RoundTripResult{}, errors.New(data.Error.Message)
 	}
-	result := RoundTripResult{StopReason: data.Choices[0].FinishReason}
-	if content := data.Choices[0].Message.Content; content != nil {
+	message := data.Choices[0].Message
+	result := RoundTripResult{
+		StopReason:       data.Choices[0].FinishReason,
+		ReasoningContent: message.ReasoningContent,
+	}
+	if content := message.Content; content != nil {
 		result.Content = *content
 	}
-	for _, call := range data.Choices[0].Message.ToolCalls {
+	for _, call := range message.ToolCalls {
 		result.ToolCalls = append(result.ToolCalls, ToolCall{
 			ID:        call.ID,
 			Name:      call.Function.Name,

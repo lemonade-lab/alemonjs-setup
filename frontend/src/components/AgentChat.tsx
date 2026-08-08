@@ -1,18 +1,24 @@
 import { useStoreState } from '../store/guideStore'
+import { FilePicker } from './FilePicker'
 import {
   ArrowUp,
   Check,
   ChevronDown,
   CircleX,
-  Clock3,
+  ExternalLink,
   FileSearch,
   FileText,
+  Folder,
+  ListTodo,
   Loader2,
+  Minimize2,
+  Target,
   Pencil,
   Plus,
   Settings2,
   ShieldCheck,
   ShieldQuestion,
+  Slash,
   Sparkles,
   Square,
   Terminal,
@@ -20,8 +26,9 @@ import {
   Unlock,
   X
 } from 'lucide-react'
-import { useCallback, useEffect, useRef } from 'react'
+import { useCallback, useEffect, useMemo, useRef } from 'react'
 import { AgentMarkdown } from './AgentMarkdown'
+import { Modal } from './Modal'
 import cn from 'classnames'
 
 type Provider = {
@@ -34,6 +41,7 @@ type Provider = {
 type ChatMessage = { role: 'user' | 'assistant'; content: string }
 type Activity = {
   id: number
+  callId: string
   tool: string
   args: string
   status: 'running' | 'done' | 'error'
@@ -45,7 +53,18 @@ type SessionMeta = {
   root: string
   provider: string
   model: string
+  status?: 'idle' | 'running' | 'completed' | 'failed'
+  turn?: number
+  lastError?: string
   updated: string
+}
+type TaskMeta = {
+  id: string
+  sessionId: string
+  status: string
+  turn: number
+  lastError?: string
+  plan?: { goal: string; completion: string; currentStep: number; steps: Array<{ id: string; title: string; status: string }> }
 }
 
 const TOOL_LABEL: Record<string, string> = {
@@ -72,6 +91,21 @@ const PROMPT_EXAMPLES: Array<[string, string]> = [
   ['找功能实现位置', '搜索某个功能的实现位置并解释。'],
   ['修复最近的报错', '查看最近改动，修复导致的报错。']
 ]
+
+const PROVIDER_KEY_LINKS: Record<string, { href: string; label: string }> = {
+  openai: {
+    href: 'https://platform.openai.com/api-keys',
+    label: '获取 OpenAI API Key'
+  },
+  deepseek: {
+    href: 'https://platform.deepseek.com/api_keys',
+    label: '获取 DeepSeek API Key'
+  },
+  claude: {
+    href: 'https://platform.claude.com/settings/keys',
+    label: '获取 Claude API Key'
+  }
+}
 
 // formatToolArgs renders a tool's JSON arguments as a short friendly line, so
 // the timeline shows "读取 src/index.ts" instead of raw `{"path":"..."}`.
@@ -220,8 +254,8 @@ export function AgentChatPage({
   const [baseURL, setBaseURL] = useStoreState('')
   const [apiKey, setAPIKey] = useStoreState('')
   const streamRef = useRef<AbortController | null>(null)
+  const taskIdRef = useRef('')
   const activityId = useRef(0)
-  const lastToolId = useRef(-1)
   const promptRef = useRef<HTMLTextAreaElement | null>(null)
   const threadRef = useRef<HTMLElement | null>(null)
   const [access, setAccess] = useStoreState<'ask' | 'auto' | 'full'>('ask')
@@ -238,6 +272,7 @@ export function AgentChatPage({
     } | null
   } | null>(null)
   const [sessions, setSessions] = useStoreState<SessionMeta[]>([])
+  const [tasks, setTasks] = useStoreState<TaskMeta[]>([])
   const [sessionId, setSessionId] = useStoreState('')
   const [sessionOpen, setSessionOpen] = useStoreState(false)
   const [models, setModels] = useStoreState<string[]>([])
@@ -245,6 +280,16 @@ export function AgentChatPage({
   const [moreOpen, setMoreOpen] = useStoreState(false)
   const [accessOpen, setAccessOpen] = useStoreState(false)
   const [editingIndex, setEditingIndex] = useStoreState(-1)
+  // 斜杠命令：slashOpen 控制 / 菜单，slashDialog 是当前命令弹窗。
+  const [slashOpen, setSlashOpen] = useStoreState(false)
+  const [slashDialog, setSlashDialog] = useStoreState<
+    '' | 'compress' | 'goal' | 'plan'
+  >('')
+  const [goalText, setGoalText] = useStoreState('')
+  const [planText, setPlanText] = useStoreState('')
+  const [filePickerOpen, setFilePickerOpen] = useStoreState(false)
+  const [filePath, setFilePath] = useStoreState('')
+  const [slashIndex, setSlashIndex] = useStoreState(-1)
 
   const current = providers.find(item => item.ID === provider)
 
@@ -303,6 +348,20 @@ export function AgentChatPage({
   useEffect(() => {
     void loadSessions()
   }, [loadSessions])
+
+  const loadTasks = useCallback(async () => {
+    try {
+      const response = await fetch('/api/v1/agent/tasks')
+      if (response.ok) setTasks((await response.json()) as TaskMeta[])
+    } catch {
+      // Task status is auxiliary to the conversation view.
+    }
+  }, [])
+  useEffect(() => {
+    void loadTasks()
+    const timer = window.setInterval(() => void loadTasks(), 2000)
+    return () => window.clearInterval(timer)
+  }, [loadTasks])
 
   // When opened from the directory session tree, load that conversation.
   // Track the last loaded id so a repeated id is not re-fetched, while a new id
@@ -385,11 +444,24 @@ export function AgentChatPage({
     }
   }
 
+  const resumeTask = async (id: string) => {
+    const response = await fetch(`/api/v1/agent/tasks/${encodeURIComponent(id)}/resume`, { method: 'POST' })
+    if (!response.ok) setNotice('任务无法恢复。')
+    await loadTasks()
+  }
+
+  const rollbackTask = async (id: string) => {
+    const response = await fetch(`/api/v1/agent/tasks/${encodeURIComponent(id)}/rollback`, { method: 'POST' })
+    if (!response.ok) setNotice('回滚失败：可能有文件被外部修改。')
+    await loadTasks()
+  }
+
   const handleEvent = useCallback(
     (event: {
       type: string
       text?: string
       tool?: string
+      callId?: string
       output?: string
       diff?: {
         path: string
@@ -400,11 +472,11 @@ export function AgentChatPage({
     }) => {
       switch (event.type) {
         case 'tool':
-          lastToolId.current = activityId.current
           setActivity(value => [
             ...value,
             {
               id: activityId.current++,
+              callId: event.callId || `event-${activityId.current}`,
               tool: event.tool || '',
               args: event.text || '',
               status: 'running'
@@ -414,7 +486,7 @@ export function AgentChatPage({
         case 'result':
           setActivity(value =>
             value.map(item =>
-              item.id === lastToolId.current && item.status === 'running'
+              item.callId === event.callId && item.status === 'running'
                 ? {
                     ...item,
                     status: event.output?.startsWith('错误') ? 'error' : 'done',
@@ -469,6 +541,10 @@ export function AgentChatPage({
       return
     }
     // Editing replaces the last user message and drops its prior assistant
+    // 斜杠命令优先：若输入是 /压缩 /目标 /计划，执行命令而非发送给 Agent。
+    if (handleSlashExecution(prompt.trim())) {
+      return
+    }
     // reply, so the corrected prompt is re-sent in full.
     let next: ChatMessage[]
     if (editingIndex >= 0 && editingIndex < messages.length) {
@@ -492,17 +568,17 @@ export function AgentChatPage({
     // SSE 流式请求绕过 Vite 代理直连后端：开发模式下 Vite 的 http-proxy
     // 会破坏 chunked 的 text/event-stream（"Invalid character in chunk
     // size"）。后端对 5173 来源加了 dev CORS。生产环境前端与后端同源。
-    const streamURL = import.meta.env.DEV
-      ? 'http://localhost:17390/api/v1/agent/chat?stream=1'
-      : '/api/v1/agent/chat?stream=1'
+    const taskURL = import.meta.env.DEV
+      ? 'http://localhost:17390/api/v1/agent/tasks'
+      : '/api/v1/agent/tasks'
     try {
       console.log(
-        '[agent] streamURL =',
-        streamURL,
+        '[agent] taskURL =',
+        taskURL,
         'DEV =',
         import.meta.env.DEV
       )
-      const response = await fetch(streamURL, {
+      const createResponse = await fetch(taskURL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -515,12 +591,18 @@ export function AgentChatPage({
         }),
         signal: controller.signal
       })
-      if (!response.ok) {
-        const data = (await response.json().catch(() => ({}))) as {
+      if (!createResponse.ok) {
+        const data = (await createResponse.json().catch(() => ({}))) as {
           error?: string
         }
         throw new Error(data.error || 'Agent 请求失败。')
       }
+      const created = (await createResponse.json()) as { taskId?: string }
+      if (!created.taskId) throw new Error('Agent 未返回任务 ID。')
+      taskIdRef.current = created.taskId
+      const streamURL = `${taskURL}/${encodeURIComponent(created.taskId)}/events`
+      const response = await fetch(streamURL, { signal: controller.signal })
+      if (!response.ok) throw new Error('无法订阅 Agent 任务事件。')
       if (!response.body) throw new Error('当前浏览器不支持流式读取。')
       const reader = response.body.getReader()
       const decoder = new TextDecoder()
@@ -538,6 +620,7 @@ export function AgentChatPage({
             type: string
             text?: string
             tool?: string
+            callId?: string
             output?: string
           }
           handleEvent(event)
@@ -547,7 +630,7 @@ export function AgentChatPage({
       if (!(reason instanceof DOMException && reason.name === 'AbortError')) {
         const message =
           reason instanceof Error ? reason.message : 'Agent 请求失败。'
-        console.error('[agent] 请求错误：', reason, 'streamURL =', streamURL)
+        console.error('[agent] 请求错误：', reason, 'taskURL =', taskURL)
         setMessages(value => [
           ...value,
           { role: 'assistant', content: '⚠ ' + message }
@@ -557,13 +640,78 @@ export function AgentChatPage({
     } finally {
       setBusy(false)
       streamRef.current = null
+      taskIdRef.current = ''
     }
   }
 
   const cancel = () => {
+    const taskId = taskIdRef.current
+    if (taskId) {
+      const taskURL = import.meta.env.DEV
+        ? 'http://localhost:17390/api/v1/agent/tasks'
+        : '/api/v1/agent/tasks'
+      void fetch(`${taskURL}/${encodeURIComponent(taskId)}/cancel`, {
+        method: 'POST'
+      })
+    }
     streamRef.current?.abort()
     setBusy(false)
     setNotice('已停止本次执行。')
+  }
+
+  // 估算当前上下文占用（前端近似：消息总字符数 / 预算）。
+  const contextUsage = useMemo(() => {
+    const totalChars = messages.reduce((sum, m) => sum + m.content.length, 0)
+    const budget = 120 * 1024
+    const usage = Math.min(100, Math.round((totalChars / budget) * 100))
+    return Math.max(1, usage)
+  }, [messages])
+
+  const slashCommands = useMemo(
+    () => [
+      {
+        id: 'compress',
+        label: '压缩',
+        hint: `查看当前聊天上下文 ${contextUsage}%`
+      },
+      {
+        id: 'goal',
+        label: '目标',
+        hint: '设置要持续的目标'
+      },
+      {
+        id: 'plan',
+        label: '计划',
+        hint: '开始设定计划'
+      }
+    ],
+    [contextUsage]
+  )
+
+  // 执行斜杠命令。选中命令先插入输入框，用户回车时才触发。
+  const runSlashCommand = (command: (typeof slashCommands)[number]) => {
+    setSlashOpen(false)
+    setPrompt(`/${command.label}`)
+    promptRef.current?.focus()
+  }
+
+  // 检测输入是否为斜杠命令并执行。
+  const handleSlashExecution = (value: string): boolean => {
+    const match = value.match(/^\/(压缩|目标|计划)(?:\s+(.+))?$/)
+    if (!match) return false
+    const [, command, arg] = match
+    if (command === '压缩') {
+      setNotice(`当前聊天上下文已使用约 ${contextUsage}%。`)
+      setSlashDialog('compress')
+    } else if (command === '目标') {
+      setGoalText(arg ?? '')
+      setSlashDialog('goal')
+    } else if (command === '计划') {
+      setPlanText(arg ?? '')
+      setSlashDialog('plan')
+    }
+    setPrompt('')
+    return true
   }
 
   const resolveConfirm = useCallback(
@@ -660,6 +808,7 @@ export function AgentChatPage({
   ]
     .filter(Boolean)
     .join(' · ')
+  const activeTask = tasks.find(task => task.sessionId === sessionId && task.status === 'running')
 
   return (
     <section className="agent-workspace">
@@ -747,6 +896,19 @@ export function AgentChatPage({
                   </div>
                 </article>
               )
+            )}
+            {activeTask?.plan && (
+              <div className="agent-plan-card">
+                <strong>任务计划</strong>
+                <small>{activeTask.plan.goal}</small>
+                <div className="agent-plan-steps">
+                  {activeTask.plan.steps.map((step, index) => (
+                    <span key={step.id} data-status={step.status}>
+                      {index + 1}. {step.title}
+                    </span>
+                  ))}
+                </div>
+              </div>
             )}
             {activity.length > 0 && (
               <div className="agent-timeline-wrap">
@@ -842,10 +1004,51 @@ export function AgentChatPage({
                 ref={promptRef}
                 value={prompt}
                 onChange={event => {
-                  setPrompt(event.target.value)
+                  const value = event.target.value
+                  setPrompt(value)
                   resizePrompt()
+                  // 输入 / 且是首字符时弹出命令菜单。
+                  if (value === '/') setSlashOpen(true)
+                  else if (!value.startsWith('/')) setSlashOpen(false)
                 }}
                 onKeyDown={event => {
+                  if (slashOpen) {
+                    if (event.key === 'ArrowDown') {
+                      event.preventDefault()
+                      setSlashIndex(current =>
+                        current >= slashCommands.length - 1 ? 0 : current + 1
+                      )
+                      return
+                    }
+                    if (event.key === 'ArrowUp') {
+                      event.preventDefault()
+                      setSlashIndex(current =>
+                        current <= 0 ? slashCommands.length - 1 : current - 1
+                      )
+                      return
+                    }
+                    if (event.key === 'Enter') {
+                      event.preventDefault()
+                      const selected =
+                        slashIndex >= 0 ? slashCommands[slashIndex] : slashCommands[0]
+                      runSlashCommand(selected)
+                      setSlashIndex(-1)
+                      return
+                    }
+                    if (event.key === 'Tab') {
+                      event.preventDefault()
+                      const selected =
+                        slashIndex >= 0 ? slashCommands[slashIndex] : slashCommands[0]
+                      runSlashCommand(selected)
+                      setSlashIndex(-1)
+                      return
+                    }
+                    if (event.key === 'Escape') {
+                      setSlashOpen(false)
+                      setSlashIndex(-1)
+                      return
+                    }
+                  }
                   if (
                     event.key === 'Enter' &&
                     !event.shiftKey &&
@@ -854,11 +1057,35 @@ export function AgentChatPage({
                     event.preventDefault()
                     void send()
                   }
+                  if (event.key === 'Escape') setSlashOpen(false)
                 }}
                 rows={1}
                 aria-label="描述要交给 Agent 的任务"
-                placeholder="描述任务，Enter 发送（Shift+Enter 换行）"
+                placeholder="描述任务，输入 / 查看命令，Enter 发送"
               />
+              {slashOpen && (
+                <div className="agent-slash-menu">
+                  {slashCommands.map((command, index) => (
+                    <button
+                      className={cn(
+                        'agent-slash-item',
+                        index === slashIndex && 'active'
+                      )}
+                      key={command.id}
+                      onClick={() => {
+                        runSlashCommand(command)
+                        setSlashIndex(-1)
+                      }}
+                      onMouseEnter={() => setSlashIndex(index)}
+                    >
+                      <span className="agent-slash-label">
+                        /{command.label}
+                      </span>
+                      <small className="agent-slash-hint">{command.hint}</small>
+                    </button>
+                  ))}
+                </div>
+              )}
               <div className="agent-composer-bar">
                 <div className="agent-composer-left">
                   <div className="agent-composer-tool">
@@ -873,16 +1100,52 @@ export function AgentChatPage({
                     </button>
                     {moreOpen && (
                       <div className="agent-composer-popup">
-                        <button onClick={() => newSession()} disabled={busy}>
+                        <button
+                          onClick={() => {
+                            setFilePickerOpen(true)
+                            setMoreOpen(false)
+                          }}
+                          disabled={busy}
+                        >
+                          <Folder className="size-3.5" />
+                          选择目录或文件
+                        </button>
+                        <button
+                          onClick={() => newSession()}
+                          disabled={busy}
+                        >
                           <Plus className="size-3.5" />
                           新会话
                         </button>
                         <button
-                          onClick={() => setSessionOpen(true)}
-                          disabled={busy}
+                          onClick={() => {
+                            setPrompt('/目标 ')
+                            setMoreOpen(false)
+                            promptRef.current?.focus()
+                          }}
                         >
-                          <Clock3 className="size-3.5" />
-                          会话历史
+                          <Target className="size-3.5" />
+                          目标
+                        </button>
+                        <button
+                          onClick={() => {
+                            setPrompt('/计划 ')
+                            setMoreOpen(false)
+                            promptRef.current?.focus()
+                          }}
+                        >
+                          <ListTodo className="size-3.5" />
+                          计划
+                        </button>
+                        <button
+                          onClick={() => {
+                            setPrompt('/压缩')
+                            setMoreOpen(false)
+                            promptRef.current?.focus()
+                          }}
+                        >
+                          <Minimize2 className="size-3.5" />
+                          压缩
                         </button>
                         <button
                           onClick={() => setSettings(true)}
@@ -1016,16 +1279,16 @@ export function AgentChatPage({
         </div>
       </div>
 
-      {settings && (
-        <div className="agent-settings-overlay">
-          <section className="agent-settings">
+      <Modal
+        open={settings}
+        zIndex={220}
+        ariaLabel="AI 接口配置"
+        onClose={() => setSettings(false)}
+      >
+        <section className="agent-settings">
             <header className="agent-settings-head">
               <div>
                 <h3>AI 接口配置</h3>
-                <p>
-                  密钥仅保存在本机；Agent
-                  会在所选项目中读取文件、搜索代码并运行白名单命令。
-                </p>
               </div>
               <button
                 className="icon-button size-8 p-0"
@@ -1078,6 +1341,17 @@ export function AgentChatPage({
                 }
               />
             </label>
+            {PROVIDER_KEY_LINKS[provider] && (
+              <a
+                className="agent-key-link"
+                href={PROVIDER_KEY_LINKS[provider].href}
+                target="_blank"
+                rel="noreferrer"
+              >
+                {PROVIDER_KEY_LINKS[provider].label}
+                <ExternalLink className="size-3" />
+              </a>
+            )}
             <footer className="agent-settings-actions">
               <button
                 className="secondary-button"
@@ -1093,9 +1367,8 @@ export function AgentChatPage({
                 保存
               </button>
             </footer>
-          </section>
-        </div>
-      )}
+        </section>
+      </Modal>
 
       {sessionOpen && (
         <aside className="agent-sessions">
@@ -1128,7 +1401,13 @@ export function AgentChatPage({
                   onClick={() => void openSession(item.id)}
                 >
                   <span className="agent-session-title">{item.title}</span>
-                  <small>{formatUpdated(item.updated)}</small>
+                  <small>
+                    {item.status === 'running'
+                      ? `执行中 · 第 ${item.turn ?? 0} 轮`
+                      : item.status === 'failed'
+                        ? '上次执行失败'
+                        : formatUpdated(item.updated)}
+                  </small>
                 </button>
                 <button
                   className="agent-session-delete"
@@ -1138,6 +1417,16 @@ export function AgentChatPage({
                 >
                   <Trash2 className="size-3.5" />
                 </button>
+                {tasks.filter(task => task.sessionId === item.id && ['failed', 'paused', 'cancelled', 'completed'].includes(task.status)).slice(0, 1).map(task => (
+                  <span className="agent-session-actions" key={task.id}>
+                    {['failed', 'paused', 'cancelled'].includes(task.status) && (
+                      <button className="agent-session-action" onClick={() => void resumeTask(task.id)} title="从 checkpoint 恢复">继续</button>
+                    )}
+                    {task.status === 'completed' && (
+                      <button className="agent-session-action" onClick={() => void rollbackTask(task.id)} title="回滚 Agent 修改">回滚</button>
+                    )}
+                  </span>
+                ))}
               </div>
             ))}
           </div>
@@ -1200,6 +1489,139 @@ export function AgentChatPage({
                 onClick={() => void resolveConfirm(true)}
               >
                 批准修改
+              </button>
+            </footer>
+          </div>
+        </div>
+      )}
+
+      {slashDialog && (
+        <div className="agent-confirm-overlay">
+          <div className="agent-confirm-dialog" role="dialog" aria-modal="true">
+            <header>
+              <Slash className="size-4" />
+              <strong>
+                {slashDialog === 'compress'
+                  ? '压缩上下文'
+                  : slashDialog === 'goal'
+                    ? '设置持续目标'
+                    : '开始设定计划'}
+              </strong>
+            </header>
+            {slashDialog === 'compress' ? (
+              <div className="agent-slash-compress">
+                <div className="agent-slash-progress">
+                  <div
+                    className="agent-slash-progress-bar"
+                    style={{ width: `${contextUsage}%` }}
+                  />
+                </div>
+                <p>
+                  当前聊天上下文已使用约 <strong>{contextUsage}%</strong>。
+                  超过预算时会自动压缩较早的工具结果。
+                </p>
+              </div>
+            ) : slashDialog === 'goal' ? (
+              <label className="grid gap-1.5 text-xs font-medium text-slate-600">
+                目标描述
+                <textarea
+                  className="agent-slash-input"
+                  rows={3}
+                  value={goalText}
+                  onChange={event => setGoalText(event.target.value)}
+                  placeholder="例如：始终遵循项目约定，修改前先验证"
+                />
+              </label>
+            ) : (
+              <label className="grid gap-1.5 text-xs font-medium text-slate-600">
+                计划要点
+                <textarea
+                  className="agent-slash-input"
+                  rows={3}
+                  value={planText}
+                  onChange={event => setPlanText(event.target.value)}
+                  placeholder="例如：1. 读取结构 2. 定位实现 3. 修改 4. 验证"
+                />
+              </label>
+            )}
+            <footer>
+              <button
+                className="secondary-button"
+                onClick={() => setSlashDialog('')}
+              >
+                关闭
+              </button>
+              {slashDialog !== 'compress' && (
+                <button
+                  className="primary-button"
+                  disabled={
+                    slashDialog === 'goal' ? !goalText.trim() : !planText.trim()
+                  }
+                  onClick={() => {
+                    if (slashDialog === 'goal' && goalText.trim()) {
+                      setPrompt(`请始终遵循以下目标：${goalText.trim()}`)
+                    } else if (slashDialog === 'plan' && planText.trim()) {
+                      setPrompt(`请按以下计划执行：\n${planText.trim()}`)
+                    }
+                    setSlashDialog('')
+                    setGoalText('')
+                    setPlanText('')
+                    promptRef.current?.focus()
+                  }}
+                >
+                  确定
+                </button>
+              )}
+            </footer>
+          </div>
+        </div>
+      )}
+
+      {filePickerOpen && (
+        <div className="agent-confirm-overlay">
+          <div className="agent-confirm-dialog agent-file-dialog" role="dialog" aria-modal="true">
+            <header>
+              <Folder className="size-4" />
+              <strong>选择目录或文件</strong>
+            </header>
+            <p>
+              浏览并选择要关注的项目目录，Agent 会优先读取它来理解上下文。
+            </p>
+            <label className="grid gap-1.5 text-xs font-medium text-slate-600">
+              路径（可手动补充文件路径）
+              <input
+                className="agent-slash-input"
+                value={filePath}
+                onChange={event => setFilePath(event.target.value)}
+                placeholder="例如：src/response 或 src/index.ts"
+              />
+            </label>
+            <FilePicker
+              initial={filePath}
+              onSelect={picked => {
+                setFilePath(picked)
+              }}
+            />
+            <footer>
+              <button
+                className="secondary-button"
+                onClick={() => setFilePickerOpen(false)}
+              >
+                取消
+              </button>
+              <button
+                className="primary-button"
+                disabled={!filePath.trim()}
+                onClick={() => {
+                  if (filePath.trim()) {
+                    setPrompt(`请先查看项目目录/文件：${filePath.trim()}，基于其内容理解后继续。`)
+                  }
+                  setFilePickerOpen(false)
+                  setFilePath('')
+                  promptRef.current?.focus()
+                }}
+              >
+                确认
               </button>
             </footer>
           </div>

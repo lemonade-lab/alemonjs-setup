@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 // verifyCandidates are package.json script names tried in order for the
@@ -14,19 +15,28 @@ var verifyCandidates = []string{"check", "lint", "test", "build", "verify", "val
 // validation command. It falls back to the configured verify command when the
 // project declares none of the known scripts.
 func VerifyTool(root string, files FileService, commands CommandRunner, fallback CommandSpec) (Tool, Handler) {
-	discovered, ok := DiscoverVerifyCommand(root, files)
-	if !ok {
-		discovered = fallback
+	discovered := DiscoverVerifyCommands(root, files)
+	if len(discovered) == 0 && fallback.Command != "" {
+		discovered = []CommandSpec{fallback}
 	}
 	return Tool{
 			Name:        verifyToolName,
 			Description: "运行项目的验证命令（tsgo/tsc/eslint 或 package.json 中声明的 check/lint/test/build 脚本）并返回结果。写操作后会由 Agent 自动调用。",
 			Parameters:  objectSchema(nil),
 		}, func(ctx context.Context, arguments json.RawMessage) (string, error) {
-			if discovered.Command == "" {
+			if len(discovered) == 0 {
 				return "项目没有可用的验证命令。", nil
 			}
-			return commands.Run(ctx, root, discovered.Command, discovered.Args)
+			var outputs []string
+			for index, spec := range discovered {
+				output, err := commands.Run(ctx, root, spec.Command, spec.Args)
+				label := fmt.Sprintf("验证步骤 %d（%s）", index+1, ValidateVerifySpec(spec))
+				outputs = append(outputs, label+"\n"+output)
+				if err != nil {
+					return strings.Join(outputs, "\n\n") + "\n验证失败：" + err.Error(), err
+				}
+			}
+			return strings.Join(outputs, "\n\n"), nil
 		}
 }
 
@@ -40,16 +50,29 @@ type CommandSpec struct {
 // verification candidate that exists. It never runs anything; it only resolves
 // which declared script maps to a whitelisted subcommand.
 func DiscoverVerifyCommand(root string, files FileService) (CommandSpec, bool) {
+	commands := DiscoverVerifyCommands(root, files)
+	if len(commands) == 0 {
+		return CommandSpec{}, false
+	}
+	return commands[0], true
+}
+
+// DiscoverVerifyCommands resolves every safe verification script in priority
+// order. Running a pipeline gives the model more useful feedback than
+// stopping after the first successful check (for example, type-check then
+// lint then tests). Duplicate command specifications are removed.
+func DiscoverVerifyCommands(root string, files FileService) []CommandSpec {
 	raw, err := files.ReadFile(root, "package.json")
 	if err != nil {
-		return CommandSpec{}, false
+		return nil
 	}
 	var manifest struct {
 		Scripts map[string]string `json:"scripts"`
 	}
 	if err := json.Unmarshal([]byte(raw), &manifest); err != nil {
-		return CommandSpec{}, false
+		return nil
 	}
+	var discovered []CommandSpec
 	for _, candidate := range verifyCandidates {
 		script, ok := manifest.Scripts[candidate]
 		if !ok || script == "" {
@@ -60,10 +83,20 @@ func DiscoverVerifyCommand(root string, files FileService) (CommandSpec, bool) {
 		// than executing arbitrary script text through a shell.
 		command, args, ok := parseScriptInvocation(script)
 		if ok {
-			return CommandSpec{Command: command, Args: args}, true
+			spec := CommandSpec{Command: command, Args: args}
+			duplicate := false
+			for _, existing := range discovered {
+				if existing.Command == spec.Command && strings.Join(existing.Args, "\x00") == strings.Join(spec.Args, "\x00") {
+					duplicate = true
+					break
+				}
+			}
+			if !duplicate {
+				discovered = append(discovered, spec)
+			}
 		}
 	}
-	return CommandSpec{}, false
+	return discovered
 }
 
 // parseScriptInvocation interprets a package.json script body that begins with

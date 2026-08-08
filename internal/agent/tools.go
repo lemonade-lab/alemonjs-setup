@@ -25,13 +25,28 @@ type FileService interface {
 // Read-only tools plus a precise edit tool and a whitelisted command runner.
 func ProjectTools(root string, files FileService, commands CommandRunner) *Registry {
 	registry := NewRegistry()
+	var cachedIndex RepoIndex
+	indexReady := false
+	getIndex := func() (RepoIndex, error) {
+		if indexReady {
+			return cachedIndex, nil
+		}
+		index, err := BuildRepoIndex(root, files)
+		if err != nil {
+			return RepoIndex{}, err
+		}
+		cachedIndex, indexReady = index, true
+		return index, nil
+	}
 
 	registry.Add(Tool{
 		Name:        "read_project_file",
 		Description: "读取机器人项目内的源码或配置文件（不超过 1 MiB，不能是密钥、依赖目录或符号链接）。",
 		Parameters:  stringParamSchema("path", "相对于项目根目录的文件路径，例如 src/index.ts"),
 	}, func(ctx context.Context, arguments json.RawMessage) (string, error) {
-		var in struct{ Path string `json:"path"` }
+		var in struct {
+			Path string `json:"path"`
+		}
 		if err := json.Unmarshal(arguments, &in); err != nil {
 			return "", fmt.Errorf("参数无效：%v", err)
 		}
@@ -74,6 +89,65 @@ func ProjectTools(root string, files FileService, commands CommandRunner) *Regis
 		return searchProject(files, root, in.Pattern, in.Glob, expression)
 	})
 
+	registry.Add(Tool{Name: "agent_repo_map", Description: "建立并返回项目代码地图，包括文件、符号、引用和路由/事件注册点。优先用于理解大型项目。", Parameters: objectSchema(nil)}, func(ctx context.Context, arguments json.RawMessage) (string, error) {
+		index, err := getIndex()
+		if err != nil {
+			return "", err
+		}
+		return index.Summary(), nil
+	})
+	registry.Add(Tool{Name: "agent_find_symbol", Description: "按名称和可选类型查找项目中的函数、类、接口、类型和变量定义。", Parameters: objectSchema(map[string]any{"query": stringParam("符号名称或片段"), "kind": stringParam("可选类型，例如 function/class/interface/type")}, "query")}, func(ctx context.Context, arguments json.RawMessage) (string, error) {
+		var in struct{ Query, Kind string }
+		if err := json.Unmarshal(arguments, &in); err != nil {
+			return "", err
+		}
+		index, err := getIndex()
+		if err != nil {
+			return "", err
+		}
+		out, _ := json.Marshal(FindSymbols(index, in.Query, in.Kind))
+		return string(out), nil
+	})
+	registry.Add(Tool{Name: "agent_find_references", Description: "查找符号在项目中的引用位置，用于追踪调用关系。", Parameters: stringParamSchema("symbol", "符号名称")}, func(ctx context.Context, arguments json.RawMessage) (string, error) {
+		var in struct {
+			Symbol string `json:"symbol"`
+		}
+		if err := json.Unmarshal(arguments, &in); err != nil {
+			return "", err
+		}
+		index, err := getIndex()
+		if err != nil {
+			return "", err
+		}
+		out, _ := json.Marshal(FindReferences(index, in.Symbol))
+		return string(out), nil
+	})
+	registry.Add(Tool{Name: "agent_find_route", Description: "定位 AlemonJS Router、HTTP 路由和事件注册点。", Parameters: objectSchema(nil)}, func(ctx context.Context, arguments json.RawMessage) (string, error) {
+		index, err := getIndex()
+		if err != nil {
+			return "", err
+		}
+		out, _ := json.Marshal(limitReferences(index.Routes))
+		return string(out), nil
+	})
+	registry.Add(Tool{Name: "agent_find_event_handler", Description: "定位 useEvent、onEvent、onMessage 等事件处理器。", Parameters: objectSchema(nil)}, func(ctx context.Context, arguments json.RawMessage) (string, error) {
+		index, err := getIndex()
+		if err != nil {
+			return "", err
+		}
+		var out []RepoReference
+		for _, route := range index.Routes {
+			if strings.Contains(route.Symbol, "Event") || strings.Contains(route.Symbol, "Message") {
+				out = append(out, route)
+			}
+		}
+		raw, _ := json.Marshal(limitReferences(out))
+		return string(raw), nil
+	})
+	registry.Add(Tool{Name: "agent_find_config", Description: "定位 alemon.config、配置读取和 package.json 配置相关代码。", Parameters: objectSchema(nil)}, func(ctx context.Context, arguments json.RawMessage) (string, error) {
+		return searchProject(files, root, `alemon\.config|config|package\.json`, "", regexp.MustCompile(`alemon\.config|config|package\.json`))
+	})
+
 	registry.AddWrite(Tool{
 		Name: "agent_edit_file",
 		Description: "结构化修改项目文件，三种模式：edit（多 hunk 精确替换）、create（新建文件）、delete（删除文件）。" +
@@ -110,11 +184,13 @@ func ProjectTools(root string, files FileService, commands CommandRunner) *Regis
 			if err := files.CreateFile(root, in.Path, in.Content); err != nil {
 				return "", err
 			}
+			indexReady = false
 			return fmt.Sprintf("已创建 %s", in.Path), nil
 		case "delete":
 			if err := files.DeleteFile(root, in.Path); err != nil {
 				return "", err
 			}
+			indexReady = false
 			return fmt.Sprintf("已删除 %s", in.Path), nil
 		}
 		content, err := files.ReadFile(root, in.Path)
@@ -142,6 +218,7 @@ func ProjectTools(root string, files FileService, commands CommandRunner) *Regis
 		if err := files.WriteFile(root, in.Path, work); err != nil {
 			return "", err
 		}
+		indexReady = false
 		return fmt.Sprintf("已更新 %s（%d 处）", in.Path, len(in.Edits)), nil
 	})
 

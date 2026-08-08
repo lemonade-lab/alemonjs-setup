@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"sync"
 	"time"
 
@@ -64,6 +65,8 @@ type Event struct {
 	Type   string `json:"type"`
 	Text   string `json:"text,omitempty"`
 	Tool   string `json:"tool,omitempty"`
+	CallID string `json:"callId,omitempty"`
+	Turn   int    `json:"turn,omitempty"`
 	Output string `json:"output,omitempty"`
 	Diff   *Diff  `json:"diff,omitempty"`
 }
@@ -71,7 +74,7 @@ type Event struct {
 // Diff describes one file change proposed by a write tool, for rendering a
 // before/after preview in the confirmation dialog.
 type Diff struct {
-	Path string `json:"path"`
+	Path  string `json:"path"`
 	Hunks []struct {
 		Old string `json:"old"`
 		New string `json:"new"`
@@ -85,14 +88,15 @@ const verifyToolName = "agent_verify"
 
 // Loop drives the agentic loop against one resolved provider.
 type Loop struct {
-	cfg      ai.Resolved
-	registry *Registry
-	system   string
-	maxTurns int
-	approve  Approver
-	observer func(Event)
-	verify   bool
-	budget   int
+	cfg        ai.Resolved
+	registry   *Registry
+	system     string
+	maxTurns   int
+	approve    Approver
+	observer   func(Event)
+	checkpoint func(int, []Message)
+	verify     bool
+	budget     int
 }
 
 func NewLoop(cfg ai.Resolved, registry *Registry, system string, maxTurns int) *Loop {
@@ -114,6 +118,13 @@ func (l *Loop) WithApprover(approve Approver) *Loop {
 // result of the run.
 func (l *Loop) WithObserver(observer func(Event)) *Loop {
 	l.observer = observer
+	return l
+}
+
+// WithCheckpoint receives a copy of the transcript after each completed
+// round. The caller owns persistence and may atomically store it for resume.
+func (l *Loop) WithCheckpoint(checkpoint func(int, []Message)) *Loop {
+	l.checkpoint = checkpoint
 	return l
 }
 
@@ -163,13 +174,19 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (*Result, error) {
 	// (e.g. loaded from a persisted session where the assistant tool_calls was
 	// filtered out). OpenAI rejects a `tool` role without a preceding
 	// `tool_calls`.
-	messages = pruneOrphanTools(messages)
+	messages = PruneOrphanTools(messages)
 	if l.system != "" {
 		messages = append([]Message{{Role: "system", Content: l.system}}, messages...)
 	}
 	tools := l.registry.List()
 	for turn := 0; turn < l.maxTurns; turn++ {
+		if l.observer != nil {
+			l.observer(Event{Type: "turn", Turn: turn + 1, Text: "Agent 正在处理第 " + strconv.Itoa(turn+1) + " 轮"})
+		}
 		messages = compressIfOverBudget(messages, l.budget)
+		// compress 折叠旧消息可能切断 assistant tool_calls 与 tool 响应的
+		// 配对，发送前必须重新清理，否则 DeepSeek 报 tool_calls 无响应。
+		messages = PruneOrphanTools(messages)
 		response, err := RoundTrip(ctx, l.cfg, messages, tools)
 		if err != nil {
 			if l.observer != nil {
@@ -182,15 +199,22 @@ func (l *Loop) Run(ctx context.Context, messages []Message) (*Result, error) {
 				l.observer(Event{Type: "done", Text: response.Content})
 			}
 			// 把最终回答追加进 transcript，这样调用方能持久化完整的
-			// 对话历史（含最后的 assistant 总结）。
-			messages = append(messages, Message{Role: "assistant", Content: response.Content})
+			// 对话历史（含最后的 assistant 总结）。reasoning_content 也保存，
+			// 供 DeepSeek thinking 模式下一轮回传。
+			messages = append(messages, Message{Role: "assistant", Content: response.Content, ReasoningContent: response.ReasoningContent})
+			if l.checkpoint != nil {
+				l.checkpoint(turn+1, append([]Message(nil), messages...))
+			}
 			return &Result{Answer: response.Content, Messages: messages}, nil
 		}
 		if response.Content != "" && l.observer != nil {
 			l.observer(Event{Type: "text", Text: response.Content})
 		}
-		messages = append(messages, Message{Role: "assistant", Content: response.Content, ToolCalls: response.ToolCalls})
+		messages = append(messages, Message{Role: "assistant", Content: response.Content, ToolCalls: response.ToolCalls, ReasoningContent: response.ReasoningContent})
 		messages = l.executeToolCalls(ctx, messages, response.ToolCalls)
+		if l.checkpoint != nil {
+			l.checkpoint(turn+1, append([]Message(nil), messages...))
+		}
 	}
 	if l.observer != nil {
 		l.observer(Event{Type: "error", Text: "agent 达到最大轮数，未能完成任务"})
@@ -211,7 +235,7 @@ func (l *Loop) executeToolCalls(ctx context.Context, messages []Message, calls [
 			if err := l.approve(ctx, call); err != nil {
 				output := "用户拒绝了该操作：" + err.Error()
 				if l.observer != nil {
-					l.observer(Event{Type: "result", Tool: call.Name, Output: output})
+					l.observer(Event{Type: "result", Tool: call.Name, CallID: call.ID, Output: output})
 				}
 				messages = append(messages, Message{Role: "tool", ToolCallID: call.ID, Content: output})
 				continue
@@ -223,12 +247,12 @@ func (l *Loop) executeToolCalls(ctx context.Context, messages []Message, calls [
 		if l.verify {
 			if verifyOutput, ok := l.callVerify(ctx); ok {
 				if l.observer != nil {
-					l.observer(Event{Type: "tool", Tool: verifyToolName, Text: "写操作后自动验证"})
+					l.observer(Event{Type: "tool", Tool: verifyToolName, CallID: verifyIDFor(call.ID), Text: "写操作后自动验证"})
 				}
-				verifyID := "verify-" + call.ID
+				verifyID := verifyIDFor(call.ID)
 				messages = append(messages, Message{Role: "assistant", Content: "", ToolCalls: []ToolCall{{ID: verifyID, Name: verifyToolName, Arguments: json.RawMessage("{}")}}})
 				if l.observer != nil {
-					l.observer(Event{Type: "result", Tool: verifyToolName, Output: verifyOutput})
+					l.observer(Event{Type: "result", Tool: verifyToolName, CallID: verifyID, Output: verifyOutput})
 				}
 				messages = append(messages, Message{Role: "tool", ToolCallID: verifyID, Content: verifyOutput})
 				if formatted := FormatVerifyErrors(ParseVerifyErrors(verifyOutput)); formatted != "" {
@@ -252,12 +276,12 @@ func (l *Loop) executeToolCalls(ctx context.Context, messages []Message, calls [
 			go func(index int, call ToolCall) {
 				defer group.Done()
 				if l.observer != nil {
-					l.observer(Event{Type: "tool", Tool: call.Name, Text: string(call.Arguments)})
+					l.observer(Event{Type: "tool", Tool: call.Name, CallID: call.ID, Text: string(call.Arguments)})
 				}
 				output := l.callHandler(ctx, call)
 				results[index] = toolResult{callID: call.ID, output: output}
 				if l.observer != nil {
-					l.observer(Event{Type: "result", Tool: call.Name, Output: output})
+					l.observer(Event{Type: "result", Tool: call.Name, CallID: call.ID, Output: output})
 				}
 			}(index, call)
 		}
@@ -277,10 +301,18 @@ type toolResult struct {
 
 // runOneTool executes a single tool handler and appends its tool message.
 func (l *Loop) runOneTool(ctx context.Context, messages []Message, call ToolCall) []Message {
+	if l.observer != nil {
+		l.observer(Event{Type: "tool", Tool: call.Name, CallID: call.ID, Text: string(call.Arguments)})
+	}
 	output := l.callHandler(ctx, call)
+	if l.observer != nil {
+		l.observer(Event{Type: "result", Tool: call.Name, CallID: call.ID, Output: output})
+	}
 	messages = append(messages, Message{Role: "tool", ToolCallID: call.ID, Content: output})
 	return messages
 }
+
+func verifyIDFor(callID string) string { return "verify-" + callID }
 
 // toolTimeout bounds a single tool execution so one slow tool cannot stall the
 // whole agent loop.
@@ -333,14 +365,29 @@ func compressIfOverBudget(messages []Message, budget int) []Message {
 	}
 	out := make([]Message, 0, len(messages))
 	keptTail := 0
+	// Messages carrying ReasoningContent must survive folding: DeepSeek's
+	// thinking mode requires each assistant turn's reasoning_content to be
+	// passed back, and dropping it makes the API reject the request. Collect
+	// them up front so a large tool result earlier in the transcript cannot
+	// hide them behind the budget break.
+	reasoning := make([]Message, 0, 2)
+	for _, message := range messages {
+		if message.ReasoningContent != "" {
+			reasoning = append(reasoning, message)
+		}
+	}
 	// Measure from the back so we always preserve the most recent exchanges.
 	for index := len(messages) - 1; index >= 0; index-- {
+		if messages[index].ReasoningContent != "" {
+			continue
+		}
 		keptTail += messageSize(messages[index])
 		if keptTail > budget {
 			break
 		}
 		out = append(out, messages[index])
 	}
+	out = append(out, reasoning...)
 	// Reverse back into chronological order.
 	for left, right := 0, len(out)-1; left < right; left, right = left+1, right-1 {
 		out[left], out[right] = out[right], out[left]
@@ -348,35 +395,59 @@ func compressIfOverBudget(messages []Message, budget int) []Message {
 	// Drop orphaned tool messages: OpenAI requires each `tool` response to
 	// follow an `assistant` message carrying matching tool_calls. If the fold
 	// boundary cut between them, the surviving `tool` has no referent.
-	out = pruneOrphanTools(out)
+	out = PruneOrphanTools(out)
 	note := Message{Role: "user", Content: "（较早的工具调用结果已折叠以节省上下文，继续当前任务即可。）"}
 	return append([]Message{note}, out...)
 }
 
-// pruneOrphanTools removes tool messages whose ToolCallID has no matching
+// PruneOrphanTools removes tool messages whose ToolCallID has no matching
 // tool_calls in a preceding assistant message. This keeps transcripts valid
 // for OpenAI after context compression.
-func pruneOrphanTools(messages []Message) []Message {
+func PruneOrphanTools(messages []Message) []Message {
+	// First pass: collect every tool_call ID declared by assistant messages and
+	// every tool response present, regardless of position.
+	declared := make(map[string]bool)
+	responded := make(map[string]bool)
+	for _, message := range messages {
+		for _, call := range message.ToolCalls {
+			if call.ID != "" {
+				declared[call.ID] = true
+			}
+		}
+		if message.Role == "tool" {
+			responded[message.ToolCallID] = true
+		}
+	}
 	out := make([]Message, 0, len(messages))
-	// Track the set of tool call IDs that are still "open" (declared by an
-	// assistant message and not yet answered by a tool message).
-	openCalls := make(map[string]bool)
 	for _, message := range messages {
 		if len(message.ToolCalls) > 0 {
+			// Assistant with tool_calls: keep only if every call has a tool
+			// response somewhere in the transcript. But if the assistant also
+			// carries DeepSeek reasoning_content, preserve that even when its
+			// tool_calls were folded away — drop the unanswered calls instead
+			// of the whole message, so thinking-mode state survives.
+			allAnswered := true
 			for _, call := range message.ToolCalls {
-				if call.ID != "" {
-					openCalls[call.ID] = true
+				if !responded[call.ID] {
+					allAnswered = false
+					break
 				}
+			}
+			if !allAnswered {
+				if message.ReasoningContent != "" {
+					message.ToolCalls = nil
+					out = append(out, message)
+				}
+				continue
 			}
 			out = append(out, message)
 			continue
 		}
 		if message.Role == "tool" {
-			if !openCalls[message.ToolCallID] {
-				// No preceding declaration — drop it.
+			// Drop tool responses that were never declared by an assistant.
+			if !declared[message.ToolCallID] {
 				continue
 			}
-			delete(openCalls, message.ToolCallID)
 			out = append(out, message)
 			continue
 		}

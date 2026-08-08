@@ -29,6 +29,25 @@ func TestSessionStoreCreateAndList(t *testing.T) {
 	}
 }
 
+func TestSessionStoreUpdateProgress(t *testing.T) {
+	store := newTestStore(t)
+	session, _ := store.Create("/p", "deepseek", "m", "")
+	updated, err := store.UpdateProgress(session.ID, "running", 3, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status != "running" || updated.Turn != 3 || updated.LastError != "" {
+		t.Fatalf("运行进度未保存：%+v", updated)
+	}
+	failed, err := store.UpdateProgress(session.ID, "failed", 4, "验证失败")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if failed.Status != "failed" || failed.Turn != 4 || failed.LastError != "验证失败" {
+		t.Fatalf("失败状态未保存：%+v", failed)
+	}
+}
+
 func TestSessionStoreAppendLoadRoundTrip(t *testing.T) {
 	store := newTestStore(t)
 	session, _ := store.Create("/p", "deepseek", "m", "")

@@ -22,6 +22,18 @@ func TestDiscoverVerifyCommandPrefersCheck(t *testing.T) {
 	}
 }
 
+func TestDiscoverVerifyCommandsBuildsSafePipeline(t *testing.T) {
+	files := newFakeFiles("/p")
+	files.files["package.json"] = `{"name":"x","scripts":{"check":"tsgo --noEmit","lint":"eslint src","test":"node --check src/index.js","build":"node build.js"}}`
+	commands := DiscoverVerifyCommands("/p", files)
+	if len(commands) != 3 {
+		t.Fatalf("应发现 3 个安全验证步骤，实际 %d：%+v", len(commands), commands)
+	}
+	if commands[0].Command != "tsgo" || commands[1].Command != "eslint" || commands[2].Command != "node" {
+		t.Errorf("验证步骤顺序错误：%+v", commands)
+	}
+}
+
 func TestDiscoverVerifyCommandFallback(t *testing.T) {
 	files := newFakeFiles("/p")
 	files.files["package.json"] = `{"name":"x","scripts":{"build":"eslint ."}}`
