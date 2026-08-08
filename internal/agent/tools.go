@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -27,14 +28,20 @@ func ProjectTools(root string, files FileService, commands CommandRunner) *Regis
 	registry := NewRegistry()
 	var cachedIndex RepoIndex
 	indexReady := false
+	indexStore := NewRepoIndexStore(filepath.Join(agentConfigDir(), "indexes"))
 	getIndex := func() (RepoIndex, error) {
 		if indexReady {
 			return cachedIndex, nil
+		}
+		if persisted, err := indexStore.Load(root); err == nil && persisted.Version == 1 && persisted.RootHash == projectHash(root) {
+			cachedIndex, indexReady = persisted, true
+			return persisted, nil
 		}
 		index, err := BuildRepoIndex(root, files)
 		if err != nil {
 			return RepoIndex{}, err
 		}
+		_ = indexStore.Save(root, index)
 		cachedIndex, indexReady = index, true
 		return index, nil
 	}
@@ -239,11 +246,22 @@ func ProjectTools(root string, files FileService, commands CommandRunner) *Regis
 		}
 		return commands.Run(ctx, root, in.Command, in.Args)
 	})
+	RegisterDiagnosticTools(registry, root, files, commands)
 
 	verifyTool, verifyHandler := VerifyTool(root, files, commands, CommandSpec{})
 	registry.Add(verifyTool, verifyHandler)
 
 	return registry
+}
+
+func agentConfigDir() string {
+	if dir := os.Getenv("ALEMONX_AGENT_DIR"); dir != "" {
+		return dir
+	}
+	if dir, err := os.UserConfigDir(); err == nil {
+		return filepath.Join(dir, "alemonjs", "alx-agent")
+	}
+	return filepath.Join(os.TempDir(), "alx-agent")
 }
 
 // searchProject scans eligible project files for a regex and returns up to 50

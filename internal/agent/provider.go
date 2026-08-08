@@ -119,7 +119,7 @@ func openAIRoundTrip(ctx context.Context, cfg ai.Resolved, messages []Message, t
 		Choices []struct {
 			Message struct {
 				Content          *string `json:"content"`
-				ReasoningContent string `json:"reasoning_content"`
+				ReasoningContent string  `json:"reasoning_content"`
 				ToolCalls        []struct {
 					ID       string `json:"id"`
 					Function struct {
@@ -213,7 +213,7 @@ func anthropicRoundTrip(ctx context.Context, cfg ai.Resolved, messages []Message
 	req.Header.Set("anthropic-version", "2023-06-01")
 	req.Header.Set("Content-Type", "application/json")
 	var data struct {
-		Content    []struct {
+		Content []struct {
 			Type  string          `json:"type"`
 			Text  string          `json:"text"`
 			ID    string          `json:"id"`

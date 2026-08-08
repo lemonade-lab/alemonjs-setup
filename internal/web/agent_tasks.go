@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"path/filepath"
@@ -22,6 +23,7 @@ type agentTaskInput struct {
 	SessionID string              `json:"sessionId"`
 	Access    string              `json:"access"`
 	Messages  []map[string]string `json:"messages"`
+	Isolation string              `json:"isolation,omitempty"`
 }
 
 func (s *server) agentTasksHandler(w http.ResponseWriter, r *http.Request) {
@@ -69,6 +71,14 @@ func (s *server) agentTasksHandler(w http.ResponseWriter, r *http.Request) {
 		sessionID = session.ID
 	}
 	task := agent.AgentTask{SessionID: sessionID, Root: input.Root, Provider: input.Provider, Model: input.Model, Access: input.Access}
+	if input.Isolation == "" {
+		input.Isolation = "workspace"
+	}
+	if input.Isolation != "workspace" && input.Isolation != "worktree" {
+		writeError(w, http.StatusBadRequest, "隔离模式无效。")
+		return
+	}
+	task.Isolation = input.Isolation
 	goal := input.Messages[len(input.Messages)-1]["content"]
 	task.Plan = defaultTaskPlan(goal)
 	initial := make([]agent.Message, 0, len(input.Messages))
@@ -103,8 +113,24 @@ func (s *server) makeAgentTaskRunner(cfg ai.Resolved, checkpoint agent.AgentChec
 		checkpoint.TaskID = task.ID
 		checkpoint.Status = agent.TaskRunning
 		checkpoint.Plan = task.Plan
+		checkpoint.Context.Goal = task.Plan.Goal
+		workRoot := task.Root
+		var worktree *agent.Worktree
+		if task.Isolation == "worktree" {
+			created, workErr := agent.CreateWorktree(task.Root, task.ID)
+			if workErr != nil {
+				emit(agent.Event{Type: "text", Text: "worktree 不可用，已回退到 workspace：" + workErr.Error()})
+			} else {
+				worktree, workRoot = &created, created.Root
+				checkpoint.WorktreeRoot = workRoot
+				defer worktree.Remove()
+			}
+		}
 		if checkpoint.Plan.CurrentStep < len(checkpoint.Plan.Steps) {
 			checkpoint.Plan.Steps[checkpoint.Plan.CurrentStep].Status = "running"
+			step := checkpoint.Plan.Steps[checkpoint.Plan.CurrentStep]
+			_, _ = s.agentTasks.MarkStep(task.ID, step.ID, "running", "")
+			emit(agent.Event{Type: "plan", Tool: step.ID, Text: step.Title})
 		}
 		snapshotStore := agent.NewSnapshotStoreAt(filepath.Join(s.agentTaskStore.TasksDir(), task.ID, "snapshots"))
 		files := &robotFileService{manager: robot.Manager{}, snapshot: snapshotStore, taskID: task.ID}
@@ -115,11 +141,11 @@ func (s *server) makeAgentTaskRunner(cfg ai.Resolved, checkpoint agent.AgentChec
 			}
 		}()
 		messages := agent.PruneOrphanTools(checkpoint.Messages)
-		systemPrompt := agent.BuildSystemPrompt(task.Root, files, agentBasePrompt())
+		systemPrompt := agent.BuildSystemPrompt(workRoot, files, agentBasePrompt())
 		checkpoint.SystemPrompt = systemPrompt
 		checkpoint.Updated = time.Now()
 		_ = s.agentTaskStore.SaveCheckpoint(checkpoint)
-		loop := agent.NewLoop(cfg, agent.ProjectTools(task.Root, files, agent.NewCommandRunner()), systemPrompt, 40).WithContextBudget(120 * 1024).WithAutoVerify()
+		loop := agent.NewLoop(cfg, agent.ProjectTools(workRoot, files, agent.NewCommandRunner()), systemPrompt, 40).WithContextBudget(120 * 1024).WithAutoVerify()
 		loop.WithObserver(emit)
 		loop.WithCheckpoint(func(turn int, transcript []agent.Message) {
 			checkpoint.Turn = turn
@@ -130,23 +156,47 @@ func (s *server) makeAgentTaskRunner(cfg ai.Resolved, checkpoint agent.AgentChec
 		if access == "ask" {
 			loop.WithApprover(askApprover(s.agentConfirms, emit, task.ID))
 		} else {
-			loop.WithApprover(taskApprover(task.Root))
+			loop.WithApprover(taskApprover(workRoot))
 		}
 		result, err := loop.Run(ctx, messages)
 		if err != nil {
 			if checkpoint.Plan.CurrentStep < len(checkpoint.Plan.Steps) {
 				checkpoint.Plan.Steps[checkpoint.Plan.CurrentStep].Status = "failed"
 				checkpoint.Plan.Steps[checkpoint.Plan.CurrentStep].Result = err.Error()
+				step := checkpoint.Plan.Steps[checkpoint.Plan.CurrentStep]
+				_, _ = s.agentTasks.MarkStep(task.ID, step.ID, "failed", err.Error())
 			}
 			checkpoint.Status = agent.TaskFailed
 			_, _ = s.agentTasks.UpdatePlan(task.ID, checkpoint.Plan)
 			checkpoint.LastError = err.Error()
+			checkpoint.Context.Failures = append(checkpoint.Context.Failures, err.Error())
 			checkpoint.Updated = time.Now()
 			_ = s.agentTaskStore.SaveCheckpoint(checkpoint)
 			return "", err
 		}
 		for i := range checkpoint.Plan.Steps {
 			checkpoint.Plan.Steps[i].Status = "completed"
+			_, _ = s.agentTasks.MarkStep(task.ID, checkpoint.Plan.Steps[i].ID, "completed", "验证通过")
+		}
+		modified := make([]string, 0, len(files.snapshots))
+		for _, snap := range files.snapshots {
+			modified = append(modified, snap.Path)
+		}
+		review := agent.ReviewTaskWithModel(cfg, checkpoint.Plan, result.Answer, strings.Join(modified, "\n"))
+		reviewRaw, _ := json.Marshal(review)
+		emit(agent.Event{Type: "review", Text: string(reviewRaw)})
+		report := agent.TaskReport{Goal: checkpoint.Plan.Goal, Plan: checkpoint.Plan, ModifiedFiles: modified, Validation: []string{"Agent loop completed"}, Reviewer: review, Summary: review.Summary, RollbackTaskID: task.ID, GeneratedAt: time.Now()}
+		checkpoint.Report = &report
+		checkpoint.Context.ModifiedFiles = modified
+		checkpoint.Context.Validation = report.Validation
+		checkpoint.Context.Summary = report.Summary
+		_ = s.agentTaskStore.SaveReport(report, task.ID)
+		if !review.GoalSatisfied {
+			checkpoint.Status = agent.TaskFailed
+			checkpoint.LastError = review.Summary
+			_, _ = s.agentTasks.UpdatePlan(task.ID, checkpoint.Plan)
+			_ = s.agentTaskStore.SaveCheckpoint(checkpoint)
+			return "", errors.New(review.Summary)
 		}
 		checkpoint.Status = agent.TaskCompleted
 		_, _ = s.agentTasks.UpdatePlan(task.ID, checkpoint.Plan)
@@ -229,6 +279,10 @@ func (s *server) agentTaskHandler(w http.ResponseWriter, r *http.Request) {
 		found := false
 		for i := range plan.Steps {
 			if plan.Steps[i].ID == parts[2] {
+				if plan.Steps[i].Status != "failed" && plan.Steps[i].Status != "verifying" {
+					writeError(w, http.StatusConflict, "只有失败或验证中的步骤可以重试。")
+					return
+				}
 				plan.Steps[i].Status = "pending"
 				plan.Steps[i].Attempts++
 				plan.CurrentStep = i
@@ -250,6 +304,15 @@ func (s *server) agentTaskHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(parts) == 2 && parts[1] == "events" && r.Method == http.MethodGet {
 		s.agentTaskEvents(w, r, taskID)
+		return
+	}
+	if len(parts) == 2 && parts[1] == "report" && r.Method == http.MethodGet {
+		report, err := s.agentTaskStore.LoadReport(taskID)
+		if err != nil {
+			writeError(w, http.StatusNotFound, "任务报告尚未生成。")
+			return
+		}
+		writeJSON(w, http.StatusOK, report)
 		return
 	}
 	if len(parts) == 2 && parts[1] == "cancel" && r.Method == http.MethodPost {
@@ -316,6 +379,9 @@ func (s *server) agentTaskEvents(w http.ResponseWriter, r *http.Request, id stri
 		return
 	}
 	after, _ := strconv.ParseInt(r.Header.Get("Last-Event-ID"), 10, 0)
+	if after == 0 {
+		after, _ = strconv.ParseInt(r.URL.Query().Get("lastEventId"), 10, 0)
+	}
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	last := after

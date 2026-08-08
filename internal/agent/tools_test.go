@@ -166,7 +166,7 @@ func TestProjectToolsSchemasAreValid(t *testing.T) {
 			t.Fatalf("工具 %s 参数序列化失败：%v", tool.Name, err)
 		}
 		var schema struct {
-			Type       string         `json:"type"`
+			Type       string          `json:"type"`
 			Properties json.RawMessage `json:"properties"`
 		}
 		if err := json.Unmarshal(raw, &schema); err != nil {

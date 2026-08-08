@@ -7749,77 +7749,124 @@ button > svg,
 
 /* Agent 文件选择器 */
 .agent-file-dialog {
-  max-width: 560px;
+  max-width: min(800px, calc(100vw - 32px));
+  width: 800px;
 }
-.file-picker {
-  display: grid;
-  gap: 8px;
-}
-.file-picker-path {
-  align-items: center;
+.agent-finder-mode {
   background: var(--theme-surface-raised);
   border: 1px solid var(--theme-border-subtle);
-  border-radius: 8px;
-  display: flex;
-  flex-wrap: wrap;
+  border-radius: 7px;
+  display: inline-flex;
   gap: 2px;
-  min-height: 34px;
-  padding: 4px 8px;
+  padding: 2px;
 }
-.file-picker-crumb {
+.agent-finder-mode button {
+  background: transparent;
+  border: 0;
+  border-radius: 5px;
+  color: var(--theme-text-muted);
+  cursor: pointer;
+  font: 600 0.74rem/1 Inter, sans-serif;
+  padding: 6px 8px;
+}
+.agent-finder-mode button:hover { color: var(--theme-text-primary); }
+.agent-finder-mode button.active {
+  background: var(--theme-surface-panel);
+  box-shadow: 0 1px 3px rgb(28 26 23 / 0.14);
+  color: var(--theme-accent-text);
+}
+.agent-finder {
+  border: 1px solid var(--theme-border-default);
+  border-radius: 10px;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  height: 360px;
+  overflow: hidden;
+}
+.agent-finder-toolbar {
   align-items: center;
+  background: var(--theme-surface-raised);
+  border-bottom: 1px solid var(--theme-border-default);
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  padding: 8px 10px;
+}
+.agent-finder-tools { align-items: center; display: flex; flex: 0 0 auto; gap: 7px; }
+.agent-finder-navigation,
+.agent-finder-crumbs,
+.agent-finder-crumbs span,
+.agent-finder-search {
+  align-items: center;
+  display: flex;
+}
+.agent-finder-extensions {
+  align-items: center;
+  background: var(--theme-surface-input);
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: 6px;
+  color: var(--theme-text-muted);
+  display: flex;
+  font-size: 0.68rem;
+  gap: 5px;
+  padding: 0 7px;
+}
+.agent-finder-extensions span { color: var(--theme-text-faint); font-weight: 600; }
+.agent-finder-extensions input { background: transparent; border: 0; color: var(--theme-text-primary); font-size: 0.72rem; height: 28px; outline: 0; width: 64px; }
+.agent-finder-navigation { gap: 7px; min-width: 0; }
+.agent-finder-crumbs { min-width: 0; overflow: hidden; }
+.agent-finder-crumbs span { flex: 0 0 auto; }
+.agent-finder-crumbs button {
   background: transparent;
   border: 0;
   border-radius: 5px;
   color: var(--theme-text-secondary);
   cursor: pointer;
-  display: inline-flex;
   font-size: 0.74rem;
-  max-width: 160px;
+  max-width: 110px;
   overflow: hidden;
   padding: 3px 6px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.file-picker-crumb:hover {
+.agent-finder-crumbs button:hover {
   background: var(--theme-surface-hover);
   color: var(--theme-text-strong);
 }
-.file-picker-crumb-group {
-  align-items: center;
-  display: inline-flex;
-  gap: 2px;
+.agent-finder-crumbs svg { color: var(--theme-text-faint); flex: 0 0 auto; }
+.agent-finder-search {
+  background: var(--theme-surface-input);
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: 6px;
+  color: var(--theme-text-muted);
+  flex: 0 1 190px;
+  gap: 6px;
+  padding: 0 8px;
 }
+.agent-finder-search:focus-within { border-color: var(--theme-accent); box-shadow: 0 0 0 2px var(--theme-accent-soft); }
+.agent-finder-search input { background: transparent; border: 0; color: var(--theme-text-primary); font-size: 0.74rem; height: 28px; min-width: 0; outline: 0; width: 100%; }
+.agent-finder-body { display: grid; grid-template-columns: 154px minmax(0, 1fr); min-height: 0; }
+.agent-finder-body aside { background: var(--theme-surface-raised); border-right: 1px solid var(--theme-border-default); display: grid; align-content: start; gap: 2px; overflow: auto; padding: 10px 7px; }
+.agent-finder-body aside small { color: var(--theme-text-faint); font-size: 0.66rem; font-weight: 650; padding: 0 7px 5px; }
+.agent-finder-body aside button { align-items: center; background: transparent; border: 0; border-radius: 6px; color: var(--theme-text-secondary); cursor: pointer; display: flex; font-size: 0.74rem; gap: 7px; min-height: 28px; padding: 0 7px; text-align: left; }
+.agent-finder-body aside button:hover { background: var(--theme-surface-hover); }
+.agent-finder-body aside button.active { background: var(--theme-accent-soft); color: var(--theme-accent-text); font-weight: 600; }
+.agent-finder-body main { display: grid; grid-template-rows: auto minmax(0, 1fr); min-width: 0; }
+.agent-finder-columns, .agent-finder-list > button { display: grid; grid-template-columns: minmax(0, 1fr) 72px; }
+.agent-finder-columns { border-bottom: 1px solid var(--theme-border-subtle); color: var(--theme-text-faint); font-size: 0.66rem; font-weight: 650; padding: 7px 10px; }
+.agent-finder-list { display: grid; align-content: start; gap: 1px; overflow: auto; padding: 5px; }
+.agent-finder-list > button { align-items: center; background: transparent; border: 0; border-radius: 6px; color: var(--theme-text-primary); cursor: pointer; font-size: 0.76rem; min-height: 31px; padding: 0 7px; text-align: left; }
+.agent-finder-list > button:hover { background: var(--theme-surface-hover); }
+.agent-finder-list > button.selected { background: var(--theme-accent-soft); color: var(--theme-accent-text); }
+.agent-finder-list > button > span { align-items: center; display: flex; gap: 8px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent-finder-list > button small { color: var(--theme-text-faint); font-size: 0.66rem; }
+.agent-finder footer { align-items: center; background: var(--theme-surface-raised); border-top: 1px solid var(--theme-border-default); color: var(--theme-text-muted); display: flex; font-size: 0.7rem; gap: 10px; justify-content: space-between; min-width: 0; padding: 8px 10px; }
+.agent-finder footer > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent-finder footer .secondary-button { flex: 0 0 auto; }
 .file-picker-error {
   color: var(--theme-danger);
   font-size: 0.72rem;
-  margin: 0;
-}
-.file-picker-list {
-  border: 1px solid var(--theme-border-subtle);
-  border-radius: 8px;
-  display: grid;
-  gap: 1px;
-  max-height: 200px;
-  overflow: auto;
-  padding: 4px;
-}
-.file-picker-item {
-  align-items: center;
-  background: transparent;
-  border: 0;
-  border-radius: 6px;
-  color: var(--theme-text-primary);
-  cursor: pointer;
-  display: flex;
-  font-size: 0.78rem;
-  gap: 8px;
-  padding: 7px 9px;
-  text-align: left;
-  transition: background 0.15s ease;
-}
-.file-picker-item:hover {
-  background: var(--theme-surface-hover);
+  margin: 8px;
 }
 .file-picker-empty {
   color: var(--theme-text-faint);
@@ -7827,7 +7874,136 @@ button > svg,
   margin: 8px;
   text-align: center;
 }
-.file-picker-actions {
+.workspace-context-menu {
+  background: var(--theme-surface-panel);
+  border: 1px solid var(--theme-border-default);
+  border-radius: 10px;
+  box-shadow: var(--theme-shadow-pop);
+  display: grid;
+  gap: 2px;
+  min-width: 156px;
+  padding: 5px;
+}
+.workspace-context-menu > button { border-radius: 7px; }
+
+/* The Finder is shared by project management and Agent context selection.
+   Keep its chrome token-based so it follows every application theme, instead
+   of inheriting one-off slate/white utility colours from its original markup. */
+.theme-finder {
+  background: var(--theme-surface-panel) !important;
+  border-color: var(--theme-border-default) !important;
+  box-shadow: var(--theme-shadow-panel) !important;
+  color: var(--theme-text-primary);
+}
+.theme-finder > header,
+.theme-finder > footer {
+  background: var(--theme-surface-raised);
+  border-color: var(--theme-border-default) !important;
+}
+.theme-finder > header strong { color: var(--theme-text-strong) !important; }
+.theme-finder > header.finder-header {
+  display: grid !important;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 14px;
+  min-height: 54px;
+  padding: 8px 12px !important;
+}
+.finder-header-navigation { flex: 0 0 auto; }
+.finder-navigation .icon-button {
+  background: transparent;
+  border-color: transparent;
+  color: var(--theme-text-secondary);
+}
+.finder-navigation .icon-button:hover:not(:disabled) {
+  background: var(--theme-surface-hover);
+  color: var(--theme-text-strong);
+}
+.finder-location {
+  font-size: 0.82rem !important;
+  font-weight: 650 !important;
+  justify-self: center;
+  max-width: min(280px, 100%);
+}
+.theme-finder .finder-context-tools {
+  flex: 0 0 auto;
+  gap: 8px;
+  min-width: 0;
+}
+.theme-finder .finder-context-tools > div {
   display: flex;
-  justify-content: flex-end;
+  flex-wrap: nowrap;
+}
+.theme-finder .finder-context-tools > div button {
+  min-height: 28px;
+  padding: 0 9px !important;
+  white-space: nowrap;
+}
+.theme-finder .finder-context-tools > label {
+  width: 178px;
+}
+.theme-finder .finder-context-tools > label input {
+  font-size: 0.76rem;
+}
+.theme-finder > section > aside {
+  background: var(--theme-surface-raised) !important;
+  border-color: var(--theme-border-default) !important;
+}
+.theme-finder > section > aside small,
+.theme-finder main > header,
+.theme-finder main small { color: var(--theme-text-muted) !important; }
+.theme-finder > section > aside button {
+  color: var(--theme-text-secondary) !important;
+}
+.theme-finder > section > aside button:hover {
+  background: var(--theme-surface-hover) !important;
+}
+.theme-finder > section > aside button.bg-slate-200 {
+  background: var(--theme-accent-soft) !important;
+  color: var(--theme-accent-text) !important;
+}
+.theme-finder main > header {
+  background: var(--theme-surface-panel);
+  border-color: var(--theme-border-default) !important;
+}
+.theme-finder main > div > div > button { color: var(--theme-text-secondary) !important; }
+.theme-finder main > div > div > button:hover { background: var(--theme-surface-hover) !important; }
+.theme-finder main > div > div > button.bg-slate-200 {
+  background: var(--theme-accent-soft) !important;
+  color: var(--theme-accent-text) !important;
+}
+.theme-finder main > div > div > button.bg-slate-200 svg { color: var(--theme-accent-text) !important; }
+.theme-finder .finder-context-tools > label,
+.theme-finder .finder-context-tools > input {
+  background: var(--theme-surface-input) !important;
+  border-color: var(--theme-border-strong) !important;
+  color: var(--theme-text-primary) !important;
+}
+.theme-finder .finder-context-tools > label input,
+.theme-finder .finder-context-tools > input::placeholder { color: var(--theme-text-muted); }
+.theme-finder .finder-context-tools > div {
+  background: var(--theme-surface-panel) !important;
+  border-color: var(--theme-border-default) !important;
+}
+.theme-finder .finder-context-tools > div button { color: var(--theme-text-muted) !important; }
+.theme-finder .finder-context-tools > div button[aria-selected='true'] {
+  background: var(--theme-accent-soft) !important;
+  color: var(--theme-accent-text) !important;
+}
+.theme-finder > footer > span { color: var(--theme-text-muted) !important; }
+@media (max-width: 760px) {
+  .theme-finder > header.finder-header { grid-template-columns: auto minmax(0, 1fr); }
+  .finder-location { justify-self: end; }
+  .theme-finder .finder-context-tools { grid-column: 1 / -1; justify-content: space-between; width: 100%; }
+  .theme-finder .finder-context-tools > label { width: min(178px, 40vw); }
+}
+@media (max-width: 640px) {
+  .agent-file-dialog { width: calc(100vw - 24px); }
+  .agent-finder-body { grid-template-columns: 1fr; }
+  .agent-finder-body aside { display: none; }
+  .agent-finder { height: 320px; }
+  .agent-finder-crumbs { display: none; }
+  .agent-finder-toolbar { align-items: flex-start; flex-direction: column; }
+  .agent-finder-tools { justify-content: space-between; width: 100%; }
+  .agent-finder-search { flex: 0 1 130px; }
+  .agent-finder-extensions { display: none; }
 }

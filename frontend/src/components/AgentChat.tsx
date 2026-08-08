@@ -1,5 +1,5 @@
 import { useStoreState } from '../store/guideStore'
-import { FilePicker } from './FilePicker'
+import { DirectoryPicker } from './Dashboard'
 import {
   ArrowUp,
   Check,
@@ -39,6 +39,7 @@ type Provider = {
   HasKey: boolean
 }
 type ChatMessage = { role: 'user' | 'assistant'; content: string }
+type PickerMode = 'directory' | 'file' | 'extension'
 type Activity = {
   id: number
   callId: string
@@ -86,7 +87,8 @@ const TOOL_DESCRIPTION: Record<string, string> = {
 }
 
 const PROMPT_EXAMPLES: Array<[string, string]> = [
-  ['介绍一下这个项目', '读取项目结构，帮我介绍这个机器人项目。'],
+	['修复当前报错', '收集并分析项目当前错误，定位原因，修复后运行验证。'],
+	['介绍一下这个项目', '读取项目结构，帮我介绍这个机器人项目。'],
   ['加一个新命令', '给机器人新增一个打招呼的命令并验证。'],
   ['找功能实现位置', '搜索某个功能的实现位置并解释。'],
   ['修复最近的报错', '查看最近改动，修复导致的报错。']
@@ -288,7 +290,8 @@ export function AgentChatPage({
   const [goalText, setGoalText] = useStoreState('')
   const [planText, setPlanText] = useStoreState('')
   const [filePickerOpen, setFilePickerOpen] = useStoreState(false)
-  const [filePath, setFilePath] = useStoreState('')
+  const [filePickerMode, setFilePickerMode] = useStoreState<PickerMode>('directory')
+  const [fileExtensions, setFileExtensions] = useStoreState('ts, tsx')
   const [slashIndex, setSlashIndex] = useStoreState(-1)
 
   const current = providers.find(item => item.ID === provider)
@@ -456,6 +459,13 @@ export function AgentChatPage({
     await loadTasks()
   }
 
+  const showTaskReport = async (id: string) => {
+    const response = await fetch(`/api/v1/agent/tasks/${encodeURIComponent(id)}/report`)
+    if (!response.ok) { setNotice('任务报告尚未生成。'); return }
+    const report = (await response.json()) as { summary?: string; modifiedFiles?: string[] }
+    setNotice(`${report.summary || '任务报告已生成。'}${report.modifiedFiles?.length ? ` 修改 ${report.modifiedFiles.length} 个文件。` : ''}`)
+  }
+
   const handleEvent = useCallback(
     (event: {
       type: string
@@ -513,6 +523,24 @@ export function AgentChatPage({
         case 'error':
           setTimelineOpen(false)
           setNotice(event.text || 'Agent 执行出错。')
+          break
+        case 'plan':
+          setNotice(event.text ? `当前步骤：${event.text}` : '任务计划已更新。')
+          break
+        case 'review':
+          try {
+            const review = JSON.parse(event.text || '{}') as {
+              goalSatisfied?: boolean
+              summary?: string
+            }
+            setNotice(
+              review.goalSatisfied
+                ? 'Reviewer 已通过：' + (review.summary || '任务目标已满足。')
+                : 'Reviewer 未通过：' + (review.summary || '请查看失败步骤。')
+            )
+          } catch {
+            setNotice('Reviewer 已完成审查。')
+          }
           break
         case 'confirm':
           setPendingConfirm({
@@ -1423,7 +1451,10 @@ export function AgentChatPage({
                       <button className="agent-session-action" onClick={() => void resumeTask(task.id)} title="从 checkpoint 恢复">继续</button>
                     )}
                     {task.status === 'completed' && (
-                      <button className="agent-session-action" onClick={() => void rollbackTask(task.id)} title="回滚 Agent 修改">回滚</button>
+                      <>
+                        <button className="agent-session-action" onClick={() => void showTaskReport(task.id)} title="查看任务报告">报告</button>
+                        <button className="agent-session-action" onClick={() => void rollbackTask(task.id)} title="回滚 Agent 修改">回滚</button>
+                      </>
                     )}
                   </span>
                 ))}
@@ -1577,56 +1608,31 @@ export function AgentChatPage({
         </div>
       )}
 
-      {filePickerOpen && (
-        <div className="agent-confirm-overlay">
-          <div className="agent-confirm-dialog agent-file-dialog" role="dialog" aria-modal="true">
-            <header>
-              <Folder className="size-4" />
-              <strong>选择目录或文件</strong>
-            </header>
-            <p>
-              浏览并选择要关注的项目目录，Agent 会优先读取它来理解上下文。
-            </p>
-            <label className="grid gap-1.5 text-xs font-medium text-slate-600">
-              路径（可手动补充文件路径）
-              <input
-                className="agent-slash-input"
-                value={filePath}
-                onChange={event => setFilePath(event.target.value)}
-                placeholder="例如：src/response 或 src/index.ts"
-              />
-            </label>
-            <FilePicker
-              initial={filePath}
-              onSelect={picked => {
-                setFilePath(picked)
-              }}
-            />
-            <footer>
-              <button
-                className="secondary-button"
-                onClick={() => setFilePickerOpen(false)}
-              >
-                取消
-              </button>
-              <button
-                className="primary-button"
-                disabled={!filePath.trim()}
-                onClick={() => {
-                  if (filePath.trim()) {
-                    setPrompt(`请先查看项目目录/文件：${filePath.trim()}，基于其内容理解后继续。`)
-                  }
-                  setFilePickerOpen(false)
-                  setFilePath('')
-                  promptRef.current?.focus()
-                }}
-              >
-                确认
-              </button>
-            </footer>
-          </div>
-        </div>
-      )}
+      <DirectoryPicker
+        open={filePickerOpen}
+        multiple={false}
+        priority
+        includeFiles
+        selectionMode={filePickerMode}
+        extensions={fileExtensions}
+        onModeChange={mode => {
+          setFilePickerMode(mode)
+        }}
+        onExtensionsChange={setFileExtensions}
+        onClose={() => setFilePickerOpen(false)}
+        onSelect={paths => {
+          const path = paths[0]
+          if (!path) return
+          const target = filePickerMode === 'extension'
+            ? `目录 ${path} 中所有 ${fileExtensions.trim() || '匹配格式'} 文件`
+            : filePickerMode === 'file'
+              ? `文件：${path}`
+              : `目录：${path}`
+          setPrompt(`请先查看${target}，基于其内容理解后继续。`)
+          setFilePickerOpen(false)
+          promptRef.current?.focus()
+        }}
+      />
     </section>
   )
 }

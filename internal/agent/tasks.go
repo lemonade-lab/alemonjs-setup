@@ -47,6 +47,11 @@ func (m *TaskManager) Create(task AgentTask, runner TaskRunner) (AgentTask, erro
 		task.Created = time.Now()
 	}
 	task.Updated = time.Now()
+	if len(task.Plan.Steps) > 0 {
+		if err := ValidateTaskPlan(task.Plan); err != nil {
+			return task, err
+		}
+	}
 	if _, exists := m.tasks[task.ID]; exists {
 		return task, errors.New("任务已存在")
 	}
@@ -139,8 +144,8 @@ func (m *TaskManager) UpdatePlan(id string, plan TaskPlan) (AgentTask, error) {
 		managed = &ManagedTask{Task: loaded}
 		m.tasks[id] = managed
 	}
-	if managed.Task.Status == TaskRunning {
-		return AgentTask{}, errors.New("运行中的任务不能修改计划")
+	if err := ValidateTaskPlan(plan); err != nil {
+		return AgentTask{}, err
 	}
 	managed.Task.Plan = plan
 	managed.Task.Updated = time.Now()
@@ -148,6 +153,43 @@ func (m *TaskManager) UpdatePlan(id string, plan TaskPlan) (AgentTask, error) {
 		return AgentTask{}, err
 	}
 	return managed.Task, nil
+}
+
+func (m *TaskManager) MarkStep(id, stepID, status, result string) (AgentTask, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	managed, ok := m.tasks[id]
+	if !ok {
+		loaded, err := m.store.LoadTask(id)
+		if err != nil {
+			return AgentTask{}, errors.New("任务不存在")
+		}
+		managed = &ManagedTask{Task: loaded}
+		m.tasks[id] = managed
+	}
+	for index := range managed.Task.Plan.Steps {
+		step := &managed.Task.Plan.Steps[index]
+		if step.ID != stepID {
+			continue
+		}
+		if status == "running" && step.Status == "completed" {
+			return AgentTask{}, errors.New("已完成步骤不能重新运行")
+		}
+		if status == "pending" && step.Status != "failed" && step.Status != "verifying" {
+			return AgentTask{}, errors.New("只有失败或验证中的步骤可以重试")
+		}
+		step.Status, step.Result = status, result
+		if status == "running" {
+			step.Attempts++
+			managed.Task.Plan.CurrentStep = index
+		}
+		managed.Task.Updated = time.Now()
+		if err := m.store.SaveTask(managed.Task); err != nil {
+			return AgentTask{}, err
+		}
+		return managed.Task, nil
+	}
+	return AgentTask{}, errors.New("步骤不存在")
 }
 
 func (m *TaskManager) run(ctx context.Context, id string, task AgentTask, runner TaskRunner) {
@@ -172,6 +214,9 @@ func (m *TaskManager) run(ctx context.Context, id string, task AgentTask, runner
 
 func (m *TaskManager) emit(id string, event Event) {
 	m.mu.Lock()
+	if m.nextEvent[id] == 0 {
+		m.nextEvent[id] = m.store.LastEventID(id)
+	}
 	m.nextEvent[id]++
 	envelope := TaskEvent{ID: m.nextEvent[id], TaskID: id, Event: event}
 	if managed, ok := m.tasks[id]; ok && event.Turn > 0 {

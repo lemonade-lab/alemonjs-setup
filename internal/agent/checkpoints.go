@@ -25,19 +25,21 @@ const (
 )
 
 type AgentTask struct {
-	ID        string     `json:"id"`
-	SessionID string     `json:"sessionId"`
-	Root      string     `json:"root"`
-	Provider  string     `json:"provider"`
-	Model     string     `json:"model"`
-	Access    string     `json:"access"`
-	Status    TaskStatus `json:"status"`
-	Turn      int        `json:"turn"`
-	LastError string     `json:"lastError,omitempty"`
-	Created   time.Time  `json:"created"`
-	Updated   time.Time  `json:"updated"`
-	Plan      TaskPlan   `json:"plan"`
-	Isolation string     `json:"isolation,omitempty"`
+	ID           string      `json:"id"`
+	SessionID    string      `json:"sessionId"`
+	Root         string      `json:"root"`
+	Provider     string      `json:"provider"`
+	Model        string      `json:"model"`
+	Access       string      `json:"access"`
+	Status       TaskStatus  `json:"status"`
+	Turn         int         `json:"turn"`
+	LastError    string      `json:"lastError,omitempty"`
+	Created      time.Time   `json:"created"`
+	Updated      time.Time   `json:"updated"`
+	Plan         TaskPlan    `json:"plan"`
+	Isolation    string      `json:"isolation,omitempty"`
+	WorktreeRoot string      `json:"worktreeRoot,omitempty"`
+	Report       *TaskReport `json:"report,omitempty"`
 }
 
 type TaskPlan struct {
@@ -57,22 +59,71 @@ type PlanStep struct {
 	Result      string `json:"result,omitempty"`
 }
 
+var validPlanStatuses = map[string]bool{"pending": true, "running": true, "verifying": true, "completed": true, "failed": true, "skipped": true}
+
+func ValidateTaskPlan(plan TaskPlan) error {
+	if strings.TrimSpace(plan.Goal) == "" || strings.TrimSpace(plan.Completion) == "" {
+		return errors.New("计划必须包含目标和完成条件")
+	}
+	if len(plan.Steps) == 0 {
+		return errors.New("计划至少需要一个步骤")
+	}
+	if plan.CurrentStep < 0 || plan.CurrentStep >= len(plan.Steps) {
+		return errors.New("当前步骤无效")
+	}
+	seen := map[string]bool{}
+	for _, step := range plan.Steps {
+		if step.ID == "" || seen[step.ID] {
+			return errors.New("步骤 ID 必须唯一且非空")
+		}
+		if !validPlanStatuses[step.Status] {
+			return fmt.Errorf("步骤状态无效：%s", step.Status)
+		}
+		seen[step.ID] = true
+	}
+	return nil
+}
+
 type AgentCheckpoint struct {
-	Version      int        `json:"version"`
-	TaskID       string     `json:"taskId"`
-	SessionID    string     `json:"sessionId"`
-	Root         string     `json:"root"`
-	Provider     string     `json:"provider"`
-	Model        string     `json:"model"`
-	Messages     []Message  `json:"messages"`
-	SystemPrompt string     `json:"systemPrompt"`
-	Turn         int        `json:"turn"`
-	Status       TaskStatus `json:"status"`
-	LastError    string     `json:"lastError,omitempty"`
-	Updated      time.Time  `json:"updated"`
-	Plan         TaskPlan   `json:"plan"`
-	LastAction   string     `json:"lastAction,omitempty"`
-	IndexVersion string     `json:"indexVersion,omitempty"`
+	Version      int          `json:"version"`
+	TaskID       string       `json:"taskId"`
+	SessionID    string       `json:"sessionId"`
+	Root         string       `json:"root"`
+	Provider     string       `json:"provider"`
+	Model        string       `json:"model"`
+	Messages     []Message    `json:"messages"`
+	SystemPrompt string       `json:"systemPrompt"`
+	Turn         int          `json:"turn"`
+	Status       TaskStatus   `json:"status"`
+	LastError    string       `json:"lastError,omitempty"`
+	Updated      time.Time    `json:"updated"`
+	Plan         TaskPlan     `json:"plan"`
+	LastAction   string       `json:"lastAction,omitempty"`
+	IndexVersion string       `json:"indexVersion,omitempty"`
+	WorktreeRoot string       `json:"worktreeRoot,omitempty"`
+	Report       *TaskReport  `json:"report,omitempty"`
+	Context      ContextState `json:"context,omitempty"`
+}
+
+type ContextState struct {
+	Goal          string   `json:"goal,omitempty"`
+	Constraints   []string `json:"constraints,omitempty"`
+	Decisions     []string `json:"decisions,omitempty"`
+	ModifiedFiles []string `json:"modifiedFiles,omitempty"`
+	Validation    []string `json:"validation,omitempty"`
+	Failures      []string `json:"failures,omitempty"`
+	Summary       string   `json:"summary,omitempty"`
+}
+
+type TaskReport struct {
+	Goal           string       `json:"goal"`
+	Plan           TaskPlan     `json:"plan"`
+	ModifiedFiles  []string     `json:"modifiedFiles,omitempty"`
+	Validation     []string     `json:"validation,omitempty"`
+	Reviewer       ReviewResult `json:"reviewer"`
+	Summary        string       `json:"summary"`
+	RollbackTaskID string       `json:"rollbackTaskId,omitempty"`
+	GeneratedAt    time.Time    `json:"generatedAt"`
 }
 
 // TaskStore is a small atomic on-disk store. It deliberately stores no API
@@ -97,6 +148,7 @@ func (s *TaskStore) taskPath(id string) string { return filepath.Join(s.taskDir(
 func (s *TaskStore) checkpointPath(id string) string {
 	return filepath.Join(s.taskDir(id), "checkpoint.json")
 }
+func (s *TaskStore) reportPath(id string) string { return filepath.Join(s.taskDir(id), "report.json") }
 func (s *TaskStore) eventsPath(id string) string { return filepath.Join(s.taskDir(id), "events.jsonl") }
 
 func (s *TaskStore) SaveTask(task AgentTask) error {
@@ -154,10 +206,30 @@ func (s *TaskStore) LoadCheckpoint(id string) (AgentCheckpoint, error) {
 	if err := readJSON(s.checkpointPath(id), &cp); err != nil {
 		return cp, err
 	}
-	if cp.Version != 1 {
+	if cp.Version > 1 {
 		return cp, fmt.Errorf("不支持的 checkpoint 版本：%d", cp.Version)
 	}
+	if cp.Version == 0 {
+		cp.Version = 1
+		if cp.Plan.CurrentStep < 0 {
+			cp.Plan.CurrentStep = 0
+		}
+	}
 	return cp, nil
+}
+
+func (s *TaskStore) SaveReport(report TaskReport, taskID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.atomicJSON(s.reportPath(taskID), report)
+}
+
+func (s *TaskStore) LoadReport(taskID string) (TaskReport, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var report TaskReport
+	err := readJSONFile(s.reportPath(taskID), &report)
+	return report, err
 }
 
 func (s *TaskStore) AppendEvent(id string, event any) error {
@@ -199,6 +271,22 @@ func (s *TaskStore) ReadEvents(id string, after int64) ([]json.RawMessage, error
 		}
 	}
 	return out, nil
+}
+
+func (s *TaskStore) LastEventID(id string) int64 {
+	raw, err := os.ReadFile(s.eventsPath(id))
+	if err != nil {
+		return 0
+	}
+	lines := strings.Split(strings.TrimSpace(string(raw)), "\n")
+	var last int64
+	for _, line := range lines {
+		var event TaskEvent
+		if json.Unmarshal([]byte(line), &event) == nil && event.ID > last {
+			last = event.ID
+		}
+	}
+	return last
 }
 
 func (s *TaskStore) atomicJSON(path string, value any) error {

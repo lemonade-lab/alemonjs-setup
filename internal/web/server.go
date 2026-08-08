@@ -320,6 +320,7 @@ func NewServerWithAuth(version string, staticFiles fs.FS, identity *access.Manag
 	mux.HandleFunc("/api/v1/agent/approve", s.agentConfirmHandler)
 	mux.HandleFunc("/api/v1/agent/tasks", s.agentTasksHandler)
 	mux.HandleFunc("/api/v1/agent/tasks/", s.agentTaskHandler)
+	mux.HandleFunc("/api/v1/agent/diagnostics", s.agentDiagnosticsHandler)
 	mux.HandleFunc("/api/v1/system/ssh", s.sshHandler)
 	mux.HandleFunc("/api/v1/system/mcp", s.systemMCPHandler)
 	mux.HandleFunc("/api/v1/directories", s.directoryHandler)
@@ -975,14 +976,24 @@ func (s *server) directoryHandler(w http.ResponseWriter, r *http.Request) {
 		Name string `json:"name"`
 		Path string `json:"path"`
 	}
+	type file struct {
+		Name string `json:"name"`
+		Path string `json:"path"`
+	}
 	showHidden := r.URL.Query().Get("hidden") == "true"
+	includeFiles := r.URL.Query().Get("files") == "true"
 	directories := make([]directory, 0)
+	files := make([]file, 0)
 	for _, entry := range entries {
 		if entry.IsDir() && (showHidden || !strings.HasPrefix(entry.Name(), ".")) {
 			directories = append(directories, directory{Name: entry.Name(), Path: filepath.Join(path, entry.Name())})
 		}
+		if includeFiles && !entry.IsDir() && (showHidden || !strings.HasPrefix(entry.Name(), ".")) {
+			files = append(files, file{Name: entry.Name(), Path: filepath.Join(path, entry.Name())})
+		}
 	}
 	sort.Slice(directories, func(i, j int) bool { return directories[i].Name < directories[j].Name })
+	sort.Slice(files, func(i, j int) bool { return files[i].Name < files[j].Name })
 	parent := ""
 	for _, root := range roots {
 		if filepath.Clean(path) != filepath.Clean(root) {
@@ -992,7 +1003,7 @@ func (s *server) directoryHandler(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"path": path, "parent": parent, "roots": roots, "locations": directoryLocations(roots), "directories": directories})
+	writeJSON(w, http.StatusOK, map[string]any{"path": path, "parent": parent, "roots": roots, "locations": directoryLocations(roots), "directories": directories, "files": files})
 }
 
 func managedDirectoryRoots() []string {

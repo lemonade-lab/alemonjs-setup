@@ -132,7 +132,9 @@ func TestLiveDeepSeekToolEcho(t *testing.T) {
 	registry.Add(Tool{Name: "echo", Description: "回显一段文字", Parameters: map[string]any{
 		"type": "object", "properties": map[string]any{"text": map[string]any{"type": "string"}}, "required": []string{"text"},
 	}}, func(ctx context.Context, arguments json.RawMessage) (string, error) {
-		var in struct{ Text string `json:"text"` }
+		var in struct {
+			Text string `json:"text"`
+		}
 		_ = json.Unmarshal(arguments, &in)
 		return "你让我回显：" + in.Text, nil
 	})

@@ -34,6 +34,7 @@ import {
   Code2,
   Eye,
   EyeOff,
+  FileText,
   Folder,
   GitBranch,
   Globe,
@@ -269,16 +270,27 @@ export function DirectoryPicker({
   open,
   multiple = true,
   priority = false,
+  includeFiles = false,
+  selectionMode = 'directory',
+  extensions = '',
+  onModeChange,
+  onExtensionsChange,
   onClose,
   onSelect
 }: {
   open: boolean
   multiple?: boolean
   priority?: boolean
+  includeFiles?: boolean
+  selectionMode?: 'directory' | 'file' | 'extension'
+  extensions?: string
+  onModeChange?: (mode: 'directory' | 'file' | 'extension') => void
+  onExtensionsChange?: (extensions: string) => void
   onClose: () => void
   onSelect: (paths: string[]) => void
 }) {
   type Directory = { name: string; path: string }
+  type File = { name: string; path: string }
   type DirectoryData = {
     path: string
     parent: string
@@ -289,6 +301,7 @@ export function DirectoryPicker({
       kind: 'home' | 'disk' | 'volume'
     }>
     directories: Directory[]
+    files?: File[]
   }
   const [path, setPath] = useStoreState('')
   const [query, setQuery] = useStoreState('')
@@ -321,7 +334,9 @@ export function DirectoryPicker({
     if (!open) return
     const controller = new AbortController()
     const parameters = new URLSearchParams(
-      path ? { path, hidden: String(hidden) } : { hidden: String(hidden) }
+      path
+        ? { path, hidden: String(hidden), files: String(includeFiles || selectionMode !== 'directory') }
+        : { hidden: String(hidden), files: String(includeFiles || selectionMode !== 'directory') }
     )
     void fetch(`/api/v1/directories?${parameters}`, {
       signal: controller.signal
@@ -356,11 +371,21 @@ export function DirectoryPicker({
         }
       })
     return () => controller.abort()
-  }, [directoryReload, hidden, open, path])
+  }, [directoryReload, hidden, includeFiles, open, path, selectionMode])
   if (!open) return null
-  const items = (data?.directories ?? []).filter(item =>
-    item.name.toLowerCase().includes(query.toLowerCase())
-  )
+  const suffixes = extensions
+    .split(/[,，\s]+/)
+    .map(item => item.replace(/^\./, '').toLowerCase())
+    .filter(Boolean)
+  const items = [
+    ...(data?.directories ?? []).map(item => ({ ...item, kind: 'directory' as const })),
+    ...(includeFiles || selectionMode !== 'directory'
+      ? (data?.files ?? []).map(item => ({ ...item, kind: 'file' as const }))
+      : [])
+  ].filter(item => {
+    if (!item.name.toLowerCase().includes(query.toLowerCase())) return false
+    return item.kind !== 'file' || selectionMode !== 'extension' || suffixes.length === 0 || suffixes.some(suffix => item.name.toLowerCase().endsWith(`.${suffix}`))
+  })
   const selectDirectory = (
     itemPath: string,
     event: Pick<MouseEvent<HTMLButtonElement>, 'metaKey' | 'ctrlKey'>
@@ -417,13 +442,13 @@ export function DirectoryPicker({
       ariaLabel="选择目录"
     >
       <section
-        className="directory-picker finder-picker grid h-[min(700px,calc(100vh-32px))] w-full max-w-5xl grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden rounded-xl border border-slate-200 bg-white shadow-[0_24px_70px_rgb(28_26_23/0.26)]"
+        className="directory-picker finder-picker theme-finder grid h-[min(700px,calc(100vh-32px))] w-full max-w-5xl grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden rounded-xl border border-slate-200 bg-white shadow-[0_24px_70px_rgb(28_26_23/0.26)]"
         role="dialog"
-        aria-label="选择目录"
+        aria-label="选择上下文"
       >
-        <header className="grid grid-cols-[auto_minmax(0,1fr)_minmax(180px,280px)] items-center gap-4 border-b border-slate-200 px-4 py-3">
-          <div className="flex flex-row items-center gap-2">
-            <nav className="flex items-center gap-1" aria-label="目录导航">
+        <header className="finder-header grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-4 border-b border-slate-200 px-4 py-3">
+          <div className="finder-header-navigation flex flex-row items-center gap-2">
+            <nav className="finder-navigation flex items-center gap-1" aria-label="目录导航">
               <button
                 className="icon-button size-8 p-0"
                 disabled={historyIndex <= 0 && !data?.parent}
@@ -457,26 +482,53 @@ export function DirectoryPicker({
                 )}
               </button>
             </nav>
-            <div className="hidden text-[11px] text-slate-400 lg:block">
-              单击选择，⌘/Ctrl + 单击多选，双击打开
-            </div>
           </div>
-          <strong className="truncate text-center text-sm font-semibold text-slate-800">
+          <strong className="finder-location truncate text-center text-sm font-semibold text-slate-800">
             {data?.path
               ? /^[a-z]:[\\/]?$/i.test(data.path)
                 ? `本地磁盘（${data.path.slice(0, 2).toUpperCase()}）`
                 : data.path.split(/[\\/]/).filter(Boolean).pop() || '系统磁盘'
-              : '选择目录'}
+              : '选择位置'}
           </strong>
-          <label className="flex h-9 items-center gap-2 rounded-md border border-slate-300 px-2.5 text-slate-400 focus-within:border-brand-600 focus-within:ring-2 focus-within:ring-brand-100">
-            <Search className="size-4" />
-            <input
-              className="min-w-0 flex-1 bg-transparent text-xs text-slate-800 outline-none placeholder:text-slate-400"
-              value={query}
-              onChange={event => setQuery(event.target.value)}
-              placeholder="搜索当前目录"
-            />
-          </label>
+          <div className="finder-context-tools flex items-center justify-end gap-2">
+            {onModeChange && (
+              <div className="flex rounded-md border border-slate-200 bg-slate-50 p-0.5" role="tablist" aria-label="选择方式">
+                {([
+                  ['directory', '目录'],
+                  ['file', '文件'],
+                  ['extension', '指定格式']
+                ] as const).map(([mode, label]) => (
+                  <button
+                    className={cn('rounded px-2 py-1 text-[11px] font-medium', selectionMode === mode ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-700')}
+                    key={mode}
+                    onClick={() => onModeChange(mode)}
+                    role="tab"
+                    aria-selected={selectionMode === mode}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            )}
+            {selectionMode === 'extension' && onExtensionsChange && (
+              <input
+                className="h-9 w-20 rounded-md border border-slate-300 px-2 text-xs text-slate-700 outline-none focus:border-brand-600"
+                value={extensions}
+                onChange={event => onExtensionsChange(event.target.value)}
+                placeholder="ts, tsx"
+                aria-label="文件格式"
+              />
+            )}
+            <label className="flex h-9 w-44 items-center gap-2 rounded-md border border-slate-300 px-2.5 text-slate-400 focus-within:border-brand-600 focus-within:ring-2 focus-within:ring-brand-100">
+              <Search className="size-4" />
+              <input
+                className="min-w-0 flex-1 bg-transparent text-xs text-slate-800 outline-none placeholder:text-slate-400"
+                value={query}
+                onChange={event => setQuery(event.target.value)}
+                placeholder="搜索当前目录"
+              />
+            </label>
+          </div>
         </header>
         <section className="grid min-h-0 grid-cols-[190px_minmax(0,1fr)]">
           <aside className="grid content-start gap-1 overflow-auto border-r border-slate-200 bg-slate-50 p-3">
@@ -550,12 +602,28 @@ export function DirectoryPicker({
                     'grid min-h-9 grid-cols-[minmax(0,1fr)_100px] items-center rounded-md px-2 text-left text-xs transition',
                     selected.includes(item.path)
                       ? 'bg-slate-200 text-slate-900'
-                      : 'text-slate-700 hover:bg-slate-100'
+                      : 'text-slate-700 hover:bg-slate-100',
+                    selectionMode === 'directory' && item.kind === 'file' &&
+                      'cursor-default opacity-55 hover:bg-transparent'
                   )}
                   key={item.path}
-                  onClick={event => selectDirectory(item.path, event)}
-                  onDoubleClick={() => visit(item.path)}
+                  onClick={event => {
+                    if (selectionMode === 'directory' && item.kind === 'file') return
+                    if (selectionMode === 'file' && item.kind === 'directory') {
+                      visit(item.path)
+                      return
+                    }
+                    // 指定格式以当前目录为范围；点击匹配文件只是快捷地选中它所在目录。
+                    selectDirectory(
+                      selectionMode === 'extension' && item.kind === 'file'
+                        ? data?.path ?? item.path
+                        : item.path,
+                      event
+                    )
+                  }}
+                  onDoubleClick={() => item.kind === 'directory' && visit(item.path)}
                   onContextMenu={event => {
+                    if (item.kind !== 'directory') return
                     event.preventDefault()
                     event.stopPropagation()
                     setSelected([item.path])
@@ -567,10 +635,16 @@ export function DirectoryPicker({
                   }}
                 >
                   <span className="flex min-w-0 items-center gap-2">
-                    <Folder className="size-4 shrink-0 text-slate-500" />
+                    {item.kind === 'directory' ? (
+                      <Folder className="size-4 shrink-0 text-slate-500" />
+                    ) : (
+                      <FileText className="size-4 shrink-0 text-slate-400" />
+                    )}
                     <span className="truncate">{item.name}</span>
                   </span>
-                  <small className="text-[11px] text-slate-400">文件夹</small>
+                  <small className="text-[11px] text-slate-400">
+                    {item.kind === 'directory' ? '文件夹' : '文件'}
+                  </small>
                 </button>
               ))}
             </div>
@@ -592,7 +666,7 @@ export function DirectoryPicker({
               disabled={!selected.length}
               onClick={() => onSelect(selected)}
             >
-              {multiple ? '添加' : '选择'}
+              {multiple ? '添加' : selectionMode === 'file' ? '选择文件' : '选择'}
             </button>
           </div>
         </footer>
@@ -3089,7 +3163,7 @@ function ProjectItem({
             <MoreVertical className="size-3.5" />
           </button>
           {moreOpen && (
-            <div className="absolute right-0 top-7 z-20 grid min-w-36 gap-0.5 rounded-lg border border-slate-200 bg-white p-1 shadow-lg dark:border-slate-700 dark:bg-slate-800">
+            <div className="workspace-context-menu absolute right-0 top-7 z-20" role="menu">
               <button
                 className="flex min-h-8 items-center gap-2 rounded px-2 text-left text-xs text-slate-600 transition hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-700"
                 onClick={() => {
@@ -3167,7 +3241,7 @@ function ProjectItem({
       {ctxMenu && (
         <div
           ref={ctxRef}
-          className="fixed z-200 grid min-w-36 gap-0.5 rounded-lg border border-slate-200 bg-white p-1 shadow-lg dark:border-slate-700 dark:bg-slate-800"
+          className="workspace-context-menu fixed z-200"
           style={{ left: ctxMenu.x, top: ctxMenu.y }}
         >
           <button
@@ -3195,7 +3269,7 @@ function ProjectItem({
       {projectMenu && (
         <div
           ref={projectMenuRef}
-          className="fixed z-200 grid min-w-36 gap-0.5 rounded-lg border border-slate-200 bg-white p-1 shadow-lg dark:border-slate-700 dark:bg-slate-800"
+          className="workspace-context-menu fixed z-200"
           style={{ left: projectMenu.x, top: projectMenu.y }}
           role="menu"
           aria-label={`${project.name} 的操作`}

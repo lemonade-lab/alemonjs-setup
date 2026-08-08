@@ -43,6 +43,17 @@ func TestTaskStoreCheckpointAndEventReplay(t *testing.T) {
 	}
 }
 
+func TestValidateTaskPlan(t *testing.T) {
+	plan := TaskPlan{Goal: "g", Completion: "c", CurrentStep: 0, Steps: []PlanStep{{ID: "a", Status: "pending"}}}
+	if err := ValidateTaskPlan(plan); err != nil {
+		t.Fatal(err)
+	}
+	plan.Steps[0].Status = "unknown"
+	if err := ValidateTaskPlan(plan); err == nil {
+		t.Fatal("expected invalid status")
+	}
+}
+
 func TestSnapshotRollbackDetectsExternalChange(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "a.txt")
@@ -100,4 +111,15 @@ func TestTaskManagerCancel(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("任务未进入 cancelled 状态")
+}
+
+func TestTaskManagerRejectsCompletedRestart(t *testing.T) {
+	manager := NewTaskManager(NewTaskStoreAt(t.TempDir()))
+	task, err := manager.Create(AgentTask{ID: "done", Status: TaskCompleted}, func(context.Context, AgentTask, func(Event)) (string, error) { return "", nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Start(task.ID); err == nil {
+		t.Fatal("completed 任务不应重新启动")
+	}
 }

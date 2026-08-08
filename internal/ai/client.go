@@ -86,6 +86,7 @@ func (m *Manager) List() ([]Provider, error) {
 	}
 	return out, nil
 }
+
 // Save stores the provider credentials, fetches the provider's model list
 // with the new key, and remembers the first model as the default. When the
 // model list cannot be fetched (offline, wrong key) it falls back to the
@@ -226,6 +227,15 @@ func (m *Manager) Chat(id, model string, messages []map[string]string) (string, 
 	return compatible(cfg, messages)
 }
 
+// ChatResolved performs one request with an already-resolved provider. It is
+// used by read-only internal reviewers and never persists or logs credentials.
+func ChatResolved(cfg Resolved, messages []map[string]string) (string, error) {
+	if cfg.Anthropic {
+		return anthropic(cfg, messages)
+	}
+	return compatible(cfg, messages)
+}
+
 // Models reads the model list from an OpenAI-compatible endpoint, falling back
 // to the list remembered at save time when the endpoint is unreachable.
 // Anthropic exposes no list endpoint, so its stable choices are returned
@@ -309,6 +319,7 @@ func anthropic(r Resolved, messages []map[string]string) (string, error) {
 	}
 	return data.Content[0].Text, nil
 }
+
 // httpClient is package-level so tests can inject a fake transport without
 // binding a network port.
 var httpClient = &http.Client{Timeout: 90 * time.Second}
