@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Plus, Trash2 } from 'lucide-react'
+import { KeyRound, Plus, Trash2 } from 'lucide-react'
 import { Tabs } from './Tabs'
 
 type Entry = { key: string; value: string }
@@ -79,13 +79,19 @@ export function EnvConfigForm({ content, busy, onChange, onSave }: Props) {
       </section>
     )
   return (
-    <section className="grid max-w-[760px] gap-3">
-      <header className="flex items-start justify-between gap-4">
-        <div className="grid gap-1.5">
-          {editor}
-          <small className="max-w-lg text-[11px] leading-4 text-slate-500">
-            环境变量常用于密钥、端口和第三方服务地址；请勿截图或公开提交。
-          </small>
+    <section className="grid max-w-190 gap-3">
+      <header className="workspace-page-header flex items-start justify-between gap-4">
+        <div className="flex min-w-0 items-center gap-3">
+          <span className="workspace-page-header-icon">
+            <KeyRound className="size-4" />
+          </span>
+          <div className="grid min-w-0 gap-1.5">
+            <div className="workspace-page-header-meta">
+              <strong>环境变量</strong>
+              <small>管理密钥、端口和第三方服务地址</small>
+            </div>
+            {editor}
+          </div>
         </div>
         <button
           className={saveClass}

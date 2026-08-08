@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { Package } from 'lucide-react'
 import { Tabs } from './Tabs'
 
 type Props = {
@@ -60,11 +61,20 @@ export function NpmrcConfigForm({ content, busy, onChange, onSave }: Props) {
   const saveClass =
     'inline-flex min-h-9 items-center justify-center rounded-md bg-brand-600 px-3.5 text-xs font-semibold text-white transition hover:bg-brand-700 disabled:cursor-not-allowed disabled:opacity-50'
   return (
-    <section className="grid max-w-[620px] gap-4">
+    <section className="grid max-w-155 gap-4">
       {editor === 'visual' ? (
         <>
-          <header className="flex items-center justify-between">
-            {mode}
+          <header className="workspace-page-header flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <span className="workspace-page-header-icon">
+                <Package className="size-4" />
+              </span>
+              <div className="workspace-page-header-meta">
+                <strong>npm 源</strong>
+                <small>配置当前机器人的包下载源</small>
+              </div>
+              {mode}
+            </div>
             <button
               className={saveClass}
               disabled={busy || (preset === 'custom' && !customRegistry.trim())}

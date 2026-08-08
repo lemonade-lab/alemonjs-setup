@@ -153,7 +153,11 @@ export function SetupUpdateButton() {
   return (
     <div className="relative">
       <button
-        className="inline-flex size-8 items-center justify-center rounded-md border border-brand-100 bg-brand-50 text-brand-600 transition hover:bg-brand-100 disabled:cursor-wait disabled:opacity-70"
+        className={`inline-flex size-8 items-center justify-center rounded-md border transition disabled:cursor-wait disabled:opacity-70 ${
+          data?.available
+            ? 'border-brand-100 bg-brand-50 text-brand-600 hover:bg-brand-100'
+            : 'border-transparent text-slate-500 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800'
+        }`}
         onClick={openPanel}
         disabled={isFetching}
         aria-label="检查应用更新"
@@ -168,7 +172,11 @@ export function SetupUpdateButton() {
         <RefreshCw className="size-4" />
       </button>
       {open && (
-        <section className="absolute left-0 top-10 z-20 grid w-80 gap-3 rounded-xl border border-slate-200 bg-white p-3.5 shadow-[0_18px_42px_rgb(28_26_23/0.13)]">
+        <section
+          className="topbar-popover absolute left-0 top-[calc(100%+8px)] z-50 grid w-80 gap-2.5 rounded-xl border border-slate-200 bg-white p-3 shadow-[0_18px_42px_rgb(28_26_23/0.13)]"
+          role="dialog"
+          aria-label="应用更新"
+        >
           <header className="flex items-start justify-between gap-3">
             <div className="flex items-center gap-2.5">
               <i className="inline-flex size-8 items-center justify-center rounded-lg bg-brand-50 text-brand-600">
@@ -182,7 +190,7 @@ export function SetupUpdateButton() {
               </span>
             </div>
             <button
-              className="inline-flex size-7 items-center justify-center rounded-md text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+              className="topbar-popover-close"
               onClick={() => setOpen(false)}
               aria-label="关闭更新提示"
             >
@@ -339,10 +347,7 @@ export function SetupUpdateButton() {
                     </small>
                   </span>
                 </label>
-                <Button
-                  disabled={!file || busy}
-                  onClick={() => void upload()}
-                >
+                <Button disabled={!file || busy} onClick={() => void upload()}>
                   {busy ? '正在安装…' : '安装更新'}
                 </Button>
                 {message && (

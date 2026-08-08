@@ -1,6 +1,6 @@
 import cn from 'classnames'
 import { useEffect, useState, type ReactNode } from 'react'
-import { ChevronDown, File, Folder, RefreshCw, X } from 'lucide-react'
+import { ChevronDown, File, Folder, Package, RefreshCw, X } from 'lucide-react'
 import { useNpmStatusQuery, useLazyNpmPackQuery } from '../store/workspaceApi'
 import { ErrorNotice } from './ErrorNotice'
 
@@ -201,14 +201,19 @@ export function NpmPublishPanel({ root, busy, onRun }: Props) {
     otherIssues.length === 0 &&
     (!loginRequired || (tokenMode && token.trim() !== ''))
   return (
-    <section className="grid max-w-[760px] gap-4">
-      <header className="flex min-h-10 flex-wrap items-end justify-between gap-3 border-b border-slate-200 pb-3 dark:border-slate-700">
-        <strong className="text-base font-semibold text-slate-900 dark:text-slate-100">
-          {status.name || '未命名包'}
-        </strong>
+    <section className="grid max-w-190 gap-4">
+      <header className="workspace-page-header flex min-h-10 flex-wrap items-center justify-between gap-3">
+        <div className="flex min-w-0 items-center gap-3">
+          <span className="workspace-page-header-icon">
+            <Package className="size-4" />
+          </span>
+          <div className="workspace-page-header-meta">
+            <strong>{status.name || '未命名包'}</strong>
+            <small>npm 发布 · 管理标签、预览与发布状态</small>
+          </div>
+        </div>
         <div className="flex flex-wrap items-end justify-end gap-2">
           <label className="grid gap-1 text-[11px] font-semibold text-slate-500">
-            标签
             <select
               className="h-9 rounded-lg border border-slate-200 bg-white px-2 text-xs font-semibold text-slate-700 outline-none focus:border-brand-600 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-200"
               value={tag}
@@ -289,7 +294,7 @@ export function NpmPublishPanel({ root, busy, onRun }: Props) {
             npm 会从这个已提交版本打包，不会包含尚未提交的文件。
           </small>
         </div>
-        <label className="grid min-w-[260px] gap-1 text-[11px] font-semibold text-slate-500">
+        <label className="grid min-w-65 gap-1 text-[11px] font-semibold text-slate-500">
           {status.branch || '当前分支'}
           <select
             className="h-9 rounded-md border border-slate-300 bg-white px-2 text-xs font-medium text-slate-700 outline-none focus:border-brand-600 focus:ring-2 focus:ring-brand-100"

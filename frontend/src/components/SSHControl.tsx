@@ -88,7 +88,9 @@ export function SSHControl() {
       </Button>
       {open && (
         <section
-          className="absolute right-0 top-[calc(100%+8px)] z-50 grid w-[min(24rem,calc(100vw-2rem))] max-h-[calc(100vh-5rem)] gap-2.5 overflow-y-auto rounded-xl border border-slate-200 bg-white p-3 shadow-[0_18px_42px_rgb(28_26_23/0.13)]"
+          className="topbar-popover absolute right-0 top-[calc(100%+8px)] z-50 grid w-[min(24rem,calc(100vw-2rem))] max-h-[calc(100vh-5rem)] gap-2.5 overflow-y-auto rounded-xl border border-slate-200 bg-white p-3 shadow-[0_18px_42px_rgb(28_26_23/0.13)]"
+          role="dialog"
+          aria-label="SSH 管理"
           onKeyDown={event => {
             if (event.key === 'Escape') setOpen(false)
           }}
@@ -99,7 +101,7 @@ export function SSHControl() {
             </div>
             <Button
               variant="icon"
-              className="size-6 border-transparent bg-transparent text-slate-400 hover:bg-slate-100"
+              className="topbar-popover-close size-6"
               onClick={() => setOpen(false)}
               aria-label="关闭"
             >

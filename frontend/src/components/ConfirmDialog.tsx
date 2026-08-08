@@ -32,20 +32,20 @@ export function ConfirmDialog({
   if (!open) return null
   return createPortal(
     <div
-      className="fixed inset-0 z-[95] flex items-center justify-center bg-slate-950/25 p-6"
+      className="fixed inset-0 z-95 flex items-center justify-center bg-slate-950/25 p-6"
       role="presentation"
       onMouseDown={onCancel}
     >
       <section
-        className="grid w-full max-w-md gap-4 rounded-xl border border-slate-200 bg-white p-[18px] shadow-[0_20px_58px_rgb(28_26_23/0.22)]"
+        className="grid w-full max-w-md gap-4 rounded-xl border border-slate-200 bg-white p-4.5 shadow-[0_20px_58px_rgb(28_26_23/0.22)]"
         role="dialog"
         aria-modal="true"
         aria-label={title}
         onMouseDown={event => event.stopPropagation()}
       >
         <header className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2.5">
-          <i className="inline-flex size-[34px] items-center justify-center rounded-lg bg-orange-50 text-orange-700">
-            <AlertTriangle className="size-[17px]" />
+          <i className="inline-flex size-8.5 items-center justify-center rounded-lg bg-orange-50 text-orange-700">
+            <AlertTriangle className="size-4.25" />
           </i>
           <div className="grid min-w-0 gap-0.5">
             <strong className="text-sm text-ink-950">{title}</strong>

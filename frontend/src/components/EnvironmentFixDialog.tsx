@@ -47,7 +47,7 @@ export function EnvironmentFixDialog({ check, onClose }: Props) {
       ariaLabel="环境修复"
     >
       <section
-        className="relative w-full max-w-[440px] rounded-xl border border-slate-200 bg-white p-6 shadow-[0_24px_60px_rgb(28_26_23_/_0.24)]"
+        className="relative w-full max-w-110 rounded-xl border border-slate-200 bg-white p-6 shadow-[0_24px_60px_rgb(28_26_23/0.24)]"
         role="dialog"
         aria-modal="true"
         aria-labelledby="environment-fix-title"

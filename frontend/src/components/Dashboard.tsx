@@ -580,7 +580,7 @@ export function DirectoryPicker({
       </section>
       {contextMenu && (
         <div
-          className="fixed z-[210] grid min-w-32 overflow-hidden rounded-md border border-slate-200 bg-white py-1 shadow-lg"
+          className="fixed z-210 grid min-w-32 overflow-hidden rounded-md border border-slate-200 bg-white py-1 shadow-lg"
           style={{ left: contextMenu.x, top: contextMenu.y }}
           role="menu"
           onClick={event => event.stopPropagation()}
@@ -687,7 +687,6 @@ export function Dashboard({
   const [configEditor, setConfigEditor] = useState<'visual' | 'text'>('visual')
   const [buildMode, setBuildMode] = useState<'manifest' | 'npm' | 'git'>('git')
   const [releaseVersion, setReleaseVersion] = useState('')
-  const [environmentOpen, setEnvironmentOpen] = useState(false)
   const [directoryPickerOpen, setDirectoryPickerOpen] = useState(false)
   const [cloneProgress, setCloneProgress] = useState(0)
   const [gitCloneOpen, setGitCloneOpen] = useState(false)
@@ -747,15 +746,6 @@ export function Dashboard({
       window.removeEventListener('alx:agent-new-session', clearSession)
     }
   }, [loadAgentSessions])
-  useEffect(() => {
-    const closeWhenAnotherToolOpens = (event: Event) => {
-      if ((event as CustomEvent<string>).detail !== 'environment')
-        setEnvironmentOpen(false)
-    }
-    window.addEventListener('alx:top-tool-open', closeWhenAnotherToolOpens)
-    return () =>
-      window.removeEventListener('alx:top-tool-open', closeWhenAnotherToolOpens)
-  }, [])
   const environmentChecked = useRef(false)
   const rootParamHandled = useRef(false)
   const eventsRef = useRef<EventSource | null>(null)
@@ -799,7 +789,7 @@ export function Dashboard({
   // RTK Query leaves data undefined until the first fetch, and a backend may
   // respond with JSON null for an empty list. Normalise both to an array so
   // render-time .find/.map never touches a null value.
-  const catalog = catalogData ?? []
+  const catalog = useMemo(() => catalogData ?? [], [catalogData])
   const {
     data: localPackages,
     isFetching: packagesLoading,
@@ -1443,8 +1433,6 @@ export function Dashboard({
 
   const currentCatalog =
     catalog.find(group => group.title === catalogTitle) ?? catalog[0]
-  const readyCount =
-    report?.checks.filter(item => item.status === 'ready').length ?? 0
   const robotContent = aiOpen ? (
     <AgentChatPage root={root} initialSessionId={agentSessionId} />
   ) : (
@@ -1643,7 +1631,7 @@ export function Dashboard({
             onSaveConfig={savePackageConfig}
           />
         ) : (
-          <section className="grid max-w-[760px] gap-2">
+          <section className="grid max-w-190 gap-2">
             {currentCatalog.items.map(item => (
               <button
                 className="flex items-center gap-3 rounded-lg border border-slate-200 bg-white p-3 text-left transition hover:border-slate-300 hover:bg-slate-50"
@@ -1677,6 +1665,15 @@ export function Dashboard({
         plugins={setupPlugins}
         onOpen={id => selectSystemFeature(`setup:${id}`)}
         onRefresh={() => void refetchSetupPlugins()}
+      />
+    ) : systemFeature === 'tasks' ? (
+      <OperationTasksPage root={root} />
+    ) : systemFeature === 'environment' ? (
+      <EnvironmentPage
+        report={report}
+        checking={checking}
+        onRefresh={onCheck}
+        onFix={onFix}
       />
     ) : setupPlugin ? (
       <SetupPluginCenter plugin={setupPlugin} />
@@ -1746,9 +1743,6 @@ export function Dashboard({
       />
     )
 
-  const environmentReady = report
-    ? `${readyCount}/${report.checks.length}`
-    : '—'
   const environmentWarning = Boolean(
     report?.checks.some(item => item.status !== 'ready')
   )
@@ -1759,6 +1753,7 @@ export function Dashboard({
         <section className="guide-window dashboard-window">
           <header className="topbar flex min-h-11 min-w-0 items-center justify-between gap-2 border-b border-slate-200 bg-white/90 px-3 dark:border-slate-700">
             <div className="flex min-w-0 flex-1 items-center gap-1.5">
+              <SetupUpdateButton />
               <a
                 className="truncate px-1 text-[0.82rem] font-semibold tracking-[-0.01em] text-slate-800 no-underline transition-colors hover:text-brand-600 dark:text-slate-200"
                 href="https://alemonjs.com/"
@@ -1767,8 +1762,16 @@ export function Dashboard({
               >
                 ALemonX
               </a>
-              <SetupUpdateButton />
               <ThemeToggle />
+              {activeProject && (
+                <span
+                  className="topbar-project-context"
+                  title={activeProject.path}
+                >
+                  <Bot className="size-3.5" />
+                  {activeProject.name}
+                </span>
+              )}
             </div>
             <div className="ml-auto flex min-w-0 items-center gap-1">
               {developerMode && <McpControl />}
@@ -1792,36 +1795,8 @@ export function Dashboard({
               </Button>
               <SSHControl />
               <AuthControl />
-              <OperationTasksButton root={root} />
               <button
-                className={cn(
-                  'gap-1.5 px-2 disabled:cursor-wait disabled:opacity-60',
-                  environmentWarning
-                    ? 'border-amber-300 bg-amber-50 text-amber-800 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-300'
-                    : 'border-slate-200 bg-slate-50 text-slate-700 dark:border-slate-700 dark:bg-slate-800/60 dark:text-slate-300'
-                )}
-                onClick={() => {
-                  window.dispatchEvent(
-                    new CustomEvent('alx:top-tool-open', {
-                      detail: 'environment'
-                    })
-                  )
-                  setEnvironmentOpen(true)
-                  onCheck()
-                }}
-                disabled={checking}
-                title="查看并检查全局环境"
-              >
-                {checking ? (
-                  <Loader2 className="size-4 animate-spin" />
-                ) : environmentWarning ? (
-                  <AlertTriangle className="size-4" />
-                ) : (
-                  <CheckCircle2 className="size-4" />
-                )}
-              </button>
-              <button
-                className="text-sm font-semibold"
+                className="icon-button size-8 p-0"
                 onClick={onOpenGuide}
                 aria-label="打开引导"
                 title="打开引导"
@@ -1830,14 +1805,6 @@ export function Dashboard({
               </button>
             </div>
           </header>
-          <EnvironmentPanel
-            open={environmentOpen}
-            report={report}
-            checking={checking}
-            onClose={() => setEnvironmentOpen(false)}
-            onRefresh={onCheck}
-            onFix={onFix}
-          />
           <ConfirmDialog
             open={Boolean(pendingBackpackRemoval)}
             title="从背包移除插件"
@@ -1996,7 +1963,12 @@ export function Dashboard({
               projects={projects}
               activeID={activeProjectID}
               agentSessions={agentSessions}
-              onFeature={selectSystemFeature}
+              checking={checking}
+              environmentWarning={environmentWarning}
+              onFeature={feature => {
+                selectSystemFeature(feature)
+                if (feature === 'environment') onCheck()
+              }}
               onOpenAgent={openAI}
               onPinProject={pinProject}
               onRenameSession={requestRename}
@@ -2085,6 +2057,8 @@ function ProjectRail({
   projects,
   activeID,
   agentSessions,
+  checking,
+  environmentWarning,
   onFeature,
   onAdd,
   onClone,
@@ -2105,6 +2079,8 @@ function ProjectRail({
     root: string
     updated: string
   }>
+  checking: boolean
+  environmentWarning: boolean
   onFeature: (feature: SystemFeature) => void
   onAdd: () => void
   onClone: () => void
@@ -2121,7 +2097,7 @@ function ProjectRail({
   return (
     <aside className="project-rail flex min-h-0 min-w-0 flex-col border-r border-slate-200 bg-slate-50">
       <section
-        className="border-b border-slate-200 px-2.5 py-2 dark:border-slate-700"
+        className="order-2 border-t border-slate-200 px-2.5 py-2 dark:border-slate-700"
         aria-label="系统功能目录"
       >
         <header className="px-1.5 pb-1 text-[0.7rem] font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500">
@@ -2133,7 +2109,7 @@ function ProjectRail({
               className={cn(
                 'flex min-h-8 w-full items-center gap-2 rounded-md px-2 text-left text-xs font-medium transition-colors',
                 feature === item.id
-                  ? 'bg-slate-200/70 text-slate-900 dark:bg-slate-700/70 dark:text-slate-100'
+                  ? 'workspace-nav-active'
                   : 'text-slate-600 hover:bg-slate-200/40 dark:text-slate-400 dark:hover:bg-slate-700/40'
               )}
               key={item.id}
@@ -2150,11 +2126,49 @@ function ProjectRail({
               )}
             </button>
           ))}
+          <button
+            className={cn(
+              'flex min-h-8 w-full items-center gap-2 rounded-md px-2 text-left text-xs font-medium transition-colors',
+              feature === 'tasks'
+                ? 'workspace-nav-active'
+                : 'text-slate-600 hover:bg-slate-200/40 dark:text-slate-400 dark:hover:bg-slate-700/40'
+            )}
+            onClick={() => onFeature('tasks')}
+            aria-label="操作记录"
+            title="当前目录操作记录"
+          >
+            <i className="inline-flex size-4 shrink-0 items-center justify-center not-italic">
+              <ClipboardList className="size-4" />
+            </i>
+            <span className="min-w-0 flex-1 truncate">日志</span>
+          </button>
+          <button
+            className={cn(
+              'flex min-h-8 w-full items-center gap-2 rounded-md px-2 text-left text-xs font-medium transition-colors',
+              feature === 'environment'
+                ? 'workspace-nav-active'
+                : 'text-slate-600 hover:bg-slate-200/40 dark:text-slate-400 dark:hover:bg-slate-700/40'
+            )}
+            onClick={() => onFeature('environment')}
+            aria-label="全局环境"
+            title="查看并检查全局环境"
+          >
+            <i className="inline-flex size-4 shrink-0 items-center justify-center not-italic">
+              {checking ? (
+                <Loader2 className="size-4 animate-spin" />
+              ) : environmentWarning ? (
+                <AlertTriangle className="size-4" />
+              ) : (
+                <CheckCircle2 className="size-4" />
+              )}
+            </i>
+            <span className="min-w-0 flex-1 truncate">环境</span>
+          </button>
         </nav>
       </section>
       {activePlugins.length > 0 && (
         <section
-          className="border-b border-slate-200 px-2.5 py-2 dark:border-slate-700"
+          className="order-3 border-t border-slate-200 px-2.5 py-2 dark:border-slate-700"
           aria-label="已加载插件"
         >
           <header className="flex  px-1.5 pb-1">
@@ -2171,7 +2185,7 @@ function ProjectRail({
                 className={cn(
                   'flex min-h-8 w-full items-center gap-2 rounded-md px-2 text-left text-xs font-medium transition-colors',
                   feature === `setup:${item.id}`
-                    ? 'bg-slate-200/70 text-slate-900 dark:bg-slate-700/70 dark:text-slate-100'
+                    ? 'workspace-nav-active'
                     : 'text-slate-600 hover:bg-slate-200/40 dark:text-slate-400 dark:hover:bg-slate-700/40'
                 )}
                 key={item.id}
@@ -2188,10 +2202,10 @@ function ProjectRail({
           </nav>
         </section>
       )}
-      <section className="flex min-h-0 flex-1 flex-col">
+      <section className="order-1 flex min-h-0 flex-1 flex-col">
         <header className="flex min-h-9 items-center justify-between px-2.5 py-1.5">
           <span className="text-[0.7rem] font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500">
-            目录
+            机器人
             <span className="ml-1.5 text-slate-300 dark:text-slate-600">
               {projects.length}
             </span>
@@ -2232,7 +2246,7 @@ function ProjectRail({
           ))}
           {!projects.length && (
             <p className="px-2 py-4 text-center text-xs text-slate-400">
-              添加目录开始管理
+              添加机器人目录开始管理
             </p>
           )}
         </div>
@@ -2822,9 +2836,11 @@ function ProjectItem({
   return (
     <article
       className={cn(
-        'group relative rounded-md transition-colors',
+        'workspace-project-item group relative rounded-lg transition-colors',
         active
-          ? 'bg-slate-200/70 dark:bg-slate-800/70'
+          ? invalid
+            ? 'workspace-project-invalid'
+            : 'workspace-project-active'
           : 'hover:bg-slate-200/40 dark:hover:bg-slate-800/40',
         invalid ? 'bg-amber-50 dark:bg-amber-950/20' : ''
       )}
@@ -2834,7 +2850,7 @@ function ProjectItem({
         onClick={() => onSelect(project.id)}
         title={invalid ? data.error || project.path : project.path}
       >
-        <Folder
+        <Bot
           className={cn(
             'size-3.5 shrink-0',
             invalid ? 'text-amber-500' : 'text-slate-400 dark:text-slate-500'
@@ -2846,7 +2862,7 @@ function ProjectItem({
             invalid
               ? 'text-amber-700 dark:text-amber-400'
               : active
-                ? 'font-medium text-slate-900 dark:text-slate-100'
+                ? 'font-medium text-[var(--theme-accent-text)]'
                 : 'text-slate-700 dark:text-slate-300'
           )}
         >
@@ -2856,24 +2872,26 @@ function ProjectItem({
       <div className="absolute right-1.5 top-2 flex items-center gap-0.5">
         <button
           className={cn(
-            'inline-flex size-6 items-center justify-center rounded text-slate-400 transition-colors hover:bg-slate-200/60 hover:text-slate-600 dark:text-slate-500 dark:hover:bg-slate-700 dark:hover:text-slate-300',
+            'inline-flex size-7 items-center justify-center rounded text-slate-400 transition-colors hover:bg-slate-200/60 hover:text-slate-600 dark:text-slate-500 dark:hover:bg-slate-700 dark:hover:text-slate-300',
             recordsOpen &&
               'bg-slate-200/60 text-slate-600 dark:bg-slate-700 dark:text-slate-300'
           )}
           onClick={() => setRecordsOpen(value => !value)}
-          aria-label={`${project.name} 的对话记录`}
-          title="对话记录"
+          aria-expanded={recordsOpen}
+          aria-label={`${project.name} 的 Agent 对话记录`}
+          title="Agent 对话记录"
         >
           <MessageSquare className="size-3.5" />
         </button>
         <div ref={moreRef} className="relative">
           <button
             className={cn(
-              'inline-flex size-6 items-center justify-center rounded text-slate-400 transition-colors hover:bg-slate-200/60 hover:text-slate-600 dark:text-slate-500 dark:hover:bg-slate-700 dark:hover:text-slate-300',
+              'inline-flex size-7 items-center justify-center rounded text-slate-400 transition-colors hover:bg-slate-200/60 hover:text-slate-600 dark:text-slate-500 dark:hover:bg-slate-700 dark:hover:text-slate-300',
               moreOpen &&
                 'bg-slate-200/60 text-slate-600 dark:bg-slate-700 dark:text-slate-300'
             )}
             onClick={() => setMoreOpen(value => !value)}
+            aria-expanded={moreOpen}
             aria-label={`${project.name} 的更多操作`}
             title="更多操作"
           >
@@ -2906,33 +2924,51 @@ function ProjectItem({
         </div>
       </div>
       {recordsOpen && (
-        <div className="mt-1.5 grid gap-0.5 border-t border-slate-100 pt-1.5 dark:border-slate-800">
+        <div className="workspace-project-records mt-1 grid gap-0.5 pt-1">
           {ownSessions.length === 0 ? (
             <p className="px-1 py-0.5 text-[0.72rem] text-slate-400 dark:text-slate-500">
               还没有对话记录
             </p>
           ) : (
             ownSessions.map(item => (
-              <button
-                className="flex min-h-6 items-center gap-1.5 rounded px-1.5 text-left text-[0.75rem] text-slate-600 transition-colors hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-700/60"
+              <div
+                className="workspace-session-row flex min-w-0 items-center gap-0.5"
                 key={item.id}
-                onClick={() => onOpenAgent(item.id)}
-                onContextMenu={event => {
-                  event.preventDefault()
-                  setCtxMenu({
-                    id: item.id,
-                    title: item.title,
-                    x: event.clientX,
-                    y: event.clientY
-                  })
-                }}
-                title={`${item.title}（右键操作）`}
               >
-                <MessageSquare className="size-3 shrink-0 text-slate-300 dark:text-slate-600" />
-                <span className="min-w-0 flex-1 truncate text-[0.67rem]">
-                  {item.title}
-                </span>
-              </button>
+                <button
+                  className="flex min-h-7 min-w-0 flex-1 items-center gap-1.5 rounded px-1.5 text-left text-xs text-slate-600 transition-colors hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-700/60"
+                  onClick={() => onOpenAgent(item.id)}
+                  onContextMenu={event => {
+                    event.preventDefault()
+                    setCtxMenu({
+                      id: item.id,
+                      title: item.title,
+                      x: event.clientX,
+                      y: event.clientY
+                    })
+                  }}
+                  title={item.title}
+                >
+                  <MessageSquare className="size-3.5 shrink-0 text-slate-300 dark:text-slate-600" />
+                  <span className="min-w-0 flex-1 truncate">{item.title}</span>
+                </button>
+                <button
+                  className="inline-flex size-7 shrink-0 items-center justify-center rounded text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600 dark:text-slate-500 dark:hover:bg-slate-700 dark:hover:text-slate-300"
+                  onClick={event => {
+                    const rect = event.currentTarget.getBoundingClientRect()
+                    setCtxMenu({
+                      id: item.id,
+                      title: item.title,
+                      x: rect.right,
+                      y: rect.bottom
+                    })
+                  }}
+                  aria-label={`${item.title} 的更多操作`}
+                  title="更多操作"
+                >
+                  <MoreVertical className="size-3.5" />
+                </button>
+              </div>
             ))
           )}
         </div>
@@ -2940,7 +2976,7 @@ function ProjectItem({
       {ctxMenu && (
         <div
           ref={ctxRef}
-          className="fixed z-[200] grid min-w-36 gap-0.5 rounded-lg border border-slate-200 bg-white p-1 shadow-lg dark:border-slate-700 dark:bg-slate-800"
+          className="fixed z-200 grid min-w-36 gap-0.5 rounded-lg border border-slate-200 bg-white p-1 shadow-lg dark:border-slate-700 dark:bg-slate-800"
           style={{ left: ctxMenu.x, top: ctxMenu.y }}
         >
           <button
@@ -3030,16 +3066,17 @@ function McpControl() {
         }
       >
         <i className="inline-flex size-4 items-center justify-center rounded-full bg-white text-[10px] not-italic dark:bg-slate-900">
-          {mcpRunning ? <CircleCheckBig /> : <Info />}
+          {mcpRunning ? (
+            <CircleCheckBig className="size-3.5" />
+          ) : (
+            <Info className="size-3.5" />
+          )}
         </i>
         <span>MCP</span>
-        <strong className="text-[11px] font-semibold">
-          {mcpRunning ? '已开启' : '未开启'}
-        </strong>
       </button>
       {open && (
         <section
-          className="mcp-popover absolute right-0 top-10 z-30 grid w-[min(390px,calc(100vw-32px))] gap-3 rounded-xl border border-slate-200 bg-white p-4 shadow-2xl dark:border-slate-700 dark:bg-slate-900"
+          className="topbar-popover mcp-popover absolute right-0 top-[calc(100%+8px)] z-50 grid w-[min(390px,calc(100vw-32px))] gap-2.5 rounded-xl border border-slate-200 bg-white p-3 dark:border-slate-700 dark:bg-slate-900"
           role="dialog"
           aria-label="连接 MCP"
         >
@@ -3053,14 +3090,14 @@ function McpControl() {
               </small>
             </div>
             <button
-              className="inline-flex size-7 items-center justify-center rounded-md text-lg leading-none text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
+              className="topbar-popover-close size-7"
               onClick={() => setOpen(false)}
               aria-label="关闭 MCP 说明"
             >
-              ×
+              <X className="size-4" />
             </button>
           </header>
-          <p
+          <div
             className={cn(
               'mcp-status-line m-0 flex items-center gap-1.5 rounded-lg border px-2.5 py-2 text-xs',
               mcpRunning
@@ -3068,15 +3105,20 @@ function McpControl() {
                 : 'border-slate-200 bg-slate-50 text-slate-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-400'
             )}
           >
-            <i
+            <div
               className={cn(
                 'inline-block size-1.5 shrink-0 rounded-full',
                 mcpRunning ? 'bg-blue-500' : 'bg-slate-400'
               )}
             />
-            {mcpRunning
-              ? '本机 MCP HTTP 服务正在运行（端口 17391）'
-              : '本机 MCP HTTP 服务未运行：MCP 不会随后台自动常驻，需手动启动（见下方）'}
+            <div>
+              <div className="flex-1">
+                {mcpRunning
+                  ? '本机 MCP HTTP 服务正在运行（端口 17391）'
+                  : '本机 MCP HTTP 服务未运行'}
+              </div>
+              <div>{mcpRunning ? '' : '本机 MCP HTTP 不会随后台自动常驻'}</div>
+            </div>
             <button
               type="button"
               className="ml-auto text-xs font-semibold text-blue-600 hover:underline dark:text-blue-400"
@@ -3084,11 +3126,7 @@ function McpControl() {
             >
               刷新
             </button>
-          </p>
-          <p className="m-0 text-xs leading-5 text-slate-600 dark:text-slate-300">
-            MCP 让 AI 在你的确认下管理
-            AlemonJS：读取与修改项目、更新运行配置、启动机器人、构建、打包与发布。它不是网页远程控制；客户端只会连接本机服务。
-          </p>
+          </div>
           <Tabs
             ariaLabel="MCP 接入类型"
             className="mcp-transport-tabs"
@@ -3109,25 +3147,25 @@ function McpControl() {
               <dl className="mcp-form-guide m-0 overflow-hidden rounded-lg border border-blue-100 dark:border-blue-900">
                 <div className="grid grid-cols-[92px_minmax(0,1fr)] gap-2 border-b border-blue-100 px-2 py-2 last:border-b-0 dark:border-blue-900">
                   <dt className="text-xs font-semibold text-slate-500">名称</dt>
-                  <dd className="m-0 min-w-0 break-words text-xs text-slate-700 dark:text-slate-200">
+                  <dd className="m-0 min-w-0 wrap-break-word text-xs text-slate-700 dark:text-slate-200">
                     alemonx
                   </dd>
                 </div>
                 <div className="grid grid-cols-[92px_minmax(0,1fr)] gap-2 border-b border-blue-100 px-2 py-2 last:border-b-0 dark:border-blue-900">
                   <dt className="text-xs font-semibold text-slate-500">类型</dt>
-                  <dd className="m-0 min-w-0 break-words text-xs text-slate-700 dark:text-slate-200">
+                  <dd className="m-0 min-w-0 wrap-break-word text-xs text-slate-700 dark:text-slate-200">
                     流式 HTTP
                   </dd>
                 </div>
                 <div className="grid grid-cols-[92px_minmax(0,1fr)] gap-2 border-b border-blue-100 px-2 py-2 last:border-b-0 dark:border-blue-900">
                   <dt className="text-xs font-semibold text-slate-500">地址</dt>
-                  <dd className="m-0 min-w-0 break-words text-xs text-slate-700 dark:text-slate-200">
+                  <dd className="m-0 min-w-0 wrap-break-word text-xs text-slate-700 dark:text-slate-200">
                     <code>http://127.0.0.1:17391/mcp</code>
                   </dd>
                 </div>
                 <div className="grid grid-cols-[92px_minmax(0,1fr)] gap-2 border-b border-blue-100 px-2 py-2 last:border-b-0 dark:border-blue-900">
                   <dt className="text-xs font-semibold text-slate-500">认证</dt>
-                  <dd className="m-0 min-w-0 break-words text-xs text-slate-700 dark:text-slate-200">
+                  <dd className="m-0 min-w-0 wrap-break-word text-xs text-slate-700 dark:text-slate-200">
                     Bearer Token：<code>&lt;MCP_TOKEN&gt;</code>
                   </dd>
                 </div>
@@ -3135,7 +3173,7 @@ function McpControl() {
                   <dt className="text-xs font-semibold text-slate-500">
                     启动命令
                   </dt>
-                  <dd className="m-0 min-w-0 break-words text-xs text-slate-700 dark:text-slate-200">
+                  <dd className="m-0 min-w-0 wrap-break-word text-xs text-slate-700 dark:text-slate-200">
                     <code>{httpCommand}</code>
                   </dd>
                 </div>
@@ -3204,10 +3242,8 @@ function McpControl() {
     </div>
   )
 }
-function OperationTasksButton({ root }: { root: string }) {
-  const [open, setOpen] = useState(false)
+function OperationTasksPage({ root }: { root: string }) {
   const { data, isFetching } = useRobotTasksQuery(undefined, {
-    skip: !open,
     // Task state is driven by SSE task events (invalidateTags); no polling.
     pollingInterval: 0,
     refetchOnMountOrArgChange: true
@@ -3217,15 +3253,6 @@ function OperationTasksButton({ root }: { root: string }) {
   )
   const [selected, setSelected] = useState<string>('')
   const current = tasks.find(item => item.id === selected) ?? tasks[0]
-  const running = tasks.filter(item => item.status === 'running').length
-  useEffect(() => {
-    const closeWhenAnotherToolOpens = (event: Event) => {
-      if ((event as CustomEvent<string>).detail !== 'tasks') setOpen(false)
-    }
-    window.addEventListener('alx:top-tool-open', closeWhenAnotherToolOpens)
-    return () =>
-      window.removeEventListener('alx:top-tool-open', closeWhenAnotherToolOpens)
-  }, [])
   const label = (action: string) =>
     action.startsWith('setup:')
       ? `系统插件 · ${action.split(':').slice(-1)[0]}`
@@ -3252,130 +3279,98 @@ function OperationTasksButton({ root }: { root: string }) {
           'npm-publish': 'NPM 发布'
         }[action] ?? action)
   return (
-    <div className="operation-tasks relative">
-      <button
-        className="operation-tasks-button relative inline-flex size-8 items-center justify-center rounded-lg border  bg-white text-slate-500 transition hover:border-brand-200 hover:text-brand-600   dark:text-slate-300"
-        onClick={() =>
-          setOpen(value => {
-            const next = !value
-            if (next)
-              window.dispatchEvent(
-                new CustomEvent('alx:top-tool-open', { detail: 'tasks' })
-              )
-            return next
-          })
-        }
-        aria-label="操作记录"
-        title="当前目录操作记录"
-      >
-        <ClipboardList />
-        {running > 0 && (
-          <b className="absolute -right-1 -top-1 inline-flex min-w-4 items-center justify-center rounded-full bg-brand-600 px-1 text-[10px] text-white">
-            {running}
-          </b>
-        )}
-      </button>
-      {open && (
-        <section className="operation-tasks-popover absolute right-0 top-10 z-30 grid w-[min(360px,calc(100vw-32px))] gap-3 rounded-xl border border-slate-200 bg-white p-3 shadow-2xl dark:border-slate-700 dark:bg-slate-900">
-          <header className="flex items-start justify-between gap-3">
-            <div className="grid gap-0.5">
-              <strong className="text-sm font-semibold text-slate-900 dark:text-slate-100">
-                操作记录
-              </strong>
-              <small className="text-xs text-slate-500">
-                {root ? '当前机器人与系统操作' : '系统操作'}
-              </small>
-            </div>
-            <button
-              className="inline-flex size-7 items-center justify-center rounded-md text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
-              onClick={() => setOpen(false)}
-              aria-label="关闭操作记录"
-            >
-              <X />
-            </button>
-          </header>
-          {isFetching && !tasks.length ? (
-            <p className="m-0 text-xs text-slate-500">正在读取任务…</p>
-          ) : !tasks.length ? (
-            <p className="m-0 text-xs text-slate-500">
-              暂无与当前位置相关的操作记录。
-            </p>
-          ) : (
-            <>
-              <div className="task-list grid gap-1">
-                {tasks.slice(0, 12).map(item => (
-                  <button
-                    key={item.id}
-                    className={cn(
-                      'flex items-center gap-2 rounded-lg px-2 py-2 text-left text-xs transition hover:bg-slate-50 dark:hover:bg-slate-800',
-                      current?.id === item.id &&
-                        'bg-brand-50 dark:bg-brand-100/40'
-                    )}
-                    onClick={() => setSelected(item.id)}
-                  >
-                    <i className="inline-flex size-5 shrink-0 items-center justify-center rounded-full bg-slate-100 text-[11px] not-italic text-slate-500 dark:bg-slate-800">
-                      {item.status === 'running'
-                        ? '◌'
-                        : item.status === 'completed'
-                          ? '✓'
-                          : '!'}
-                    </i>
-                    <span className="grid gap-0.5 text-slate-700 dark:text-slate-200">
-                      {label(item.action)}
-                      <small className="text-[11px] text-slate-400">
-                        {item.status === 'running'
-                          ? '进行中'
-                          : item.status === 'failed'
-                            ? '需要处理'
-                            : '已完成'}
-                      </small>
-                    </span>
-                  </button>
-                ))}
-              </div>
-              {current && (
-                <pre className="max-h-48 overflow-auto rounded-lg bg-slate-950 p-2 text-[11px] leading-5 text-slate-200">
-                  {current.status === 'failed'
-                    ? current.error
-                    : current.output || '正在执行…'}
-                </pre>
-              )}
-            </>
+    <section className="workspace-content system-feature-page mx-auto max-w-215">
+      <header className="system-feature-header">
+        <span className="system-feature-header-icon bg-brand-50 text-brand-600 dark:bg-brand-900/40 dark:text-brand-300">
+          <ClipboardList className="size-4" />
+        </span>
+        <div className="min-w-0 flex-1">
+          <strong className="block text-sm font-semibold text-slate-900 dark:text-slate-100">
+            操作记录
+          </strong>
+          <span className="block truncate text-xs text-slate-400 dark:text-slate-500">
+            {root ? '当前机器人与系统操作' : '系统操作'}
+          </span>
+        </div>
+      </header>
+      {isFetching && !tasks.length ? (
+        <p className="m-0 text-xs text-slate-500">正在读取任务…</p>
+      ) : !tasks.length ? (
+        <p className="m-0 text-xs text-slate-500">
+          暂无与当前位置相关的操作记录。
+        </p>
+      ) : (
+        <div className="grid gap-3">
+          <div className="task-list grid gap-1">
+            {tasks.slice(0, 12).map(item => (
+              <button
+                key={item.id}
+                className={cn(
+                  'system-feature-row flex items-center gap-2 text-left text-xs transition',
+                  current?.id === item.id && 'system-feature-row-active'
+                )}
+                onClick={() => setSelected(item.id)}
+              >
+                <i
+                  className={cn(
+                    'inline-flex size-5 shrink-0 items-center justify-center rounded-full text-[11px] not-italic',
+                    item.status === 'completed' &&
+                      'system-feature-status-success',
+                    item.status === 'failed' && 'system-feature-status-danger',
+                    item.status === 'running' && 'system-feature-status-running'
+                  )}
+                >
+                  {item.status === 'running'
+                    ? '◌'
+                    : item.status === 'completed'
+                      ? '✓'
+                      : '!'}
+                </i>
+                <span className="grid gap-0.5 text-slate-700 dark:text-slate-200">
+                  {label(item.action)}
+                  <small className="text-[11px] text-slate-400">
+                    {item.status === 'running'
+                      ? '进行中'
+                      : item.status === 'failed'
+                        ? '需要处理'
+                        : '已完成'}
+                  </small>
+                </span>
+              </button>
+            ))}
+          </div>
+          {current && (
+            <pre className="overflow-auto rounded-lg bg-slate-950 p-2 text-[11px] leading-5 text-slate-200">
+              {current.status === 'failed'
+                ? current.error
+                : current.output || '正在执行…'}
+            </pre>
           )}
-        </section>
+        </div>
       )}
-    </div>
+    </section>
   )
 }
-function EnvironmentPanel({
-  open,
+function EnvironmentPage({
   report,
   checking,
-  onClose,
   onRefresh,
   onFix
 }: {
-  open: boolean
   report: { checks: Check[] } | null
   checking: boolean
-  onClose: () => void
   onRefresh: () => void
   onFix: (check: Check) => void
 }) {
-  if (!open) return null
   const checks = report?.checks ?? []
   const readyCount = checks.filter(check => check.status === 'ready').length
   const allReady = checks.length > 0 && readyCount === checks.length
   return (
-    <aside
-      className="fixed right-4 top-16 z-30 grid w-[min(380px,calc(100vw-32px))] overflow-hidden rounded-xl border border-slate-200 bg-white shadow-2xl dark:border-slate-700 dark:bg-slate-900"
-      role="dialog"
-      aria-label="全局环境详情"
-    >
-      <header className="flex items-center gap-2.5 border-b border-slate-100 px-4 py-3 dark:border-slate-800">
+    <section className="workspace-content system-feature-page mx-auto max-w-215">
+      <header className="system-feature-header">
         <span
           className={cn(
-            'inline-flex size-8 shrink-0 items-center justify-center rounded-lg',
+            'system-feature-header-icon',
             checking
               ? 'bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400'
               : allReady
@@ -3403,29 +3398,22 @@ function EnvironmentPanel({
                 : '等待检查'}
           </span>
         </div>
-        <button
-          className="inline-flex size-7 shrink-0 items-center justify-center rounded-md text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600 dark:hover:bg-slate-800 dark:hover:text-slate-300"
-          onClick={onClose}
-          aria-label="关闭环境详情"
-        >
-          <X className="size-4" />
-        </button>
       </header>
 
       {checking && (
-        <p className="m-0 px-4 pb-3 text-xs leading-5 text-slate-500">
+        <p className="m-0 py-3 text-xs leading-5 text-slate-500">
           正在读取 Node.js、Git 和系统工具状态。
         </p>
       )}
 
       {!checking && checks.length > 0 && (
-        <div className="grid max-h-[min(400px,calc(100vh-220px))] gap-1.5 overflow-y-auto px-3 pb-3">
+        <div className="grid gap-1.5 py-3">
           {checks.map(check => {
             const ready = check.status === 'ready'
             return (
               <article
                 className={cn(
-                  'flex items-start gap-2.5 rounded-lg border p-2.5',
+                  'system-feature-card flex items-start gap-2.5',
                   ready
                     ? 'border-emerald-200/70 bg-emerald-50/60 dark:border-emerald-900/60 dark:bg-emerald-950/20'
                     : 'border-amber-200/70 bg-amber-50/60 dark:border-amber-900/60 dark:bg-amber-950/20'
@@ -3474,14 +3462,12 @@ function EnvironmentPanel({
       )}
 
       {!checking && !checks.length && (
-        <p className="m-0 px-4 pb-3 text-xs text-slate-500">
-          尚未获取检查结果。
-        </p>
+        <p className="m-0 py-3 text-xs text-slate-500">尚未获取检查结果。</p>
       )}
 
-      <footer className="flex justify-end border-t border-slate-100 px-4 py-3 dark:border-slate-800">
+      <footer className="flex justify-end border-t border-slate-100 pt-3 dark:border-slate-800">
         <button
-          className="inline-flex min-h-8 items-center gap-1.5 justify-center rounded-lg border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-600 transition-colors hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:bg-slate-800"
+          className="system-feature-refresh inline-flex min-h-8 items-center gap-1.5 justify-center rounded-lg px-3 text-xs font-semibold transition-colors"
           disabled={checking}
           onClick={onRefresh}
         >
@@ -3489,7 +3475,7 @@ function EnvironmentPanel({
           重新检查
         </button>
       </footer>
-    </aside>
+    </section>
   )
 }
 function EmptyWorkspace({
@@ -3628,7 +3614,20 @@ function SystemPluginCenter({
     }
   }
   return (
-    <section className="workspace-content mx-auto max-w-[860px]">
+    <section className="workspace-content system-feature-page mx-auto max-w-215">
+      <header className="system-feature-header">
+        <span className="system-feature-header-icon bg-brand-50 text-brand-600 dark:bg-brand-900/40 dark:text-brand-300">
+          <Package className="size-4" />
+        </span>
+        <div className="min-w-0 flex-1">
+          <strong className="block text-sm font-semibold text-slate-900 dark:text-slate-100">
+            插件中心
+          </strong>
+          <span className="block truncate text-xs text-slate-400 dark:text-slate-500">
+            管理系统级插件与扩展能力
+          </span>
+        </div>
+      </header>
       {/* 插件列表 */}
       {plugins.length ? (
         <div className="grid gap-2">
@@ -3640,7 +3639,7 @@ function SystemPluginCenter({
             return (
               <article
                 key={plugin.id}
-                className="group relative flex items-center gap-3.5 rounded-xl border border-slate-200 bg-white p-3.5 transition-colors hover:border-slate-300 dark:border-slate-700 dark:bg-slate-900 dark:hover:border-slate-600"
+                className="system-feature-row group relative flex items-center gap-3.5"
               >
                 {/* 图标 */}
                 <div
@@ -3753,7 +3752,7 @@ function SystemPluginCenter({
         </div>
       ) : (
         /* 空状态 */
-        <section className="flex flex-col items-center justify-center rounded-xl border-2 border-dashed border-slate-200 bg-slate-50/50 p-12 dark:border-slate-700 dark:bg-slate-900/50">
+        <section className="system-feature-empty flex flex-col items-center justify-center">
           <div className="mb-3 rounded-full bg-slate-100 p-3 dark:bg-slate-800">
             <Package className="size-6 text-slate-400 dark:text-slate-500" />
           </div>
@@ -3785,15 +3784,15 @@ function SetupPluginCenter({ plugin }: { plugin: SetupPlugin }) {
   const webSrc = `/api/v1/setup/plugins/web/${plugin.id}/index.html?theme=${theme}`
 
   return (
-    <section>
+    <section className="setup-plugin-webview">
       {hasWeb ? (
         <iframe
-          className="h-full w-full border-0"
+          className="setup-plugin-webview-frame"
           src={webSrc}
           title={`${plugin.name} 界面`}
         />
       ) : (
-        <div className="setup-plugin-web-missing grid gap-2 rounded-xl border border-dashed border-slate-300 bg-slate-50 p-6 text-center dark:border-slate-600 dark:bg-slate-900">
+        <div className="setup-plugin-web-missing grid gap-2">
           <strong className="text-sm text-slate-700 dark:text-slate-200">
             此插件需要 Web 界面
           </strong>
@@ -3875,13 +3874,18 @@ function BackpackPanel({
       />
     )
   return (
-    <section className="backpack-panel grid max-w-[760px] gap-4">
-      <header className="flex items-center justify-between gap-3 border-b border-slate-200 pb-3">
-        <div className="grid gap-1">
-          <p className="m-0 text-lg font-semibold text-ink-950">背包</p>
-          <small className="text-xs text-slate-500" title={`${root}/packages`}>
-            packages
-          </small>
+    <section className="backpack-panel grid max-w-190 gap-4">
+      <header className="workspace-page-header flex items-center justify-between gap-3">
+        <div className="flex min-w-0 items-center gap-3">
+          <span className="workspace-page-header-icon">
+            <Archive className="size-4" />
+          </span>
+          <div className="grid gap-1">
+            <p className="m-0 text-lg font-semibold text-ink-950">背包</p>
+            <small className="text-xs text-slate-500" title={`${root}/packages`}>
+              packages
+            </small>
+          </div>
         </div>
         <div className="flex items-center gap-2">
           <button className="text-button" onClick={onOpenPlugins}>
@@ -4056,23 +4060,28 @@ function BackpackPackageManager({
     if (versions?.latest) setVersion(versions.latest)
   }, [versions])
   return (
-    <section className="backpack-manager grid max-w-[760px] gap-4">
-      <header className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-200 pb-3">
-        <div className="grid min-w-0 gap-1">
-          <button className="text-button justify-self-start" onClick={onBack}>
-            ‹ 返回背包
-          </button>
-          <h2 className="m-0 break-all text-lg font-semibold text-ink-950">
-            {item.name}
-            {item.version && (
-              <em className="ml-2 not-italic text-xs text-slate-400">
-                v{item.version}
-              </em>
-            )}
-          </h2>
-          <small className="truncate text-xs text-slate-500" title={item.path}>
-            {item.path}
-          </small>
+    <section className="backpack-manager grid max-w-190 gap-4">
+      <header className="workspace-page-header flex flex-wrap items-start justify-between gap-3">
+        <div className="flex min-w-0 items-start gap-3">
+          <span className="workspace-page-header-icon">
+            <Package className="size-4" />
+          </span>
+          <div className="grid min-w-0 gap-1">
+            <button className="text-button justify-self-start" onClick={onBack}>
+              ‹ 返回背包
+            </button>
+            <h2 className="m-0 break-all text-lg font-semibold text-ink-950">
+              {item.name}
+              {item.version && (
+                <em className="ml-2 not-italic text-xs text-slate-400">
+                  v{item.version}
+                </em>
+              )}
+            </h2>
+            <small className="truncate text-xs text-slate-500" title={item.path}>
+              {item.path}
+            </small>
+          </div>
         </div>
         <div className="flex items-center gap-2">
           <button
@@ -4301,12 +4310,17 @@ function CatalogDetail({
   const uninstallAction =
     kind === 'connection' ? 'uninstall-connection' : 'uninstall-package'
   return (
-    <section className="catalog-detail grid max-w-[760px] gap-4">
-      <header className="flex items-center gap-3 border-b border-slate-200 pb-3">
-        <button className="text-button" onClick={onBack}>
-          ‹ 返回目录
-        </button>
-        <span className="text-xs font-semibold text-slate-400">{group}</span>
+    <section className="catalog-detail grid max-w-190 gap-4">
+      <header className="workspace-page-header flex items-center gap-3">
+        <div className="flex min-w-0 items-center gap-3">
+          <span className="workspace-page-header-icon">
+            <Globe className="size-4" />
+          </span>
+          <button className="text-button" onClick={onBack}>
+            ‹ 返回目录
+          </button>
+          <span className="text-xs font-semibold text-slate-400">{group}</span>
+        </div>
       </header>
       <section className="catalog-control flex flex-wrap items-start justify-between gap-4 rounded-xl border border-slate-200 bg-white p-4">
         <div className="grid min-w-0 gap-1">
@@ -4886,18 +4900,23 @@ function RuntimePanel({
     }
   }
   return (
-    <section className="runtime-overview grid max-w-[760px] gap-4">
-      <header className="flex items-start justify-between gap-4 border-b border-slate-200 pb-4">
-        <div className="grid min-w-0 gap-1">
-          <p className="m-0 text-xs font-semibold text-slate-500">运行</p>
-          <h1 className="m-0 truncate text-xl font-semibold tracking-tight text-ink-950">
-            {overview?.name || '正在读取项目…'}
-          </h1>
-          <small className="text-xs text-slate-500">
-            {overview
-              ? `${overview.version || '未设置版本'} · ${overview.packageManager} · ${overview.hasDevScript ? '已配置开发命令' : '未配置 dev 命令'}`
-              : '读取包信息、平台包与运行状态。'}
-          </small>
+    <section className="runtime-overview grid max-w-190 gap-4">
+      <header className="workspace-page-header flex items-start justify-between gap-4">
+        <div className="flex min-w-0 items-start gap-3">
+          <span className="workspace-page-header-icon">
+            <Play className="size-4" />
+          </span>
+          <div className="grid min-w-0 gap-1">
+            <p className="m-0 text-xs font-semibold text-slate-500">运行</p>
+            <h1 className="m-0 truncate text-xl font-semibold tracking-tight text-ink-950">
+              {overview?.name || '正在读取项目…'}
+            </h1>
+            <small className="text-xs text-slate-500">
+              {overview
+                ? `${overview.version || '未设置版本'} · ${overview.packageManager} · ${overview.hasDevScript ? '已配置开发命令' : '未配置 dev 命令'}`
+                : '读取包信息、平台包与运行状态。'}
+            </small>
+          </div>
         </div>
         <button
           className="icon-button size-9 shrink-0 p-0"
@@ -4932,7 +4951,7 @@ function RuntimePanel({
       {loginChoice &&
         createPortal(
           <div
-            className="fixed inset-0 z-[96] flex items-center justify-center bg-slate-950/25 p-6"
+            className="fixed inset-0 z-96 flex items-center justify-center bg-slate-950/25 p-6"
             role="presentation"
           >
             <section
@@ -5667,8 +5686,8 @@ function ControlCard({
   }
   return (
     <aside className="control-dock flex min-h-0 flex-col" aria-label="目录操作">
-      <section className="control-card overflow-hidden p-4">
-        <header className="flex items-center justify-between gap-2 px-1 pt-1 pb-2">
+      <section className="control-card control-navigation">
+        <header className="control-identity flex items-start justify-between gap-2">
           <div className="min-w-0">
             <span className="block truncate text-sm font-medium text-slate-800 dark:text-slate-100">
               {project?.name ?? '未选择目录'}
@@ -5722,7 +5741,10 @@ function ControlCard({
             )}
           </div>
         )}
-        <div className="grid gap-0.5 pt-1">
+        <div
+          className="control-primary-nav grid gap-0.5"
+          aria-label="机器人功能"
+        >
           {directoryActions
             .filter(item => developerMode || item.id !== 'build')
             .map(item => (
@@ -5730,7 +5752,7 @@ function ControlCard({
                 className={cn(
                   'flex min-h-8 items-center gap-2 rounded-md px-2 text-left text-xs font-medium transition-colors',
                   activePrimary === item.id
-                    ? 'bg-slate-200/70 text-slate-900 dark:bg-slate-700/70 dark:text-slate-100'
+                    ? 'workspace-nav-active'
                     : 'text-slate-600 hover:bg-slate-200/40 dark:text-slate-400 dark:hover:bg-slate-700/40'
                 )}
                 onClick={() => selectPrimary(item)}
@@ -5744,13 +5766,16 @@ function ControlCard({
             ))}
         </div>
         {subitems.length > 0 && (
-          <div className="grid gap-0.5 pt-0.5">
+          <div
+            className="control-secondary-nav grid gap-0.5"
+            aria-label="当前功能子菜单"
+          >
             {subitems.map(item => (
               <button
                 className={cn(
                   'flex min-h-7 items-center rounded-md pl-7 pr-2 text-left text-xs transition-colors',
                   activeSecondary === item.id
-                    ? 'bg-slate-200/70 font-medium text-slate-900 dark:bg-slate-700/70 dark:text-slate-100'
+                    ? 'workspace-nav-sub-active'
                     : 'text-slate-500 hover:bg-slate-200/40 dark:text-slate-400 dark:hover:bg-slate-700/40'
                 )}
                 onClick={() => selectSecondary(item.id)}
@@ -5763,19 +5788,20 @@ function ControlCard({
         )}
         {project && (
           <footer
-            className="mt-2 flex gap-0.5 border-t border-slate-100 pt-1.5 dark:border-slate-700"
+            className="control-quick-actions mt-2 grid grid-cols-3 gap-1 border-t border-slate-100 pt-2 dark:border-slate-700"
             title={project.path}
           >
             <button
-              className="inline-flex size-7 items-center justify-center rounded text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600 dark:text-slate-500 dark:hover:bg-slate-700 dark:hover:text-slate-300"
+              className="inline-flex min-h-8 items-center justify-center gap-1 rounded-md px-1 text-[11px] text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-700 dark:text-slate-400 dark:hover:bg-slate-700 dark:hover:text-slate-200"
               onClick={onOpenConsole}
               aria-label="查看运行终端"
               title="查看运行终端"
             >
               <Terminal className="size-3.5" />
+              <span>终端</span>
             </button>
             <button
-              className="inline-flex size-7 items-center justify-center rounded text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600 disabled:opacity-40 dark:text-slate-500 dark:hover:bg-slate-700 dark:hover:text-slate-300"
+              className="inline-flex min-h-8 items-center justify-center gap-1 rounded-md px-1 text-[11px] text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-700 disabled:opacity-40 dark:text-slate-400 dark:hover:bg-slate-700 dark:hover:text-slate-200"
               onClick={onOpenApp}
               disabled={appLaunching}
               aria-label={appLaunching ? '正在启动应用…' : '打开应用'}
@@ -5790,14 +5816,16 @@ function ControlCard({
               ) : (
                 <Monitor className="size-3.5" />
               )}
+              <span>应用</span>
             </button>
             <button
-              className="inline-flex size-7 items-center justify-center rounded text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600 dark:text-slate-500 dark:hover:bg-slate-700 dark:hover:text-slate-300"
+              className="inline-flex min-h-8 items-center justify-center gap-1 rounded-md px-1 text-[11px] text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-700 dark:text-slate-400 dark:hover:bg-slate-700 dark:hover:text-slate-200"
               onClick={onOpenAI}
-              aria-label="打开 Agent"
-              title="打开 Agent"
+              aria-label="使用 Agent 协助当前机器人"
+              title="使用 Agent 协助当前机器人"
             >
-              <Bot className="size-3.5" />
+              <MessageSquare className="size-3.5" />
+              <span>Agent</span>
             </button>
           </footer>
         )}
@@ -6304,14 +6332,18 @@ function FileEditor({
 }) {
   return (
     <section className="file-editor grid gap-3">
-      <header className="flex items-center justify-between gap-3">
+      <header className="workspace-page-header flex items-center justify-between gap-3">
+        <div className="workspace-page-header-meta">
+          <strong>文本编辑</strong>
+          <small>直接编辑当前配置文件内容</small>
+        </div>
         {toolbar}
         <button className="primary-button" disabled={busy} onClick={onSave}>
           保存
         </button>
       </header>
       <textarea
-        className="min-h-[420px] w-full resize-y rounded-lg border border-slate-300 bg-white p-3 font-mono text-xs leading-5 text-slate-800 outline-none focus:border-brand-600 focus:ring-2 focus:ring-brand-100"
+        className="min-h-105 w-full resize-y rounded-lg border border-slate-300 bg-white p-3 font-mono text-xs leading-5 text-slate-800 outline-none focus:border-brand-600 focus:ring-2 focus:ring-brand-100"
         value={content}
         onChange={event => onChange(event.target.value)}
         placeholder={placeholder}
@@ -6621,13 +6653,19 @@ function GitReleasePanelNext({
     )
   }
   return (
-    <section className="git-release-panel grid max-w-[920px] content-start gap-4">
-      <header className="release-toolbar flex flex-wrap items-end justify-between gap-3 border-b border-slate-200 pb-3 dark:border-slate-700">
-        <span className="min-w-0 truncate text-sm font-semibold text-slate-900 dark:text-slate-100">
-          {status?.packageName
-            ? `${status.packageName}@${status.packageVersion || '未设置版本'} · ${status.packageManager}`
-            : 'GIT 发布'}
-        </span>
+    <section className="git-release-panel grid max-w-230 content-start gap-4">
+      <header className="workspace-page-header release-toolbar flex flex-wrap items-center justify-between gap-3">
+        <div className="workspace-page-header-meta">
+          <strong>
+            {status?.packageName
+              ? `${status.packageName}@${status.packageVersion || '未设置版本'}`
+              : 'GIT 发布'}
+          </strong>
+          <small>
+            GIT 发布 ·{' '}
+            {status?.packageManager || '管理分支、构建产物与版本标签'}
+          </small>
+        </div>
         <div className="release-toolbar-actions flex flex-wrap items-end justify-end gap-2">
           {(phase === 'artifacts' || phase === 'confirm') && (
             <button

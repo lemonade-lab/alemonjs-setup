@@ -1,4 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react'
+import { Settings } from 'lucide-react'
 
 type Props = {
   busy: boolean
@@ -282,13 +283,17 @@ export function RobotConfigForm({
   )
   const save = () => onSave(mergeConfig(content, toYaml(values)))
   return (
-    <section className="grid max-w-[760px] gap-4">
-      <header className="flex items-center justify-between gap-4">
-        <div className="flex min-w-0 items-center gap-2.5">
+    <section className="grid max-w-190 gap-4">
+      <header className="workspace-page-header flex items-center justify-between gap-4">
+        <div className="flex min-w-0 items-center gap-3">
+          <span className="workspace-page-header-icon">
+            <Settings className="size-4" />
+          </span>
+          <div className="workspace-page-header-meta">
+            <strong>机器人配置</strong>
+            <small>管理当前机器人的运行与连接参数</small>
+          </div>
           {toolbar}
-          <small className="truncate text-xs text-slate-500">
-            一般情况下，你并不需编辑机器人配置
-          </small>
         </div>
         <button
           className="inline-flex min-h-9 items-center justify-center rounded-md bg-brand-600 px-3.5 text-xs font-semibold text-white transition hover:bg-brand-700 disabled:cursor-not-allowed disabled:opacity-50"

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useDispatch, useSelector } from 'react-redux'
 import { useLocation, useNavigate } from 'react-router-dom'
 import {
@@ -253,7 +253,10 @@ function FlowView({
   } = useReleasesQuery(releaseApp ?? '', {
     skip: !releaseApp
   })
-  const releases = (releaseData as Release[] | null | undefined) ?? []
+  const releases = useMemo(
+    () => (releaseData as Release[] | null | undefined) ?? [],
+    [releaseData]
+  )
   const webSteps =
     webEdition === 'clean'
       ? [
@@ -369,7 +372,7 @@ function FlowView({
         <small>正在获取正式版本列表…</small>
       )}
       {!releases.length && releaseError && (
-        <small className="text-[var(--theme-danger-text)]">
+        <small className="text-(--theme-danger-text)">
           正式版本列表获取失败，可能是网络或代理问题。
           <button type="button" onClick={() => void refetchReleases()}>
             重试
@@ -1141,12 +1144,12 @@ function FlowView({
         )}
         <div className="wizard-content">
           {!goal || step === 0 ? (
-            <div className="guide-question mx-auto max-w-[560px] text-center">
-              <p className="text-[var(--theme-accent-text)] text-xs font-extrabold uppercase tracking-[0.13em] mb-3.5">
+            <div className="guide-question mx-auto max-w-140 text-center">
+              <p className="text-(--theme-accent-text) text-xs font-extrabold uppercase tracking-[0.13em] mb-3.5">
                 ALemonX
               </p>
               <h1>你现在想做什么？</h1>
-              <p className="text-[var(--theme-text-muted)] text-[0.95rem] leading-[1.65] mt-3.5">
+              <p className="text-(--theme-text-muted) text-[0.95rem] leading-[1.65] mt-3.5">
                 从一个目标开始，剩下的步骤交给引导。
               </p>
               <div className="question-options">

@@ -12,11 +12,11 @@ export function ErrorNotice({
 }) {
   return (
     <aside
-      className="fixed left-1/2 top-[18px] z-[100] flex w-[min(calc(100vw-32px),760px)] -translate-x-1/2 items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2.5 text-sm font-medium text-red-800 shadow-[0_12px_32px_rgb(178_58_58_/_0.18)]"
+      className="fixed left-1/2 top-4.5 z-100 flex w-[min(calc(100vw-32px),760px)] -translate-x-1/2 items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2.5 text-sm font-medium text-red-800 shadow-[0_12px_32px_rgb(178_58_58/0.18)]"
       role="alert"
       aria-live="assertive"
     >
-      <span className="min-w-0 break-words">{message}</span>
+      <span className="min-w-0 wrap-break-word">{message}</span>
       <Button
         variant="icon"
         className="-mr-1 -mt-0.5 size-7 shrink-0 border-transparent bg-transparent text-red-700 hover:bg-red-100 focus:outline-none focus:ring-2 focus:ring-red-300"

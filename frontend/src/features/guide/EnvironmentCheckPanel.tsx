@@ -16,7 +16,7 @@ export function EnvironmentCheckPanel({
   const ready = Boolean(report?.ready)
 
   return (
-    <section className="mx-auto grid w-full max-w-[640px] gap-5 pt-8">
+    <section className="mx-auto grid w-full max-w-160 gap-5 pt-8">
       <header className="flex items-start justify-between gap-5 rounded-2xl border border-slate-200 bg-white p-5 shadow-[0_12px_30px_rgb(28_26_23/0.06)]">
         <div className="flex items-start gap-3">
           <i
@@ -65,7 +65,7 @@ export function EnvironmentCheckPanel({
                 <strong className="block text-sm font-bold text-slate-700">
                   {check.name}
                 </strong>
-                <span className="mt-1 block break-words text-xs leading-5 text-slate-500">
+                <span className="mt-1 block wrap-break-word text-xs leading-5 text-slate-500">
                   {check.detail}
                 </span>
                 {check.status !== 'ready' && check.suggestion && (

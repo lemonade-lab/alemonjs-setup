@@ -11,8 +11,18 @@ type GuideHeaderProps = {
 
 export function GuideHeader({ onBack, onClose, showBack }: GuideHeaderProps) {
   return (
-    <header className="relative flex h-[52px] shrink-0 items-center justify-between border-b border-slate-100 px-[18px]">
+    <header className="relative flex h-13 shrink-0 items-center justify-between border-b border-slate-100 px-4.5">
       <div className="flex items-center gap-2.5">
+        <SetupUpdateButton />
+        <a
+          className="text-[0.84rem] font-extrabold tracking-[-0.01em] text-ink-950 no-underline transition hover:text-brand-600"
+          href="https://alemonjs.com/"
+          target="_blank"
+          rel="noreferrer"
+        >
+          ALemonX
+        </a>
+        <ThemeToggle />
         {showBack && (
           <Button
             variant="icon"
@@ -23,16 +33,6 @@ export function GuideHeader({ onBack, onClose, showBack }: GuideHeaderProps) {
             <ArrowLeft className="size-4" />
           </Button>
         )}
-        <a
-          className="text-[0.84rem] font-extrabold tracking-[-0.01em] text-ink-950 no-underline transition hover:text-brand-600"
-          href="https://alemonjs.com/"
-          target="_blank"
-          rel="noreferrer"
-        >
-          ALemonX
-        </a>
-        <SetupUpdateButton />
-        <ThemeToggle />
       </div>
       <Button
         variant="icon"

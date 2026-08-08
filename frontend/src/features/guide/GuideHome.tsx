@@ -132,14 +132,14 @@ function PurposeGroup({
     <section className="wizard purpose-group">
       <section className="wizard-page">
         <div className="wizard-content">
-          <div className="guide-question mx-auto max-w-[560px] text-center">
-            <p className="text-[var(--theme-accent-text)] text-xs font-extrabold uppercase tracking-[0.13em] mb-3.5">
+          <div className="guide-question mx-auto max-w-140 text-center">
+            <p className="text-(--theme-accent-text) text-xs font-extrabold uppercase tracking-[0.13em] mb-3.5">
               部署向导
             </p>
             <h1>
               {group === 'deploy' ? '你要部署哪一种版本？' : '开始开发机器人'}
             </h1>
-            <p className="text-[var(--theme-text-muted)] text-[0.95rem] leading-[1.65] mt-3.5">
+            <p className="text-(--theme-text-muted) text-[0.95rem] leading-[1.65] mt-3.5">
               选择一种方式，接下来只会展示与它有关的步骤。
             </p>
             <div className="question-options">

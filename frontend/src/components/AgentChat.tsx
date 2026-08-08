@@ -430,7 +430,6 @@ export function AgentChatPage({
           ])
           break
         case 'done':
-          setActivity([])
           setTimelineOpen(false)
           setMessages(value => [
             ...value,
@@ -566,26 +565,41 @@ export function AgentChatPage({
     setNotice('已停止本次执行。')
   }
 
-  const resolveConfirm = async (approve: boolean) => {
-    if (!pendingConfirm) return
-    const id = pendingConfirm.id
-    setPendingConfirm(null)
-    try {
-      const response = await fetch('/api/v1/agent/approve', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ confirmId: id, approve })
-      })
-      if (!response.ok) {
-        const data = (await response.json().catch(() => ({}))) as {
-          error?: string
+  const resolveConfirm = useCallback(
+    async (approve: boolean) => {
+      if (!pendingConfirm) return
+      const id = pendingConfirm.id
+      setPendingConfirm(null)
+      try {
+        const response = await fetch('/api/v1/agent/approve', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ confirmId: id, approve })
+        })
+        if (!response.ok) {
+          const data = (await response.json().catch(() => ({}))) as {
+            error?: string
+          }
+          setNotice(data.error || (approve ? '批准失败。' : '拒绝失败。'))
         }
-        setNotice(data.error || (approve ? '批准失败。' : '拒绝失败。'))
+      } catch {
+        setNotice(approve ? '批准失败：网络错误。' : '拒绝失败：网络错误。')
       }
-    } catch {
-      setNotice(approve ? '批准失败：网络错误。' : '拒绝失败：网络错误。')
+    },
+    [pendingConfirm]
+  )
+
+  useEffect(() => {
+    if (!pendingConfirm) return
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        void resolveConfirm(false)
+      }
     }
-  }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [pendingConfirm, resolveConfirm])
 
   const saveSettings = async () => {
     const response = await fetch('/api/v1/ai/providers', {
@@ -633,6 +647,18 @@ export function AgentChatPage({
       break
     }
   }
+
+  const completedSteps = activity.filter(item => item.status === 'done').length
+  const runningSteps = activity.filter(item => item.status === 'running').length
+  const failedSteps = activity.filter(item => item.status === 'error').length
+  const activitySummary = [
+    `${activity.length} 个操作`,
+    completedSteps > 0 && `完成 ${completedSteps}`,
+    runningSteps > 0 && `进行中 ${runningSteps}`,
+    failedSteps > 0 && `失败 ${failedSteps}`
+  ]
+    .filter(Boolean)
+    .join(' · ')
 
   return (
     <section className="agent-workspace">
@@ -726,11 +752,11 @@ export function AgentChatPage({
                 <button
                   className="agent-timeline-toggle"
                   onClick={() => setTimelineOpen(value => !value)}
+                  aria-expanded={timelineOpen}
+                  aria-controls="agent-activity-timeline"
                 >
                   <span className="agent-timeline-count">
-                    {activity.length} 个工具操作
-                    {activity.some(item => item.status === 'running') &&
-                      ' · 进行中'}
+                    {activitySummary}
                   </span>
                   <ChevronDown
                     className={cn(
@@ -740,7 +766,7 @@ export function AgentChatPage({
                   />
                 </button>
                 {timelineOpen && (
-                  <div className="agent-timeline">
+                  <div className="agent-timeline" id="agent-activity-timeline">
                     {activity.map((item, index) => (
                       <div
                         className="agent-step"
@@ -819,12 +845,18 @@ export function AgentChatPage({
                   resizePrompt()
                 }}
                 onKeyDown={event => {
-                  if (event.key === 'Enter' && !event.shiftKey) {
+                  if (
+                    event.key === 'Enter' &&
+                    !event.shiftKey &&
+                    !event.nativeEvent.isComposing
+                  ) {
                     event.preventDefault()
                     void send()
                   }
                 }}
                 rows={1}
+                aria-label="描述要交给 Agent 的任务"
+                placeholder="描述任务，Enter 发送（Shift+Enter 换行）"
               />
               <div className="agent-composer-bar">
                 <div className="agent-composer-left">
@@ -1113,10 +1145,15 @@ export function AgentChatPage({
 
       {pendingConfirm && (
         <div className="agent-confirm-overlay">
-          <div className="agent-confirm-dialog" role="dialog" aria-modal="true">
+          <div
+            className="agent-confirm-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="agent-confirm-title"
+          >
             <header>
               <Pencil className="size-4" />
-              <strong>Agent 请求修改项目</strong>
+              <strong id="agent-confirm-title">Agent 请求修改项目</strong>
             </header>
             <p>
               工具 <code>{pendingConfirm.tool}</code>{' '}

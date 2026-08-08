@@ -76,18 +76,18 @@ export function PackageManifestPanel({
     'min-h-9 w-full rounded-md border border-slate-300 bg-white px-2.5 text-sm font-normal text-slate-800 outline-none transition focus:border-brand-600 focus:ring-2 focus:ring-brand-100'
   if (isFetching)
     return (
-      <section className="grid max-w-[720px] rounded-xl border border-slate-200 bg-white p-4 text-xs text-slate-500">
+      <section className="grid max-w-180 rounded-xl border border-slate-200 bg-white p-4 text-xs text-slate-500">
         <p>正在读取 package.json…</p>
       </section>
     )
   if (error)
     return (
-      <section className="grid max-w-[720px] rounded-xl border border-slate-200 bg-white p-4 text-xs text-slate-500">
+      <section className="grid max-w-180 rounded-xl border border-slate-200 bg-white p-4 text-xs text-slate-500">
         <p>无法读取 package.json。</p>
       </section>
     )
   return (
-    <section className="grid max-w-[720px] gap-4 rounded-xl border border-slate-200 bg-white p-4 shadow-[0_7px_18px_rgb(28_26_23/0.035)]">
+    <section className="grid max-w-180 gap-4 rounded-xl border border-slate-200 bg-white p-4 shadow-[0_7px_18px_rgb(28_26_23/0.035)]">
       <header className="flex items-start justify-between gap-4 border-b border-slate-100 pb-3">
         <div className="grid gap-0.5">
           <strong className="text-sm text-ink-950">包信息</strong>

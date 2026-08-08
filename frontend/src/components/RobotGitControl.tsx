@@ -233,9 +233,6 @@ export function RobotGitControl({
     <section className="git-tab-panel grid content-start gap-3 rounded-lg border border-slate-200 bg-white p-4">
       <div className="git-tab-heading grid grid-cols-[1fr_auto] items-center gap-3 border-b border-slate-200 pb-3 sm:grid-cols-[auto_minmax(0,1fr)_auto]">
         <label className="col-span-2 grid gap-0.5 sm:col-span-1">
-          <strong className="text-sm font-semibold text-slate-800">
-            提交说明
-          </strong>
           <small className="text-xs text-slate-500">
             {changes.length} 项待提交
           </small>
@@ -405,14 +402,6 @@ export function RobotGitControl({
   const branchPanel = (
     <section className="grid gap-3 rounded-lg border border-slate-200 bg-white p-4">
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 pb-3">
-        <div className="grid gap-1">
-          <strong className="text-sm font-semibold text-slate-800">
-            分支管理
-          </strong>
-          <small className="text-xs text-slate-500">
-            打开页面时会自动同步远程分支。
-          </small>
-        </div>
         <div className="flex min-w-0 flex-1 items-center gap-2">
           <input
             className="h-9 min-w-0 flex-1 rounded-md border border-slate-300 bg-white px-2.5 text-xs outline-none focus:border-brand-600 focus:ring-2 focus:ring-brand-100"
@@ -510,13 +499,7 @@ export function RobotGitControl({
   const remotePanel = (
     <section className="grid gap-3 rounded-lg border border-slate-200 bg-white p-4">
       <div className="grid gap-3">
-        <section
-          className="grid content-start gap-2 rounded-lg border border-slate-200 bg-slate-50 p-3"
-          aria-label="添加或修改远程仓库"
-        >
-          <strong className="text-sm font-semibold text-slate-700">
-            添加或修改远程仓库
-          </strong>
+        <section>
           <div className="flex flex-wrap items-center gap-2">
             <input
               className="h-9 w-36 rounded-md border border-slate-300 bg-white px-2.5 text-xs outline-none focus:border-brand-600 focus:ring-2 focus:ring-brand-100"
@@ -557,9 +540,7 @@ export function RobotGitControl({
               已配置远程
             </strong>
             <div className="flex items-center gap-2">
-              <span className="text-[11px] text-slate-400">
-                {syncText}
-              </span>
+              <span className="text-[11px] text-slate-400">{syncText}</span>
               <button
                 className="secondary-button"
                 disabled={isLoading || !data?.remotes.length}
@@ -652,7 +633,7 @@ export function RobotGitControl({
       ariaLabel={`${project.name} 的 Git 管理`}
     >
       <section
-        className="git-workspace-dialog grid max-h-[min(760px,calc(100vh-32px))] w-full max-w-[920px] grid-rows-[auto_minmax(0,1fr)] overflow-hidden rounded-xl border border-slate-200 bg-white shadow-[0_24px_70px_rgb(28_26_23/0.26)]"
+        className="git-workspace-dialog grid max-h-[min(760px,calc(100vh-32px))] w-full max-w-230 grid-rows-[auto_minmax(0,1fr)] overflow-hidden rounded-xl border border-slate-200 bg-white shadow-[0_24px_70px_rgb(28_26_23/0.26)]"
         role="dialog"
         aria-modal="true"
         aria-label={`${project.name} 的 Git 管理`}
@@ -746,7 +727,9 @@ export function RobotGitControl({
               ? `将提交工作区全部 ${changes.length} 项变更：\n${changes
                   .map(item => item.path)
                   .slice(0, 5)
-                  .join('\n')}${changes.length > 5 ? `\n… 共 ${changes.length} 项` : ''}\n\n说明：${pending.message}`
+                  .join(
+                    '\n'
+                  )}${changes.length > 5 ? `\n… 共 ${changes.length} 项` : ''}\n\n说明：${pending.message}`
               : pending?.value
                 ? `目标：${pending.value}${pending.message ? `\n说明：${pending.message}` : ''}`
                 : pending?.message

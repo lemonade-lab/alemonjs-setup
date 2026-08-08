@@ -76,7 +76,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
   if (loadError)
     return (
       <main className="auth-gate flex min-h-screen items-center justify-center p-5">
-        <section className="grid w-full max-w-[360px] gap-3 rounded-xl border border-slate-200 bg-white p-6 text-center shadow-[0_18px_52px_rgb(28_26_23/0.12)] dark:border-slate-700 dark:bg-slate-900">
+        <section className="grid w-full max-w-90 gap-3 rounded-xl border border-slate-200 bg-white p-6 text-center shadow-[0_18px_52px_rgb(28_26_23/0.12)] dark:border-slate-700 dark:bg-slate-900">
           <div className="grid gap-1">
             <strong className="text-sm text-slate-800 dark:text-slate-100">
               无法连接到后台服务
@@ -104,7 +104,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
   if (!status.enabled || status.authenticated) return <>{children}</>
   return (
     <main className="auth-gate flex min-h-screen items-center justify-center p-5">
-      <section className="grid w-full max-w-[360px] gap-3 rounded-xl border border-slate-200 bg-white p-6 shadow-[0_18px_52px_rgb(28_26_23/0.12)]">
+      <section className="grid w-full max-w-90 gap-3 rounded-xl border border-slate-200 bg-white p-6 shadow-[0_18px_52px_rgb(28_26_23/0.12)]">
         <LockKeyhole className="size-6 text-brand-600" />
         <div>
           <strong className="text-sm text-slate-800">身份认证</strong>
@@ -224,7 +224,9 @@ export function AuthControl() {
       </Button>
       {open && (
         <section
-          className="absolute right-0 top-[calc(100%+8px)] z-50 grid w-[min(22.5rem,calc(100vw-2rem))] max-h-[calc(100vh-5rem)] gap-2.5 overflow-y-auto rounded-xl border border-slate-200 bg-white p-3 shadow-[0_18px_42px_rgb(28_26_23/0.13)]"
+          className="topbar-popover absolute right-0 top-[calc(100%+8px)] z-50 grid w-[min(22.5rem,calc(100vw-2rem))] max-h-[calc(100vh-5rem)] gap-2.5 overflow-y-auto rounded-xl border border-slate-200 bg-white p-3 shadow-[0_18px_42px_rgb(28_26_23/0.13)]"
+          role="dialog"
+          aria-label="身份认证"
           onKeyDown={event => {
             if (event.key === 'Escape') setOpen(false)
           }}
@@ -235,7 +237,7 @@ export function AuthControl() {
             </strong>
             <Button
               variant="icon"
-              className="size-6 border-transparent bg-transparent text-slate-400 hover:bg-slate-100"
+              className="topbar-popover-close size-6"
               onClick={() => setOpen(false)}
               aria-label="关闭身份认证"
             >

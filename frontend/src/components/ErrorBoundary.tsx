@@ -30,7 +30,7 @@ export class ErrorBoundary extends Component<Props, State> {
                 出现了一次未预期的错误。刷新后如仍复现，请把下方信息反馈给开发者。
               </p>
             </div>
-            <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-red-200 bg-white/60 p-3 text-xs text-red-900 dark:border-red-900 dark:bg-red-950/60 dark:text-red-100">
+            <pre className="max-h-40 overflow-auto whitespace-pre-wrap wrap-break-word rounded-lg border border-red-200 bg-white/60 p-3 text-xs text-red-900 dark:border-red-900 dark:bg-red-950/60 dark:text-red-100">
               {this.state.error.message}
             </pre>
             <footer className="flex justify-end gap-2">
