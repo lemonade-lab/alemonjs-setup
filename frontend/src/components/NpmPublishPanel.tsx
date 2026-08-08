@@ -1,8 +1,10 @@
+import { useStoreState } from '../store/guideStore'
 import cn from 'classnames'
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, type ReactNode } from 'react'
 import { ChevronDown, File, Folder, Package, RefreshCw, X } from 'lucide-react'
 import { useNpmStatusQuery, useLazyNpmPackQuery } from '../store/workspaceApi'
 import { ErrorNotice } from './ErrorNotice'
+import { BotWorkspace } from './BotWorkspace'
 
 type SourceCommit = {
   sha: string
@@ -113,14 +115,14 @@ export function NpmPublishPanel({ root, busy, onRun }: Props) {
   } = useNpmStatusQuery(root, { skip: !root })
   const status = rawStatus as NPMStatus | undefined
   const [getPreview] = useLazyNpmPackQuery()
-  const [tag, setTag] = useState('latest')
-  const [confirming, setConfirming] = useState(false)
-  const [tokenMode, setTokenMode] = useState(false)
-  const [token, setToken] = useState('')
-  const [sourceCommit, setSourceCommit] = useState('')
-  const [preview, setPreview] = useState<PackPreview | null>(null)
-  const [previewing, setPreviewing] = useState(false)
-  const [previewError, setPreviewError] = useState('')
+  const [tag, setTag] = useStoreState('latest')
+  const [confirming, setConfirming] = useStoreState(false)
+  const [tokenMode, setTokenMode] = useStoreState(false)
+  const [token, setToken] = useStoreState('')
+  const [sourceCommit, setSourceCommit] = useStoreState('')
+  const [preview, setPreview] = useStoreState<PackPreview | null>(null)
+  const [previewing, setPreviewing] = useStoreState(false)
+  const [previewError, setPreviewError] = useStoreState('')
   const refresh = async () => {
     await refetch()
   }
@@ -174,21 +176,31 @@ export function NpmPublishPanel({ root, busy, onRun }: Props) {
   }
   if (loading)
     return (
-      <p className="grid min-h-32 place-items-center text-sm text-slate-500">
-        正在读取 npm 官方仓库与本机登录状态…
-      </p>
+      <BotWorkspace
+        className="npm-publish-panel max-w-190"
+        header={<header className="bot-page-header"><strong>NPM 发布</strong></header>}
+      >
+        <p className="grid min-h-32 place-items-center text-sm text-slate-500">
+          正在读取 npm 官方仓库与本机登录状态…
+        </p>
+      </BotWorkspace>
     )
   if (statusError)
     return (
-      <section className="grid min-h-32 place-items-center gap-3 rounded-xl border border-rose-200 bg-rose-50 p-5 text-sm text-rose-700 dark:border-rose-900 dark:bg-rose-950/30 dark:text-rose-300">
-        <p className="m-0">无法读取 npm 发布状态。</p>
-        <button
-          className="inline-flex min-h-9 items-center justify-center rounded-lg border border-rose-300 bg-white px-3 text-xs font-semibold text-rose-700 dark:border-rose-800 dark:bg-slate-900 dark:text-rose-300"
-          onClick={() => void refresh()}
-        >
-          重新检查
-        </button>
-      </section>
+      <BotWorkspace
+        className="npm-publish-panel max-w-190"
+        header={<header className="bot-page-header"><strong>NPM 发布</strong></header>}
+      >
+        <section className="grid min-h-32 place-items-center gap-3 rounded-xl border border-rose-200 bg-rose-50 p-5 text-sm text-rose-700 dark:border-rose-900 dark:bg-rose-950/30 dark:text-rose-300">
+          <p className="m-0">无法读取 npm 发布状态。</p>
+          <button
+            className="inline-flex min-h-9 items-center justify-center rounded-lg border border-rose-300 bg-white px-3 text-xs font-semibold text-rose-700 dark:border-rose-800 dark:bg-slate-900 dark:text-rose-300"
+            onClick={() => void refresh()}
+          >
+            重新检查
+          </button>
+        </section>
+      </BotWorkspace>
     )
   if (!status) return null
   const issues = status.issues ?? []
@@ -201,13 +213,14 @@ export function NpmPublishPanel({ root, busy, onRun }: Props) {
     otherIssues.length === 0 &&
     (!loginRequired || (tokenMode && token.trim() !== ''))
   return (
-    <section className="grid max-w-190 gap-4">
-      <header className="workspace-page-header flex min-h-10 flex-wrap items-center justify-between gap-3">
+    <BotWorkspace
+      className="npm-publish-panel max-w-190"
+      header={<header className="bot-page-header flex flex-wrap items-center justify-between gap-3">
         <div className="flex min-w-0 items-center gap-3">
-          <span className="workspace-page-header-icon">
+          <span className="bot-page-header-icon">
             <Package className="size-4" />
           </span>
-          <div className="workspace-page-header-meta">
+          <div className="bot-page-header-meta">
             <strong>{status.name || '未命名包'}</strong>
             <small>npm 发布 · 管理标签、预览与发布状态</small>
           </div>
@@ -254,7 +267,8 @@ export function NpmPublishPanel({ root, busy, onRun }: Props) {
             {confirming ? '确认发布' : '发布到 npm'}
           </button>
         </div>
-      </header>
+      </header>}
+    >
       <section
         className="flex flex-wrap items-center divide-x divide-slate-200 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-500 dark:divide-slate-700 dark:border-slate-700 dark:bg-slate-800"
         aria-label="发布状态"
@@ -451,6 +465,6 @@ export function NpmPublishPanel({ root, busy, onRun }: Props) {
           </div>
         </details>
       )}
-    </section>
+    </BotWorkspace>
   )
 }

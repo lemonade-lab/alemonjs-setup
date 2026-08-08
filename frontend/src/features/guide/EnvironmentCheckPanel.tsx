@@ -20,7 +20,7 @@ export function EnvironmentCheckPanel({
       <header className="flex items-start justify-between gap-5 rounded-2xl border border-slate-200 bg-white p-5 shadow-[0_12px_30px_rgb(28_26_23/0.06)]">
         <div className="flex items-start gap-3">
           <i
-            className={`mt-0.5 inline-flex h-9 w-9 items-center justify-center rounded-xl text-base font-extrabold not-italic ${ready ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}
+            className={`mt-0.5 inline-flex h-9 w-9 items-center justify-center rounded-xl border text-base font-extrabold not-italic ${ready ? 'border-emerald-400 bg-transparent text-emerald-700' : 'border-amber-300 bg-amber-100 text-amber-700'}`}
           >
             {ready ? '✓' : '!'}
           </i>
@@ -53,11 +53,11 @@ export function EnvironmentCheckPanel({
         <div className="grid gap-2 sm:grid-cols-2">
           {report.checks.map(check => (
             <article
-              className={`flex min-h-20 items-start gap-3 rounded-xl border p-4 ${check.status === 'ready' ? 'border-emerald-100 bg-emerald-50/45' : 'border-amber-200 bg-amber-50'}`}
+              className={`flex min-h-20 items-start gap-3 rounded-xl border p-4 ${check.status === 'ready' ? 'border-emerald-300 bg-transparent' : 'border-amber-200 bg-amber-50'}`}
               key={check.id}
             >
               <i
-                className={`inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-xs font-extrabold not-italic ${check.status === 'ready' ? 'bg-emerald-600 text-white' : 'bg-amber-500 text-white'}`}
+                className={`inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full border text-xs font-extrabold not-italic ${check.status === 'ready' ? 'border-emerald-500 bg-transparent text-emerald-700' : 'border-amber-500 bg-amber-500 text-white'}`}
               >
                 {check.status === 'ready' ? '✓' : '!'}
               </i>

@@ -110,8 +110,18 @@ func packageConfigFromManifest(path string, data []byte, subject string) (Packag
 	if err := json.Unmarshal(data, &manifest); err != nil {
 		return PackageConfig{}, errors.New(subject + "的 package.json 无法识别")
 	}
-	if manifest.Name == "" || len(manifest.Alemonjs.Config) == 0 {
-		return PackageConfig{}, errors.New(subject + "没有声明 alemonjs.config")
+	if manifest.Name == "" {
+		return PackageConfig{}, errors.New(subject + "的 package.json 缺少 name")
+	}
+	// A package may intentionally expose no visual fields. That is a valid,
+	// empty configuration schema rather than a request error.
+	if len(manifest.Alemonjs.Config) == 0 {
+		return PackageConfig{
+			Package:   manifest.Name,
+			Namespace: manifest.Name,
+			Fields:    []PackageConfigField{},
+			Values:    map[string]string{},
+		}, nil
 	}
 	// The connection's YAML section is keyed by its short platform name (for
 	// example onebot), not the scoped package name (@alemonjs/onebot). Older

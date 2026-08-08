@@ -1,12 +1,12 @@
-import { useEffect, useState } from 'react'
+import { useStoreState } from '../store/guideStore'
+import { useEffect } from 'react'
 import { Package } from 'lucide-react'
 import { Tabs } from './Tabs'
+import { BotWorkspace } from './BotWorkspace'
 
 type Props = {
   content: string
-  busy: boolean
   onChange: (content: string) => void
-  onSave: (content: string) => void
 }
 
 const officialRegistry = 'https://registry.npmjs.org/'
@@ -23,10 +23,10 @@ function withRegistry(content: string, registry: string) {
   return [...lines, `registry=${registry}`].join('\n') + '\n'
 }
 
-export function NpmrcConfigForm({ content, busy, onChange, onSave }: Props) {
-  const [editor, setEditor] = useState<'visual' | 'text'>('visual')
-  const [preset, setPreset] = useState(officialRegistry)
-  const [customRegistry, setCustomRegistry] = useState('')
+export function NpmrcConfigForm({ content, onChange }: Props) {
+  const [editor, setEditor] = useStoreState<'visual' | 'text'>('visual')
+  const [preset, setPreset] = useStoreState(officialRegistry)
+  const [customRegistry, setCustomRegistry] = useStoreState('')
 
   useEffect(() => {
     const registry = registryFrom(content)
@@ -38,10 +38,10 @@ export function NpmrcConfigForm({ content, busy, onChange, onSave }: Props) {
     }
   }, [content])
 
-  const saveVisual = () => {
-    const registry = (preset === 'custom' ? customRegistry : preset).trim()
+  const updateRegistry = (candidate: string) => {
+    const registry = candidate.trim()
     if (!registry) return
-    onSave(withRegistry(content, registry))
+    onChange(withRegistry(content, registry))
   }
 
   const mode = (
@@ -58,38 +58,39 @@ export function NpmrcConfigForm({ content, busy, onChange, onSave }: Props) {
   )
   const fieldClass =
     'min-h-9 w-full rounded-md border border-slate-300 bg-white px-2.5 text-sm font-normal text-slate-800 outline-none transition focus:border-brand-600 focus:ring-2 focus:ring-brand-100'
-  const saveClass =
-    'inline-flex min-h-9 items-center justify-center rounded-md bg-brand-600 px-3.5 text-xs font-semibold text-white transition hover:bg-brand-700 disabled:cursor-not-allowed disabled:opacity-50'
   return (
-    <section className="grid max-w-155 gap-4">
-      {editor === 'visual' ? (
-        <>
-          <header className="workspace-page-header flex items-center justify-between">
+    <BotWorkspace
+      className="max-w-155"
+      header={
+        editor === 'visual' ? (
+          <header className="bot-page-header flex items-center justify-between">
             <div className="flex items-center gap-3">
-              <span className="workspace-page-header-icon">
+              <span className="bot-page-header-icon">
                 <Package className="size-4" />
               </span>
-              <div className="workspace-page-header-meta">
+              <div className="bot-page-header-meta">
                 <strong>npm 源</strong>
-                <small>配置当前机器人的包下载源</small>
+                <small>配置当前机器人的包下载源 · 修改后自动保存</small>
               </div>
-              {mode}
             </div>
-            <button
-              className={saveClass}
-              disabled={busy || (preset === 'custom' && !customRegistry.trim())}
-              onClick={saveVisual}
-            >
-              保存
-            </button>
+              {mode}
           </header>
+        ) : null
+      }
+    >
+      {editor === 'visual' ? (
+        <>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <label className="grid gap-1 text-xs font-semibold text-slate-600">
               Registry
               <select
                 className={fieldClass}
                 value={preset}
-                onChange={event => setPreset(event.target.value)}
+                onChange={event => {
+                  const next = event.target.value
+                  setPreset(next)
+                  if (next !== 'custom') updateRegistry(next)
+                }}
               >
                 <option value={officialRegistry}>npm 官方源</option>
                 <option value={mirrorRegistry}>npmmirror 镜像</option>
@@ -102,7 +103,10 @@ export function NpmrcConfigForm({ content, busy, onChange, onSave }: Props) {
                 <input
                   className={fieldClass}
                   value={customRegistry}
-                  onChange={event => setCustomRegistry(event.target.value)}
+                  onChange={event => {
+                    setCustomRegistry(event.target.value)
+                    updateRegistry(event.target.value)
+                  }}
                   placeholder="https://registry.example.com/"
                 />
               </label>
@@ -113,13 +117,7 @@ export function NpmrcConfigForm({ content, busy, onChange, onSave }: Props) {
         <section className="grid overflow-hidden rounded-xl border border-slate-200 bg-white">
           <header className="flex items-center justify-between border-b border-slate-100 px-3 py-2.5">
             {mode}
-            <button
-              className={saveClass}
-              disabled={busy}
-              onClick={() => onSave(content)}
-            >
-              保存
-            </button>
+            <small className="text-xs text-slate-400">修改后自动保存</small>
           </header>
           <textarea
             className="min-h-72 w-full resize-y border-0 p-3 font-mono text-sm text-slate-700 outline-none"
@@ -129,6 +127,6 @@ export function NpmrcConfigForm({ content, busy, onChange, onSave }: Props) {
           />
         </section>
       )}
-    </section>
+    </BotWorkspace>
   )
 }

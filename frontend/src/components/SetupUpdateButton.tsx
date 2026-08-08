@@ -1,13 +1,15 @@
+import { useStoreState } from '../store/guideStore'
 import {
   CheckCircle2,
   Download,
   ExternalLink,
   FileArchive,
+  Home,
   RefreshCw,
   Upload,
   X
 } from 'lucide-react'
-import { useEffect, useId, useState } from 'react'
+import { useEffect, useId } from 'react'
 import { ConfirmDialog } from './ConfirmDialog'
 import { Tabs } from './Tabs'
 import {
@@ -25,13 +27,14 @@ type Release = {
 
 export function SetupUpdateButton() {
   const [check, { data, isFetching, error }] = useLazySetupUpdateQuery()
-  const [open, setOpen] = useState(false)
-  const [mode, setMode] = useState<'now' | 'manual'>('now')
-  const [releaseURL, setReleaseURL] = useState('')
-  const [file, setFile] = useState<File | null>(null)
-  const [busy, setBusy] = useState(false)
-  const [message, setMessage] = useState('')
-  const [confirmRestart, setConfirmRestart] = useState(false)
+  const [open, setOpen] = useStoreState(false)
+  const [mode, setMode] = useStoreState<'now' | 'manual'>('now')
+  const [releaseURL, setReleaseURL] = useStoreState('')
+  const [file, setFile] = useStoreState<File | null>(null)
+  const [busy, setBusy] = useStoreState(false)
+  const [message, setMessage] = useStoreState('')
+  const [confirmRestart, setConfirmRestart] = useStoreState(false)
+  const updateAvailable = Boolean(data?.available)
   useEffect(() => {
     const closeWhenAnotherToolOpens = (event: Event) => {
       if ((event as CustomEvent<string>).detail !== 'update') setOpen(false)
@@ -154,7 +157,7 @@ export function SetupUpdateButton() {
     <div className="relative">
       <button
         className={`inline-flex size-8 items-center justify-center rounded-md border transition disabled:cursor-wait disabled:opacity-70 ${
-          data?.available
+          updateAvailable
             ? 'border-brand-100 bg-brand-50 text-brand-600 hover:bg-brand-100'
             : 'border-transparent text-slate-500 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800'
         }`}
@@ -164,12 +167,16 @@ export function SetupUpdateButton() {
         title={
           isFetching
             ? '正在检查更新'
-            : data?.available
+            : updateAvailable
               ? '发现可用更新'
               : '检查更新'
         }
       >
-        <RefreshCw className="size-4" />
+        {isFetching || updateAvailable ? (
+          <RefreshCw className="size-4" />
+        ) : (
+          <Home className="size-4" />
+        )}
       </button>
       {open && (
         <section

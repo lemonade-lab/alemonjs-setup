@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useStoreState } from '../store/guideStore'
+import { useEffect, useMemo, useRef } from 'react'
 import {
   ChevronDown,
   CloudDownload,
@@ -175,7 +176,7 @@ export function RobotGitControl({
   onClose: () => void
 }) {
   const root = project?.path ?? ''
-  const [tab, setTab] = useState<Tab>('commit')
+  const [tab, setTab] = useStoreState<Tab>('commit')
   const gitQueryArgs = useMemo(() => ({ root, view: tab }), [root, tab])
   const {
     data,
@@ -193,14 +194,14 @@ export function RobotGitControl({
       .then(() => refetch())
       .catch(() => {})
   }, [refetch, root, run, tab])
-  const [pending, setPending] = useState<Pending>(null)
-  const [output, setOutput] = useState('')
-  const [commitMessage, setCommitMessage] = useState('')
-  const [branchName, setBranchName] = useState('')
-  const [tagName, setTagName] = useState('')
-  const [tagMessage, setTagMessage] = useState('')
-  const [remoteName, setRemoteName] = useState('origin')
-  const [remoteURL, setRemoteURL] = useState('')
+  const [pending, setPending] = useStoreState<Pending>(null)
+  const [output, setOutput] = useStoreState('')
+  const [commitMessage, setCommitMessage] = useStoreState('')
+  const [branchName, setBranchName] = useStoreState('')
+  const [tagName, setTagName] = useStoreState('')
+  const [tagMessage, setTagMessage] = useStoreState('')
+  const [remoteName, setRemoteName] = useStoreState('origin')
+  const [remoteURL, setRemoteURL] = useStoreState('')
   if (!project) return null
 
   const execute = async (request: NonNullable<Pending>) => {

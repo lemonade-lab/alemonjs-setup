@@ -48,6 +48,10 @@ type WorkspaceState = {
   projects: WorkspaceProject[]
   activeProjectID: string
   drafts: Record<string, string>
+  // One in-memory configuration document per robot root. It is deliberately
+  // separate from generic file drafts, because several dashboard features
+  // edit alemon.config.yaml without going through the text editor.
+  robotConfigs: Record<string, string>
   developerMode: boolean
 }
 
@@ -55,6 +59,7 @@ const initialState: WorkspaceState = {
   projects: [],
   activeProjectID: '',
   drafts: {},
+  robotConfigs: {},
   developerMode: false
 }
 const workspaceSlice = createSlice({
@@ -71,7 +76,9 @@ const workspaceSlice = createSlice({
       state.activeProjectID = action.payload
     },
     removeProject(state, action: PayloadAction<string>) {
+      const removed = state.projects.find(item => item.id === action.payload)
       state.projects = state.projects.filter(item => item.id !== action.payload)
+      if (removed) delete state.robotConfigs[removed.path]
       if (state.activeProjectID === action.payload)
         state.activeProjectID = state.projects[0]?.id ?? ''
     },
@@ -85,8 +92,35 @@ const workspaceSlice = createSlice({
         return 0
       })
     },
+    reorderProjects(
+      state,
+      action: PayloadAction<{ sourceID: string; targetID: string }>
+    ) {
+      const sourceIndex = state.projects.findIndex(
+        item => item.id === action.payload.sourceID
+      )
+      if (sourceIndex < 0 || action.payload.sourceID === action.payload.targetID)
+        return
+      const [source] = state.projects.splice(sourceIndex, 1)
+      const targetIndex = state.projects.findIndex(
+        item => item.id === action.payload.targetID
+      )
+      if (!source || targetIndex < 0) return
+      state.projects.splice(targetIndex, 0, source)
+    },
     setDraft(state, action: PayloadAction<{ key: string; content: string }>) {
+      if (state.drafts[action.payload.key] === action.payload.content) return
       state.drafts[action.payload.key] = action.payload.content
+    },
+    setRobotConfig(
+      state,
+      action: PayloadAction<{ root: string; content: string }>
+    ) {
+      if (
+        action.payload.root &&
+        state.robotConfigs[action.payload.root] !== action.payload.content
+      )
+        state.robotConfigs[action.payload.root] = action.payload.content
     },
     setDeveloperMode(state, action: PayloadAction<boolean>) {
       state.developerMode = action.payload
@@ -119,12 +153,7 @@ export const persistedWorkspace = persistReducer(
   {
     key: 'alemonx-workspace',
     storage,
-    whitelist: [
-      'projects',
-      'activeProjectID',
-      'drafts',
-      'developerMode'
-    ],
+    whitelist: ['projects', 'activeProjectID', 'drafts', 'developerMode'],
     transforms: [privateDraftsTransform],
     // A stored state written by an older release may hold null/undefined for
     // fields this build expects to be arrays. Never let that leak into the
@@ -132,6 +161,8 @@ export const persistedWorkspace = persistReducer(
     stateReconciler: (inbound, _original, reduced) => {
       const restored = { ...reduced, ...(inbound ?? {}) } as WorkspaceState
       if (!Array.isArray(restored.projects)) restored.projects = []
+      if (!restored.robotConfigs || typeof restored.robotConfigs !== 'object')
+        restored.robotConfigs = {}
       if (!restored.activeProjectID) restored.activeProjectID = ''
       return restored
     }
@@ -143,7 +174,9 @@ export const {
   selectProject,
   removeProject,
   pinProject,
+  reorderProjects,
   setDraft,
+  setRobotConfig,
   clearDraft,
   setDeveloperMode
 } = workspaceSlice.actions

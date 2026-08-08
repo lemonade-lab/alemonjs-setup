@@ -11,11 +11,11 @@ type GuideHeaderProps = {
 
 export function GuideHeader({ onBack, onClose, showBack }: GuideHeaderProps) {
   return (
-    <header className="relative flex h-13 shrink-0 items-center justify-between border-b border-slate-100 px-4.5">
-      <div className="flex items-center gap-2.5">
+    <header className="topbar relative flex min-h-11 shrink-0 items-center justify-between gap-2 border-b border-slate-200 bg-white/90 px-3 dark:border-slate-700">
+      <div className="flex min-w-0 flex-1 items-center gap-1.5">
         <SetupUpdateButton />
         <a
-          className="text-[0.84rem] font-extrabold tracking-[-0.01em] text-ink-950 no-underline transition hover:text-brand-600"
+          className="truncate px-1 text-[0.82rem] font-semibold tracking-[-0.01em] text-slate-800 no-underline transition-colors hover:text-brand-600 dark:text-slate-200"
           href="https://alemonjs.com/"
           target="_blank"
           rel="noreferrer"
@@ -36,7 +36,7 @@ export function GuideHeader({ onBack, onClose, showBack }: GuideHeaderProps) {
       </div>
       <Button
         variant="icon"
-        className="border-transparent bg-transparent focus:outline-none focus:ring-2 focus:ring-brand-200"
+        className="focus:outline-none focus:ring-2 focus:ring-brand-200"
         aria-label="关闭引导"
         title="关闭引导"
         onClick={onClose}

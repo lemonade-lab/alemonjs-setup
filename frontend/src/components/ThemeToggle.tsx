@@ -1,5 +1,6 @@
+import { useStoreState } from '../store/guideStore'
 import { Moon, Sun } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { useEffect } from 'react'
 import { Button } from './Button'
 
 type Theme = 'light' | 'dark'
@@ -14,7 +15,7 @@ function preferredTheme(): Theme {
 }
 
 export function ThemeToggle() {
-  const [theme, setTheme] = useState<Theme>(() => preferredTheme())
+  const [theme, setTheme] = useStoreState<Theme>(() => preferredTheme())
   useEffect(() => {
     document.documentElement.dataset.theme = theme
     document.documentElement.style.colorScheme = theme

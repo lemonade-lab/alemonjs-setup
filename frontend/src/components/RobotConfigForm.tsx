@@ -1,12 +1,12 @@
-import { useEffect, useState, type ReactNode } from 'react'
+import { useStoreState } from '../store/guideStore'
+import { useEffect, type ReactNode } from 'react'
 import { Settings } from 'lucide-react'
+import { BotWorkspace } from './BotWorkspace'
 
 type Props = {
-  busy: boolean
   content: string
   toolbar?: ReactNode
   onChange: (content: string) => void
-  onSave: (content: string) => Promise<boolean>
 }
 type Values = Record<string, string>
 const empty: Values = {
@@ -38,6 +38,10 @@ const empty: Values = {
   cbpUserAgent: '',
   cbpDeviceID: '',
   cbpFullReceive: ''
+}
+
+function sameValues(left: Values, right: Values) {
+  return Object.keys(empty).every(key => left[key] === right[key])
 }
 const managed = new Set([
   'port',
@@ -226,16 +230,11 @@ function mergeConfig(existing: string, generated: string) {
   return `${kept.length && generated ? `${kept.join('\n')}\n\n` : kept.join('\n')}${generated}`
 }
 
-export function RobotConfigForm({
-  busy,
-  content,
-  toolbar,
-  onChange,
-  onSave
-}: Props) {
-  const [values, setValues] = useState<Values>(empty)
+export function RobotConfigForm({ content, toolbar, onChange }: Props) {
+  const [values, setValues] = useStoreState<Values>(empty)
   useEffect(() => {
-    setValues(readValues(content))
+    const next = readValues(content)
+    setValues(current => (sameValues(current, next) ? current : next))
   }, [content])
   // Redux's YAML draft is the shared editing source for both modes.
   const set = (key: string, value: string) => {
@@ -281,28 +280,24 @@ export function RobotConfigForm({
       </div>
     </details>
   )
-  const save = () => onSave(mergeConfig(content, toYaml(values)))
   return (
-    <section className="grid max-w-190 gap-4">
-      <header className="workspace-page-header flex items-center justify-between gap-4">
-        <div className="flex min-w-0 items-center gap-3">
-          <span className="workspace-page-header-icon">
-            <Settings className="size-4" />
-          </span>
-          <div className="workspace-page-header-meta">
-            <strong>机器人配置</strong>
-            <small>管理当前机器人的运行与连接参数</small>
+    <BotWorkspace
+      className="max-w-190"
+      header={
+        <header className="bot-page-header flex items-center justify-between gap-4">
+          <div className="flex min-w-0 items-center gap-3">
+            <span className="bot-page-header-icon">
+              <Settings className="size-4" />
+            </span>
+            <div className="bot-page-header-meta">
+              <strong>机器人配置</strong>
+              <small>管理当前机器人的运行与连接参数 · 修改后自动保存</small>
+            </div>
           </div>
-          {toolbar}
-        </div>
-        <button
-          className="inline-flex min-h-9 items-center justify-center rounded-md bg-brand-600 px-3.5 text-xs font-semibold text-white transition hover:bg-brand-700 disabled:cursor-not-allowed disabled:opacity-50"
-          disabled={busy}
-          onClick={() => void save()}
-        >
-          {busy ? '保存中' : '保存'}
-        </button>
-      </header>
+            {toolbar}
+        </header>
+      }
+    >
       {group(
         '常规运行',
         '常用',
@@ -422,6 +417,6 @@ export function RobotConfigForm({
           </label>
         </>
       )}
-    </section>
+    </BotWorkspace>
   )
 }

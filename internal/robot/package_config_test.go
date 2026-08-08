@@ -7,6 +7,19 @@ import (
 	"testing"
 )
 
+func TestCurrentPackageConfigWithoutDeclarationIsEmpty(t *testing.T) {
+	root := t.TempDir()
+	writeWebViewFixture(t, filepath.Join(root, "package.json"), `{"name":"robot"}`)
+
+	config, err := (Manager{}).CurrentPackageConfig(root)
+	if err != nil {
+		t.Fatalf("CurrentPackageConfig: %v", err)
+	}
+	if config.Package != "robot" || config.Namespace != "robot" || len(config.Fields) != 0 || len(config.Values) != 0 {
+		t.Fatalf("config = %#v, want an empty robot schema", config)
+	}
+}
+
 // TestScopedConnectionPackageUsesShortNamespace covers @alemonjs/* packages,
 // whose desktop.platform entries declare only a short name (onebot) and no
 // value. The config must be keyed by that short name, not the scoped package

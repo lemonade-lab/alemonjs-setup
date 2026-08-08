@@ -1,3 +1,4 @@
+import { useStoreState } from '../store/guideStore'
 import {
   ArrowUp,
   Check,
@@ -19,7 +20,7 @@ import {
   Unlock,
   X
 } from 'lucide-react'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef } from 'react'
 import { AgentMarkdown } from './AgentMarkdown'
 import cn from 'classnames'
 
@@ -207,25 +208,25 @@ export function AgentChatPage({
   root: string
   initialSessionId?: string
 }) {
-  const [providers, setProviders] = useState<Provider[]>([])
-  const [provider, setProvider] = useState('')
-  const [model, setModel] = useState('')
-  const [messages, setMessages] = useState<ChatMessage[]>([])
-  const [activity, setActivity] = useState<Activity[]>([])
-  const [prompt, setPrompt] = useState('')
-  const [busy, setBusy] = useState(false)
-  const [notice, setNotice] = useState('')
-  const [settings, setSettings] = useState(false)
-  const [baseURL, setBaseURL] = useState('')
-  const [apiKey, setAPIKey] = useState('')
+  const [providers, setProviders] = useStoreState<Provider[]>([])
+  const [provider, setProvider] = useStoreState('')
+  const [model, setModel] = useStoreState('')
+  const [messages, setMessages] = useStoreState<ChatMessage[]>([])
+  const [activity, setActivity] = useStoreState<Activity[]>([])
+  const [prompt, setPrompt] = useStoreState('')
+  const [busy, setBusy] = useStoreState(false)
+  const [notice, setNotice] = useStoreState('')
+  const [settings, setSettings] = useStoreState(false)
+  const [baseURL, setBaseURL] = useStoreState('')
+  const [apiKey, setAPIKey] = useStoreState('')
   const streamRef = useRef<AbortController | null>(null)
   const activityId = useRef(0)
   const lastToolId = useRef(-1)
   const promptRef = useRef<HTMLTextAreaElement | null>(null)
   const threadRef = useRef<HTMLElement | null>(null)
-  const [access, setAccess] = useState<'ask' | 'auto' | 'full'>('ask')
-  const [timelineOpen, setTimelineOpen] = useState(false)
-  const [pendingConfirm, setPendingConfirm] = useState<{
+  const [access, setAccess] = useStoreState<'ask' | 'auto' | 'full'>('ask')
+  const [timelineOpen, setTimelineOpen] = useStoreState(false)
+  const [pendingConfirm, setPendingConfirm] = useStoreState<{
     id: string
     tool: string
     args: string
@@ -236,14 +237,14 @@ export function AgentChatPage({
       hunks?: Array<{ old: string; new: string }>
     } | null
   } | null>(null)
-  const [sessions, setSessions] = useState<SessionMeta[]>([])
-  const [sessionId, setSessionId] = useState('')
-  const [sessionOpen, setSessionOpen] = useState(false)
-  const [models, setModels] = useState<string[]>([])
-  const [modelCardOpen, setModelCardOpen] = useState(false)
-  const [moreOpen, setMoreOpen] = useState(false)
-  const [accessOpen, setAccessOpen] = useState(false)
-  const [editingIndex, setEditingIndex] = useState(-1)
+  const [sessions, setSessions] = useStoreState<SessionMeta[]>([])
+  const [sessionId, setSessionId] = useStoreState('')
+  const [sessionOpen, setSessionOpen] = useStoreState(false)
+  const [models, setModels] = useStoreState<string[]>([])
+  const [modelCardOpen, setModelCardOpen] = useStoreState(false)
+  const [moreOpen, setMoreOpen] = useStoreState(false)
+  const [accessOpen, setAccessOpen] = useStoreState(false)
+  const [editingIndex, setEditingIndex] = useStoreState(-1)
 
   const current = providers.find(item => item.ID === provider)
 

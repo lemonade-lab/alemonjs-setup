@@ -1,4 +1,5 @@
-import { useState, type ReactNode } from 'react'
+import { useStoreState } from '../store/guideStore'
+import { type ReactNode } from 'react'
 import Markdown from 'markdown-to-jsx'
 import { Check, Copy } from 'lucide-react'
 import { highlightCode } from './highlight'
@@ -19,7 +20,7 @@ function CodeBlock({
   children: ReactNode
   streaming?: boolean
 }) {
-  const [copied, setCopied] = useState(false)
+  const [copied, setCopied] = useStoreState(false)
   // markdown-to-jsx 的 pre 里是 <code>，其文本即代码。
   let codeText = ''
   const extract = (node: ReactNode) => {

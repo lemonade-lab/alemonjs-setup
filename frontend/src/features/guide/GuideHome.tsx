@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useStoreState } from '../../store/guideStore'
+import { useEffect, useRef, type ReactNode } from 'react'
 import { useDispatch } from 'react-redux'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { ArrowRight, Code2 } from 'lucide-react'
@@ -40,7 +41,7 @@ export function GuideHome({
 }: Props) {
   const backAction = useRef<() => void>(() => {})
   const dispatch = useDispatch()
-  const [directoryPickerOpen, setDirectoryPickerOpen] = useState(false)
+  const [directoryPickerOpen, setDirectoryPickerOpen] = useStoreState(false)
   const location = useLocation()
   const navigate = useNavigate()
   const currentStep = Number(location.pathname.match(/\/step\/(\d+)/)?.[1] ?? 0)
@@ -132,8 +133,8 @@ function PurposeGroup({
     <section className="wizard purpose-group">
       <section className="wizard-page">
         <div className="wizard-content">
-          <div className="guide-question mx-auto max-w-140 text-center">
-            <p className="text-(--theme-accent-text) text-xs font-extrabold uppercase tracking-[0.13em] mb-3.5">
+          <div className="guide-question guide-choice-screen mx-auto max-w-140 text-center">
+            <p className="guide-choice-eyebrow">
               部署向导
             </p>
             <h1>
@@ -142,15 +143,20 @@ function PurposeGroup({
             <p className="text-(--theme-text-muted) text-[0.95rem] leading-[1.65] mt-3.5">
               选择一种方式，接下来只会展示与它有关的步骤。
             </p>
-            <div className="question-options">
+            <div className="question-options" role="list">
               {options.map(([id, title, note]) => (
-                <button key={id} onClick={() => onSelect(id)}>
+                <button
+                  type="button"
+                  className="guide-choice-card"
+                  key={id}
+                  onClick={() => onSelect(id)}
+                >
                   <i>{guideIcons[id] ?? <Code2 />}</i>
                   <span>
                     <strong>{title}</strong>
                     <small>{note}</small>
                   </span>
-                  <b>
+                  <b aria-hidden="true">
                     <ArrowRight />
                   </b>
                 </button>

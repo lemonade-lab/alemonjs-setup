@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useStoreState } from './store/guideStore'
+import { useEffect, useMemo, useRef } from 'react'
 import { useDispatch, useSelector } from 'react-redux'
 import { useLocation, useNavigate } from 'react-router-dom'
 import {
@@ -41,10 +42,10 @@ const capabilityLabels: Record<string, string> = {
 export default function App() {
   const navigate = useNavigate()
   const location = useLocation()
-  const [error, setError] = useState('')
-  const [creating, setCreating] = useState(false)
-  const [creation, setCreation] = useState<Creation | null>(null)
-  const [repairCheck, setRepairCheck] = useState<Check | null>(null)
+  const [error, setError] = useStoreState('')
+  const [creating, setCreating] = useStoreState(false)
+  const [creation, setCreation] = useStoreState<Creation | null>(null)
+  const [repairCheck, setRepairCheck] = useStoreState<Check | null>(null)
   const { data: goalData, isLoading: loading } = useGoalsQuery()
   const [
     loadEnvironmentReport,
@@ -227,13 +228,13 @@ function FlowView({
   const config = useSelector((state: RootState) => state.guide.developer)
   const project = useSelector((state: RootState) => state.guide.project)
   const routedStep = Number(location.pathname.match(/\/step\/(\d+)/)?.[1] ?? 0)
-  const [step, setStep] = useState(routedStep)
-  const [webEdition, setWebEdition] = useState<'clean' | 'docker' | null>(null)
-  const [buildMode, setBuildMode] = useState<'npm' | 'git' | null>(null)
-  const [selectedMirror, setSelectedMirror] = useState<Mirror | null>(null)
-  const [releaseURL, setReleaseURL] = useState<string | null>(null)
-  const [selectedAssetURL, setSelectedAssetURL] = useState<string | null>(null)
-  const [folderError, setFolderError] = useState('')
+  const [step, setStep] = useStoreState(routedStep)
+  const [webEdition, setWebEdition] = useStoreState<'clean' | 'docker' | null>(null)
+  const [buildMode, setBuildMode] = useStoreState<'npm' | 'git' | null>(null)
+  const [selectedMirror, setSelectedMirror] = useStoreState<Mirror | null>(null)
+  const [releaseURL, setReleaseURL] = useStoreState<string | null>(null)
+  const [selectedAssetURL, setSelectedAssetURL] = useStoreState<string | null>(null)
+  const [folderError, setFolderError] = useStoreState('')
   const automaticCheck = useRef<string | null>(null)
   const currentStepElement = useRef<HTMLButtonElement | null>(null)
   const capabilities = config.capabilities ?? []
@@ -537,10 +538,10 @@ function FlowView({
           [
             [
               'yes',
-              '要，使用 PM2',
+              '要，使用 PM2（默认）',
               'PM2 是帮你守着机器人的小管家：关掉终端后，它仍会继续运行。'
             ],
-            ['no', '暂时不要（默认）', '开发时在终端里直接运行，更容易看懂。']
+            ['no', '暂时不要', '开发时在终端里直接运行，更容易看懂。']
           ],
           'pm2'
         )
@@ -1144,20 +1145,22 @@ function FlowView({
         )}
         <div className="wizard-content">
           {!goal || step === 0 ? (
-            <div className="guide-question mx-auto max-w-140 text-center">
-              <p className="text-(--theme-accent-text) text-xs font-extrabold uppercase tracking-[0.13em] mb-3.5">
+            <div className="guide-question guide-choice-screen mx-auto max-w-140 text-center">
+              <p className="guide-choice-eyebrow">
                 ALemonX
               </p>
               <h1>你现在想做什么？</h1>
-              <p className="text-(--theme-text-muted) text-[0.95rem] leading-[1.65] mt-3.5">
-                从一个目标开始，剩下的步骤交给引导。
+              <p className="guide-choice-description">
+                选择一个目标；引导会只展示必要步骤，并在需要时检查你的环境。
               </p>
-              <div className="question-options">
+              <div className="question-options" role="list">
                 {loading ? (
                   <p>正在准备选项…</p>
                 ) : (
                   purposeOptions.map(([id, title, note]) => (
                     <button
+                      type="button"
+                      className="guide-choice-card"
                       key={id}
                       onClick={() =>
                         id === 'deploy'
@@ -1170,7 +1173,7 @@ function FlowView({
                         <strong>{title}</strong>
                         <small>{note}</small>
                       </span>
-                      <b>→</b>
+                      <b aria-hidden="true">→</b>
                     </button>
                   ))
                 )}

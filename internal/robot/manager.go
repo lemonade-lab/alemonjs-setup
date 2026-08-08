@@ -478,21 +478,17 @@ func (m Manager) RuntimePreflight(root string) (RuntimePreflight, error) {
 			continue
 		}
 		preflight.Package = platform.pkg
-		// PackageConfig intentionally returns an error for a valid connection
-		// package that simply has no alemonjs.config declaration. That must not
-		// be reported as “not installed”: installation and optional configuration
-		// are separate facts.
 		if _, _, installedErr := installedPackageManifest(path, platform.pkg); installedErr != nil {
 			preflight.Missing = append(preflight.Missing, "连接包 "+platform.pkg+" 未安装")
 			return preflight, nil
 		}
 		definition, configErr := m.PackageConfig(root, platform.pkg)
 		if configErr != nil {
-			if strings.Contains(configErr.Error(), "没有声明 alemonjs.config") {
-				preflight.Summary = append(preflight.Summary, "连接包 "+platform.pkg+"：已安装，无额外配置")
-				return preflight, nil
-			}
 			preflight.Missing = append(preflight.Missing, "连接包 "+platform.pkg+" 配置无法读取")
+			return preflight, nil
+		}
+		if len(definition.Fields) == 0 {
+			preflight.Summary = append(preflight.Summary, "连接包 "+platform.pkg+"：已安装，无额外配置")
 			return preflight, nil
 		}
 		for _, field := range definition.Fields {
@@ -553,6 +549,43 @@ func (Manager) RuntimeDependencies(root string) ([]string, error) {
 	}
 	sort.Strings(missing)
 	return missing, nil
+}
+
+// EnsureRuntimeDependencies makes a robot runnable without asking its user to
+// understand node_modules or lock files. It only invokes the project's own
+// package manager when the on-disk dependency check finds something missing.
+func (m Manager) EnsureRuntimeDependencies(root string) (string, error) {
+	missing, err := m.RuntimeDependencies(root)
+	if err != nil {
+		return "", err
+	}
+	if len(missing) == 0 {
+		return "", nil
+	}
+	output, installErr := runPackageManager(root, "install")
+	prefix := "检测到依赖不完整（" + strings.Join(missing, "、") + "），正在自动同步依赖。"
+	if installErr != nil {
+		return prefix + "\n" + output, buildDependencyError("自动同步依赖失败", output)
+	}
+	remaining, checkErr := m.RuntimeDependencies(root)
+	if checkErr != nil {
+		return prefix + "\n" + output, checkErr
+	}
+	if len(remaining) > 0 {
+		return prefix + "\n" + output, errors.New("自动同步后依赖仍不完整：" + strings.Join(remaining, "、"))
+	}
+	return prefix + "\n" + output + "\n依赖已同步。", nil
+}
+
+// SyncWorkspaceDependencies is used after changing packages/*, which is a
+// workspace topology change even if every root dependency was already present.
+func (Manager) SyncWorkspaceDependencies(root string) (string, error) {
+	output, err := runPackageManager(root, "install")
+	prefix := "本地插件工作区已变更，正在同步依赖。"
+	if err != nil {
+		return prefix + "\n" + output, buildDependencyError("同步本地插件依赖失败", output)
+	}
+	return prefix + "\n" + output + "\n本地插件依赖已同步。", nil
 }
 
 type alemonUpgradePlan struct {
@@ -1108,13 +1141,15 @@ func (m Manager) Run(root, action, message, packageName, version, tag, token str
 		}
 		return Result{}, err
 	}
-	if action == "dev" || action == "app" || action == "pm2" {
-		missing, err := (Manager{}).RuntimeDependencies(root)
-		if err != nil {
-			return Result{}, err
-		}
-		if len(missing) > 0 {
-			return Result{}, errors.New("项目依赖不完整：" + strings.Join(missing, "、") + "。请先执行“重载依赖”后再运行")
+	dependencyOutput := ""
+	if map[string]bool{
+		"build": true, "dev": true, "app": true, "pm2": true,
+		"pm2-restart": true, "pm2-reload": true,
+	}[action] {
+		var dependencyErr error
+		dependencyOutput, dependencyErr = m.EnsureRuntimeDependencies(root)
+		if dependencyErr != nil {
+			return Result{Path: root, Output: dependencyOutput}, dependencyErr
 		}
 	}
 	manager := projectPackageManager(root)
@@ -1166,7 +1201,13 @@ func (m Manager) Run(root, action, message, packageName, version, tag, token str
 	case "repair-app":
 		return (Manager{}).RepairRuntime(root, "app")
 	case "repair-pm2":
-		return (Manager{}).RepairRuntime(root, "pm2")
+		result, repairErr := (Manager{}).RepairRuntime(root, "pm2")
+		if repairErr != nil {
+			return result, repairErr
+		}
+		output, dependencyErr := m.EnsureRuntimeDependencies(root)
+		result.Output = strings.TrimSpace(result.Output + "\n" + output)
+		return result, dependencyErr
 	case "commit":
 		if strings.TrimSpace(message) == "" {
 			return Result{}, errors.New("请填写本次提交说明")
@@ -1194,18 +1235,28 @@ func (m Manager) Run(root, action, message, packageName, version, tag, token str
 		if !allowedInstallPackage(packageName) {
 			return Result{}, errors.New("不支持的 AlemonJS 包")
 		}
-		return installLocalPackage(root, packageName)
+		return m.syncLocalPackageOperation(root, func() (Result, error) {
+			return installLocalPackage(root, packageName)
+		})
 	case "uninstall-package":
 		if !allowedPackage(packageName) {
 			return Result{}, errors.New("不支持的 AlemonJS 包")
 		}
-		return removeLocalPackage(root, packageName)
+		return m.syncLocalPackageOperation(root, func() (Result, error) {
+			return removeLocalPackage(root, packageName)
+		})
 	case "remove-local-package":
-		return removeLocalPackageByName(root, packageName)
+		return m.syncLocalPackageOperation(root, func() (Result, error) {
+			return removeLocalPackageByName(root, packageName)
+		})
 	case "replace-local-package":
-		return replaceLocalPackage(root, packageName, version)
+		return m.syncLocalPackageOperation(root, func() (Result, error) {
+			return replaceLocalPackage(root, packageName, version)
+		})
 	case "switch-local-package-version":
-		return switchLocalPackageVersion(root, packageName, version)
+		return m.syncLocalPackageOperation(root, func() (Result, error) {
+			return switchLocalPackageVersion(root, packageName, version)
+		})
 	case "install-connection":
 		if !allowedInstallPackage(packageName) {
 			return Result{}, errors.New("连接包名无效")
@@ -1231,7 +1282,17 @@ func (m Manager) Run(root, action, message, packageName, version, tag, token str
 	} else {
 		output, runErr = run(root, name, args...)
 	}
-	return Result{Path: root, Output: output}, runErr
+	return Result{Path: root, Output: strings.TrimSpace(dependencyOutput + "\n" + output)}, runErr
+}
+
+func (m Manager) syncLocalPackageOperation(root string, operation func() (Result, error)) (Result, error) {
+	result, operationErr := operation()
+	if operationErr != nil {
+		return result, operationErr
+	}
+	output, dependencyErr := m.SyncWorkspaceDependencies(root)
+	result.Output = strings.TrimSpace(result.Output + "\n" + output)
+	return result, dependencyErr
 }
 
 func allowedInstallPackage(name string) bool {

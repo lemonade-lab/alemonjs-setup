@@ -1,10 +1,12 @@
+import { useStoreState } from '../store/guideStore'
+import { useAutoSave } from '../hooks/useAutoSave'
 import {
   useCallback,
   useEffect,
   useMemo,
   useRef,
-  useState,
   type MouseEvent,
+  type PointerEvent as ReactPointerEvent,
   type ReactNode
 } from 'react'
 import { createPortal } from 'react-dom'
@@ -44,6 +46,8 @@ import {
   MoreVertical,
   Network,
   Package,
+  PanelLeftClose,
+  PanelLeftOpen,
   Pencil,
   Pin,
   Play,
@@ -69,6 +73,7 @@ import { Button } from './Button'
 import { Tabs } from './Tabs'
 import { NpmrcConfigForm } from './NpmrcConfigForm'
 import { EnvConfigForm } from './EnvConfigForm'
+import { BotWorkspace } from './BotWorkspace'
 import { NpmPublishPanel } from './NpmPublishPanel'
 import { PackageManifestPanel } from './PackageManifestPanel'
 import { SetupUpdateButton } from './SetupUpdateButton'
@@ -121,10 +126,12 @@ import {
 import {
   addProjects,
   removeProject as removeWorkspaceProject,
+  reorderProjects,
   selectProject,
   pinProject as pinWorkspaceProject,
   setDeveloperMode,
-  setDraft
+  setDraft,
+  setRobotConfig
 } from '../store/workspaceStore'
 import {
   setProject as setGuideProject,
@@ -147,7 +154,7 @@ type CatalogItem = {
 type CatalogGroup = { title: string; items: CatalogItem[] }
 type Page = 'robot' | 'build' | 'plugins' | 'connections'
 type Section = 'backpack' | 'config' | 'npmrc' | 'env' | 'runtime'
-type Project = { id: string; path: string; name: string }
+type Project = { id: string; path: string; name: string; pinned?: boolean }
 type SystemFeature = string
 type Props = {
   report: { checks: Check[] } | null
@@ -222,6 +229,18 @@ function projectName(path: string) {
   return path.replace(/\/$/, '').split('/').pop() || path
 }
 
+function sameRecord(
+  left: Record<string, string>,
+  right: Record<string, string>
+) {
+  const leftKeys = Object.keys(left)
+  const rightKeys = Object.keys(right)
+  return (
+    leftKeys.length === rightKeys.length &&
+    leftKeys.every(key => left[key] === right[key])
+  )
+}
+
 // RTK Query rejects with a serialised object rather than an Error. Keep the
 // server's explanation intact so a permission problem is never shown as the
 // unhelpful generic "操作未完成".
@@ -271,22 +290,22 @@ export function DirectoryPicker({
     }>
     directories: Directory[]
   }
-  const [path, setPath] = useState('')
-  const [query, setQuery] = useState('')
-  const [hidden, setHidden] = useState(false)
-  const [data, setData] = useState<DirectoryData | null>(null)
-  const [directoryError, setDirectoryError] = useState('')
-  const [directoryReload, setDirectoryReload] = useState(0)
-  const [selected, setSelected] = useState<string[]>([])
-  const [history, setHistory] = useState<string[]>([])
-  const [historyIndex, setHistoryIndex] = useState(-1)
-  const [contextMenu, setContextMenu] = useState<{
+  const [path, setPath] = useStoreState('')
+  const [query, setQuery] = useStoreState('')
+  const [hidden, setHidden] = useStoreState(false)
+  const [data, setData] = useStoreState<DirectoryData | null>(null)
+  const [directoryError, setDirectoryError] = useStoreState('')
+  const [directoryReload, setDirectoryReload] = useStoreState(0)
+  const [selected, setSelected] = useStoreState<string[]>([])
+  const [history, setHistory] = useStoreState<string[]>([])
+  const [historyIndex, setHistoryIndex] = useStoreState(-1)
+  const [contextMenu, setContextMenu] = useStoreState<{
     x: number
     y: number
     target?: Directory
   } | null>(null)
-  const [newFolderName, setNewFolderName] = useState('')
-  const [deleteTarget, setDeleteTarget] = useState<Directory | null>(null)
+  const [newFolderName, setNewFolderName] = useStoreState('')
+  const [deleteTarget, setDeleteTarget] = useStoreState<Directory | null>(null)
 
   const visit = (nextPath: string) => {
     if (!nextPath || nextPath === path) return
@@ -674,46 +693,53 @@ export function Dashboard({
   onCheck,
   onFix
 }: Props) {
-  const [page, setPage] = useState<Page>('robot')
-  const [systemFeature, setSystemFeature] = useState<SystemFeature | null>(null)
-  const [section, setSection] = useState<Section>('runtime')
-  const [file, setFile] = useState('.npmrc')
-  const [output, setOutput] = useState('')
-  const [outputFailed, setOutputFailed] = useState(false)
-  const [consoleOpen, setConsoleOpen] = useState(false)
-  const [busy, setBusy] = useState(false)
-  const [catalogTitle, setCatalogTitle] = useState('')
-  const [catalogItem, setCatalogItem] = useState<CatalogItem | null>(null)
-  const [configEditor, setConfigEditor] = useState<'visual' | 'text'>('visual')
-  const [buildMode, setBuildMode] = useState<'manifest' | 'npm' | 'git'>('git')
-  const [releaseVersion, setReleaseVersion] = useState('')
-  const [directoryPickerOpen, setDirectoryPickerOpen] = useState(false)
-  const [cloneProgress, setCloneProgress] = useState(0)
-  const [gitCloneOpen, setGitCloneOpen] = useState(false)
+  const [page, setPage] = useStoreState<Page>('robot')
+  const [sidebarCollapsed, setSidebarCollapsed] = useStoreState(false)
+  const [systemFeature, setSystemFeature] = useStoreState<SystemFeature | null>(
+    null
+  )
+  const [section, setSection] = useStoreState<Section>('runtime')
+  const [file, setFile] = useStoreState('.npmrc')
+  const [output, setOutput] = useStoreState('')
+  const [outputFailed, setOutputFailed] = useStoreState(false)
+  const [consoleOpen, setConsoleOpen] = useStoreState(false)
+  const [busy, setBusy] = useStoreState(false)
+  const [catalogTitle, setCatalogTitle] = useStoreState('')
+  const [catalogItem, setCatalogItem] = useStoreState<CatalogItem | null>(null)
+  const [configEditor, setConfigEditor] = useStoreState<'visual' | 'text'>(
+    'visual'
+  )
+  const [buildMode, setBuildMode] = useStoreState<'manifest' | 'npm' | 'git'>(
+    'git'
+  )
+  const [releaseVersion, setReleaseVersion] = useStoreState('')
+  const [directoryPickerOpen, setDirectoryPickerOpen] = useStoreState(false)
+  const [cloneProgress, setCloneProgress] = useStoreState(0)
+  const [gitCloneOpen, setGitCloneOpen] = useStoreState(false)
   const [gitDestinationPickerOpen, setGitDestinationPickerOpen] =
-    useState(false)
-  const [gitDestination, setGitDestination] = useState('')
-  const [gitProject, setGitProject] = useState<Project | null>(null)
-  const [appPortDialog, setAppPortDialog] = useState(false)
-  const [appPortValue, setAppPortValue] = useState('')
-  const [appPortBusy, setAppPortBusy] = useState(false)
-  const [appLaunching, setAppLaunching] = useState(false)
-  const [appContentOpen, setAppContentOpen] = useState(false)
-  const [invalidDirectory, setInvalidDirectory] = useState('')
-  const [pendingBackpackRemoval, setPendingBackpackRemoval] = useState('')
-  const [pendingProjectRemoval, setPendingProjectRemoval] = useState<
+    useStoreState(false)
+  const [gitDestination, setGitDestination] = useStoreState('')
+  const [gitProject, setGitProject] = useStoreState<Project | null>(null)
+  const [appPortDialog, setAppPortDialog] = useStoreState(false)
+  const [appPortValue, setAppPortValue] = useStoreState('')
+  const [appPortBusy, setAppPortBusy] = useStoreState(false)
+  const [appLaunching, setAppLaunching] = useStoreState(false)
+  const [appContentOpen, setAppContentOpen] = useStoreState(false)
+  const [invalidDirectory, setInvalidDirectory] = useStoreState('')
+  const [pendingBackpackRemoval, setPendingBackpackRemoval] = useStoreState('')
+  const [pendingProjectRemoval, setPendingProjectRemoval] = useStoreState<
     string | null
   >(null)
-  const [aiOpen, setAIOpen] = useState(false)
-  const [agentSessions, setAgentSessions] = useState<
+  const [aiOpen, setAIOpen] = useStoreState(false)
+  const [agentSessions, setAgentSessions] = useStoreState<
     Array<{ id: string; title: string; root: string; updated: string }>
   >([])
-  const [agentSessionId, setAgentSessionId] = useState('')
-  const [renameTarget, setRenameTarget] = useState<{
+  const [agentSessionId, setAgentSessionId] = useStoreState('')
+  const [renameTarget, setRenameTarget] = useStoreState<{
     id: string
     title: string
   } | null>(null)
-  const [renameTitle, setRenameTitle] = useState('')
+  const [renameTitle, setRenameTitle] = useStoreState('')
   const loadAgentSessions = useCallback(async () => {
     try {
       const response = await fetch('/api/v1/agent/sessions')
@@ -768,15 +794,17 @@ export function Dashboard({
   const activeProject = projects.find(item => item.id === activeProjectID)
   const root = activeProject?.path ?? ''
   const draftKey = `${root}:${file}`
-  const content = useSelector(
-    (state: RootState) => state.workspace.drafts[draftKey] ?? ''
+  const content = useSelector((state: RootState) =>
+    file === 'alemon.config.yaml'
+      ? (state.workspace.robotConfigs[root] ?? '')
+      : (state.workspace.drafts[draftKey] ?? '')
   )
   const configContent = useSelector(
-    (state: RootState) =>
-      state.workspace.drafts[`${root}:alemon.config.yaml`] ?? ''
+    (state: RootState) => state.workspace.robotConfigs[root] ?? ''
   )
-  const setContent = (nextContent: string) =>
-    dispatch(setDraft({ key: draftKey, content: nextContent }))
+  const hasRobotConfig = useSelector(
+    (state: RootState) => Boolean(root) && root in state.workspace.robotConfigs
+  )
   const catalogKind = page === 'plugins' ? 'apps' : 'environment'
   const {
     data: catalogData,
@@ -814,7 +842,9 @@ export function Dashboard({
   })
   const {
     data: currentPackageConfig,
-    isFetching: currentPackageConfigLoading
+    // Keep the form mounted while an automatic save refreshes its data.
+    // `isFetching` also becomes true for that background refresh.
+    isLoading: currentPackageConfigLoading
   } = usePackageConfigQuery(
     { root, package: '' },
     { skip: !root || section !== 'config' || configEditor !== 'visual' }
@@ -837,6 +867,13 @@ export function Dashboard({
   const [writePackageConfig] = useWritePackageConfigMutation()
   const [saveRobotLogin] = useSaveRobotLoginMutation()
   const [initializeGit] = useInitializeGitMutation()
+  const fileSaveTimers = useRef(new Map<string, number>())
+  useEffect(
+    () => () => {
+      fileSaveTimers.current.forEach(timer => window.clearTimeout(timer))
+    },
+    []
+  )
   // Plugin list changes arrive over SSE (setup/plugins/events), so the query
   // only refetches when the registry actually changes instead of polling.
   const { data: setupPluginsData, refetch: refetchSetupPlugins } =
@@ -851,6 +888,62 @@ export function Dashboard({
     setOutput(message)
     setOutputFailed(failed)
   }
+  const persistFile = async (
+    targetRoot: string,
+    targetFile: string,
+    nextContent: string
+  ) => {
+    try {
+      await writeRobotFile({
+        root: targetRoot,
+        file: targetFile,
+        content: nextContent
+      }).unwrap()
+      if (targetFile === 'alemon.config.yaml')
+        dispatch(setRobotConfig({ root: targetRoot, content: nextContent }))
+      else
+        dispatch(
+          setDraft({
+            key: `${targetRoot}:${targetFile}`,
+            content: nextContent
+          })
+        )
+    } catch (reason) {
+      showOutput(
+        operationErrorMessage(reason, `${targetFile} 自动保存失败。`),
+        true
+      )
+    }
+  }
+  const updateFileContent = (targetFile: string, nextContent: string) => {
+    if (!root) return
+    if (targetFile === 'alemon.config.yaml')
+      dispatch(setRobotConfig({ root, content: nextContent }))
+    else
+      dispatch(setDraft({ key: `${root}:${targetFile}`, content: nextContent }))
+    const key = `${root}:${targetFile}`
+    const activeTimer = fileSaveTimers.current.get(key)
+    if (activeTimer !== undefined) window.clearTimeout(activeTimer)
+    fileSaveTimers.current.set(
+      key,
+      window.setTimeout(() => {
+        fileSaveTimers.current.delete(key)
+        void persistFile(root, targetFile, nextContent)
+      }, 500)
+    )
+  }
+  const scheduleAppPortSave = useAutoSave<number>(async port => {
+    if (!root) return
+    setAppPortBusy(true)
+    try {
+      await saveAppPort({ root, port }).unwrap()
+      await refreshConfigDraft()
+    } catch (reason) {
+      showOutput(operationErrorMessage(reason, '应用端口自动保存失败。'), true)
+    } finally {
+      setAppPortBusy(false)
+    }
+  })
   // "应用" = 机器人 + 应用端口。读取 serverPort；未配置则先让用户输入并
   // 保存，然后启动开发模式，最后在浏览器打开应用地址。
   const openApp = async () => {
@@ -880,6 +973,7 @@ export function Dashboard({
     setAppPortBusy(true)
     try {
       await saveAppPort({ root, port }).unwrap()
+      await refreshConfigDraft()
       setAppPortDialog(false)
       // Launch happens after the dialog closes; reflect it on the toolbar icon.
       setAppLaunching(true)
@@ -943,8 +1037,8 @@ export function Dashboard({
       true
     ).unwrap()
     dispatch(
-      setDraft({
-        key: `${root}:alemon.config.yaml`,
+      setRobotConfig({
+        root,
         content: result.output ?? ''
       })
     )
@@ -1042,21 +1136,19 @@ export function Dashboard({
     }
   }, [dispatch])
   useEffect(() => {
-    if (!root || section !== 'config') return
+    if (!root || section !== 'config' || hasRobotConfig) return
     void readRobotFile({ root, file: 'alemon.config.yaml' }, true)
       .unwrap()
       .then(result =>
         dispatch(
-          setDraft({
-            key: `${root}:alemon.config.yaml`,
+          setRobotConfig({
+            root,
             content: result.output ?? ''
           })
         )
       )
-      .catch(() =>
-        dispatch(setDraft({ key: `${root}:alemon.config.yaml`, content: '' }))
-      )
-  }, [dispatch, readRobotFile, root, section])
+      .catch(() => dispatch(setRobotConfig({ root, content: '' })))
+  }, [dispatch, hasRobotConfig, readRobotFile, root, section])
   useEffect(() => {
     if (developerMode) return
     if (page === 'build') setPage('robot')
@@ -1079,12 +1171,17 @@ export function Dashboard({
           { root: data.root, file: data.file },
           true
         ).unwrap()
-        dispatch(
-          setDraft({
-            key: `${data.root}:${data.file}`,
-            content: result.output ?? ''
-          })
-        )
+        if (data.file === 'alemon.config.yaml')
+          dispatch(
+            setRobotConfig({ root: data.root, content: result.output ?? '' })
+          )
+        else
+          dispatch(
+            setDraft({
+              key: `${data.root}:${data.file}`,
+              content: result.output ?? ''
+            })
+          )
         return true
       }
       if (method === 'PUT') {
@@ -1093,6 +1190,8 @@ export function Dashboard({
           file: data.file,
           content: data.content
         }).unwrap()
+        if (data.file === 'alemon.config.yaml')
+          dispatch(setRobotConfig({ root: data.root, content: data.content }))
         showOutput(result.output ?? '操作完成。')
         return true
       }
@@ -1164,15 +1263,13 @@ export function Dashboard({
     values: Record<string, string>
   ): Promise<boolean> {
     if (!root) return false
-    setBusy(true)
     try {
-      const result = await writePackageConfig({
+      await writePackageConfig({
         root,
         package: packageName,
         values
       }).unwrap()
       await refreshConfigDraft()
-      showOutput(result.output ?? '机器人运行配置已保存。')
       return true
     } catch (reason) {
       showOutput(
@@ -1180,8 +1277,6 @@ export function Dashboard({
         true
       )
       return false
-    } finally {
-      setBusy(false)
     }
   }
 
@@ -1190,21 +1285,17 @@ export function Dashboard({
     packageName = ''
   ): Promise<boolean> {
     if (!root || !login.trim()) return false
-    setBusy(true)
     try {
-      const result = await saveRobotLogin({
+      await saveRobotLogin({
         root,
         login: login.trim(),
         package: packageName
       }).unwrap()
       await refreshConfigDraft()
-      showOutput(result.output ?? '登录连接已保存。')
       return true
     } catch (reason) {
       showOutput(operationErrorMessage(reason, '登录连接未保存。'), true)
       return false
-    } finally {
-      setBusy(false)
     }
   }
 
@@ -1341,6 +1432,10 @@ export function Dashboard({
     dispatch(pinWorkspaceProject(id))
   }
 
+  const reorderProject = (sourceID: string, targetID: string) => {
+    dispatch(reorderProjects({ sourceID, targetID }))
+  }
+
   function confirmRemoveProject() {
     if (!pendingProjectRemoval) return
     dispatch(removeWorkspaceProject(pendingProjectRemoval))
@@ -1436,7 +1531,7 @@ export function Dashboard({
   const robotContent = aiOpen ? (
     <AgentChatPage root={root} initialSessionId={agentSessionId} />
   ) : (
-    <section className="workspace-content">
+    <>
       {section === 'backpack' && (
         <BackpackPanel
           root={root}
@@ -1447,6 +1542,7 @@ export function Dashboard({
           onOpenPlugins={() => selectPage('plugins')}
           busy={busy}
           onSaveConfig={savePackageConfig}
+          onConfigChanged={refreshConfigDraft}
           onRemove={async packageName => setPendingBackpackRemoval(packageName)}
           onReplace={async (packageName, version) =>
             api('POST', {
@@ -1461,21 +1557,13 @@ export function Dashboard({
       {developerMode && section === 'npmrc' && (
         <NpmrcConfigForm
           content={content}
-          busy={busy}
-          onChange={setContent}
-          onSave={nextContent =>
-            api('PUT', { root, file: '.npmrc', content: nextContent })
-          }
+          onChange={nextContent => updateFileContent('.npmrc', nextContent)}
         />
       )}
       {developerMode && section === 'env' && (
         <EnvConfigForm
           content={content}
-          busy={busy}
-          onChange={setContent}
-          onSave={nextContent =>
-            api('PUT', { root, file: '.env', content: nextContent })
-          }
+          onChange={nextContent => updateFileContent('.env', nextContent)}
         />
       )}
       {section === 'config' && (
@@ -1484,15 +1572,7 @@ export function Dashboard({
             <>
               <RobotConfigForm
                 content={configContent}
-                busy={busy}
-                onChange={next =>
-                  dispatch(
-                    setDraft({
-                      key: `${root}:alemon.config.yaml`,
-                      content: next
-                    })
-                  )
-                }
+                onChange={next => updateFileContent('alemon.config.yaml', next)}
                 toolbar={
                   <EditorMode
                     active={configEditor}
@@ -1500,18 +1580,10 @@ export function Dashboard({
                     onText={openTextConfig}
                   />
                 }
-                onSave={config =>
-                  api('PUT', {
-                    root,
-                    file: 'alemon.config.yaml',
-                    content: config
-                  })
-                }
               />
               <CurrentProjectConfigPanel
                 config={currentPackageConfig}
                 loading={currentPackageConfigLoading}
-                busy={busy}
                 onSave={values => savePackageConfig('', values)}
               />
             </>
@@ -1525,10 +1597,8 @@ export function Dashboard({
                 />
               }
               content={content}
-              busy={busy}
               placeholder="配置内容"
-              onChange={setContent}
-              onSave={() => api('PUT', { root, file, content })}
+              onChange={nextContent => updateFileContent(file, nextContent)}
             />
           )}
         </section>
@@ -1608,30 +1678,43 @@ export function Dashboard({
           developerMode={developerMode}
         />
       )}
-    </section>
+    </>
   )
 
-  const catalogContent = (
-    <section className="workspace-content">
-      {catalogLoading && <p className="catalog-state">正在读取目录…</p>}
-      {catalogError && <p className="catalog-state">{catalogError}</p>}
-      {!catalogLoading &&
-        !catalogError &&
-        currentCatalog &&
-        (catalogItem ? (
-          <CatalogDetail
-            item={catalogItem}
-            group={currentCatalog.title}
-            kind={page === 'connections' ? 'connection' : 'plugin'}
-            busy={busy}
-            onBack={() => setCatalogItem(null)}
-            onRun={(action, packageName) =>
-              api('POST', { root, action, package: packageName })
-            }
-            onSaveConfig={savePackageConfig}
-          />
-        ) : (
-          <section className="grid max-w-190 gap-2">
+  const catalogContent =
+    catalogItem && currentCatalog ? (
+      <CatalogDetail
+        item={catalogItem}
+        group={currentCatalog.title}
+        kind={page === 'connections' ? 'connection' : 'plugin'}
+        busy={busy}
+        onBack={() => setCatalogItem(null)}
+        onRun={(action, packageName) =>
+          api('POST', { root, action, package: packageName })
+        }
+        onSaveConfig={savePackageConfig}
+      />
+    ) : (
+      <BotWorkspace
+        className="catalog-workspace max-w-190"
+        header={
+          <header className="bot-page-header">
+            <div className="flex min-w-0 items-center gap-3">
+              <span className="bot-page-header-icon">
+                <Globe className="size-4" />
+              </span>
+              <div className="bot-page-header-meta">
+                <strong>{currentCatalog?.title || '目录'}</strong>
+                <small>浏览并管理可安装的机器人包</small>
+              </div>
+            </div>
+          </header>
+        }
+      >
+        {catalogLoading && <p className="catalog-state">正在读取目录…</p>}
+        {catalogError && <p className="catalog-state">{catalogError}</p>}
+        {!catalogLoading && !catalogError && currentCatalog && (
+          <section className="grid gap-2">
             {currentCatalog.items.map(item => (
               <button
                 className="flex items-center gap-3 rounded-lg border border-slate-200 bg-white p-3 text-left transition hover:border-slate-300 hover:bg-slate-50"
@@ -1650,9 +1733,9 @@ export function Dashboard({
               </button>
             ))}
           </section>
-        ))}
-    </section>
-  )
+        )}
+      </BotWorkspace>
+    )
   const setupPlugin = setupPlugins.find(
     item => systemFeature === `setup:${item.id}`
   )
@@ -1688,12 +1771,11 @@ export function Dashboard({
       <>
         {page === 'robot' && robotContent}
         {developerMode && page === 'build' && (
-          <section className="workspace-content build-page">
+          <section className="bot-build-page">
             {buildMode === 'manifest' ? (
               <PackageManifestPanel
                 root={root}
-                busy={busy}
-                onSaved={message => showOutput(message)}
+                onSaveError={message => showOutput(message)}
               />
             ) : buildMode === 'npm' ? (
               <NpmPublishPanel
@@ -1763,6 +1845,19 @@ export function Dashboard({
                 ALemonX
               </a>
               <ThemeToggle />
+              <Button
+                variant="icon"
+                onClick={() => setSidebarCollapsed(value => !value)}
+                aria-label={sidebarCollapsed ? '展开侧边栏' : '折叠侧边栏'}
+                aria-pressed={!sidebarCollapsed}
+                title={sidebarCollapsed ? '展开侧边栏' : '折叠侧边栏'}
+              >
+                {sidebarCollapsed ? (
+                  <PanelLeftOpen className="size-4" />
+                ) : (
+                  <PanelLeftClose className="size-4" />
+                )}
+              </Button>
               {activeProject && (
                 <span
                   className="topbar-project-context"
@@ -1859,8 +1954,8 @@ export function Dashboard({
                 <strong className="text-sm text-ink-950">配置应用端口</strong>
                 <p className="text-xs leading-5 text-slate-500">
                   应用是机器人的网页界面，需要 serverPort
-                  端口才能访问。设置后会保存到
-                  alemon.config.yaml，然后启动机器人并打开应用。
+                  端口才能访问。输入后会自动保存到
+                  alemon.config.yaml；启动时会打开应用。
                 </p>
               </div>
               <label className="grid gap-1.5 text-xs font-medium text-slate-600">
@@ -1868,7 +1963,13 @@ export function Dashboard({
                 <input
                   className="h-10 rounded-md border border-slate-300 px-3 text-sm text-slate-800 outline-none focus:border-brand-600 focus:ring-2 focus:ring-brand-100"
                   value={appPortValue}
-                  onChange={event => setAppPortValue(event.target.value)}
+                  onChange={event => {
+                    const next = event.target.value
+                    setAppPortValue(next)
+                    const port = Number(next)
+                    if (Number.isInteger(port) && port >= 1 && port <= 65535)
+                      scheduleAppPortSave(port)
+                  }}
                   type="number"
                   min={1}
                   max={65535}
@@ -1885,7 +1986,7 @@ export function Dashboard({
                   取消
                 </button>
                 <button className="primary-button" disabled={appPortBusy}>
-                  {appPortBusy ? '保存并启动…' : '保存并启动'}
+                  {appPortBusy ? '保存中…' : '启动应用'}
                 </button>
               </footer>
             </form>
@@ -1956,7 +2057,11 @@ export function Dashboard({
               </div>
             </Modal>
           )}
-          <section className="console-layout">
+          <section
+            className={cn('console-layout', {
+              'sidebar-collapsed': sidebarCollapsed
+            })}
+          >
             <ProjectRail
               feature={systemFeature}
               setupPlugins={setupPlugins}
@@ -1971,6 +2076,7 @@ export function Dashboard({
               }}
               onOpenAgent={openAI}
               onPinProject={pinProject}
+              onReorderProject={reorderProject}
               onRenameSession={requestRename}
               onArchiveSession={archiveSession}
               onAdd={chooseDirectories}
@@ -1998,6 +2104,7 @@ export function Dashboard({
                   catalog={catalog}
                   catalogTitle={catalogTitle}
                   developerMode={developerMode}
+                  agentOpen={aiOpen}
                   onOpenConsole={() => setConsoleOpen(true)}
                   onOpenAI={openAI}
                   appLaunching={appLaunching}
@@ -2066,6 +2173,7 @@ function ProjectRail({
   onRemove,
   onOpenAgent,
   onPinProject,
+  onReorderProject,
   onRenameSession,
   onArchiveSession
 }: {
@@ -2088,16 +2196,53 @@ function ProjectRail({
   onRemove: (id: string) => void
   onOpenAgent: (sessionID?: string) => void
   onPinProject: (id: string) => void
+  onReorderProject: (sourceID: string, targetID: string) => void
   onRenameSession: (id: string, title: string) => void
   onArchiveSession: (id: string) => void
 }) {
+  const [draggingProjectID, setDraggingProjectID] = useStoreState<
+    string | null
+  >(null)
+  const [dragTargetID, setDragTargetID] = useStoreState<string | null>(null)
+  const longPressTimer = useRef<number | null>(null)
+  const ignoreProjectSelect = useRef(false)
   const activePlugins = setupPlugins.filter(
     item => item.enabled && !item.online
   )
+  const clearLongPress = () => {
+    if (longPressTimer.current === null) return
+    window.clearTimeout(longPressTimer.current)
+    longPressTimer.current = null
+  }
+  const startProjectDrag = (
+    event: ReactPointerEvent<HTMLButtonElement>,
+    projectID: string
+  ) => {
+    if (event.button !== 0) return
+    clearLongPress()
+    longPressTimer.current = window.setTimeout(() => {
+      longPressTimer.current = null
+      ignoreProjectSelect.current = true
+      setDraggingProjectID(projectID)
+      setDragTargetID(projectID)
+    }, 380)
+  }
+  const finishProjectDrag = () => {
+    clearLongPress()
+    if (draggingProjectID && dragTargetID && draggingProjectID !== dragTargetID)
+      onReorderProject(draggingProjectID, dragTargetID)
+    if (draggingProjectID) {
+      setDraggingProjectID(null)
+      setDragTargetID(null)
+      window.setTimeout(() => {
+        ignoreProjectSelect.current = false
+      }, 0)
+    }
+  }
   return (
     <aside className="project-rail flex min-h-0 min-w-0 flex-col border-r border-slate-200 bg-slate-50">
       <section
-        className="order-2 border-t border-slate-200 px-2.5 py-2 dark:border-slate-700"
+        className="order-3 border-t border-slate-200 px-2.5 py-2 dark:border-slate-700"
         aria-label="系统功能目录"
       >
         <header className="px-1.5 pb-1 text-[0.7rem] font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500">
@@ -2168,7 +2313,7 @@ function ProjectRail({
       </section>
       {activePlugins.length > 0 && (
         <section
-          className="order-3 border-t border-slate-200 px-2.5 py-2 dark:border-slate-700"
+          className="order-2 border-t border-slate-200 px-2.5 py-2 dark:border-slate-700"
           aria-label="已加载插件"
         >
           <header className="flex  px-1.5 pb-1">
@@ -2229,19 +2374,34 @@ function ProjectRail({
             </button>
           </div>
         </header>
-        <div className="grid content-start h-full gap-1.5 overflow-auto px-1.5 pb-2">
+        <div
+          className="grid content-start h-full gap-1.5 overflow-auto px-1.5 pb-2"
+          onPointerUp={finishProjectDrag}
+          onPointerCancel={finishProjectDrag}
+        >
           {projects.map(project => (
             <ProjectItem
               active={project.id === activeID}
+              dragging={project.id === draggingProjectID}
+              dragTarget={
+                project.id === dragTargetID && project.id !== draggingProjectID
+              }
               key={project.id}
               project={project}
               agentSessions={agentSessions}
-              onSelect={onSelect}
+              onSelect={id => {
+                if (!ignoreProjectSelect.current) onSelect(id)
+              }}
               onRemove={onRemove}
               onOpenAgent={onOpenAgent}
               onPin={onPinProject}
               onRename={onRenameSession}
               onArchive={onArchiveSession}
+              onDragStart={startProjectDrag}
+              onDragTarget={id => {
+                if (draggingProjectID && id !== draggingProjectID)
+                  setDragTargetID(id)
+              }}
             />
           ))}
           {!projects.length && (
@@ -2278,21 +2438,21 @@ function GitCloneDialog({
     depth: number
   ) => Promise<void>
 }) {
-  const [repository, setRepository] = useState('')
-  const [branch, setBranch] = useState('')
-  const [branches, setBranches] = useState<string[]>([])
-  const [branchesLoading, setBranchesLoading] = useState(false)
-  const [name, setName] = useState('')
-  const [mirror, setMirror] = useState('official')
-  const [depth, setDepth] = useState(1)
-  const [connection, setConnection] = useState<'ssh' | 'https'>('https')
-  const [sshKeys, setSSHKeys] = useState<Array<{ name: string }>>([])
-  const [sshLoading, setSSHLoading] = useState(false)
-  const [target, setTarget] = useState<{
+  const [repository, setRepository] = useStoreState('')
+  const [branch, setBranch] = useStoreState('')
+  const [branches, setBranches] = useStoreState<string[]>([])
+  const [branchesLoading, setBranchesLoading] = useStoreState(false)
+  const [name, setName] = useStoreState('')
+  const [mirror, setMirror] = useStoreState('official')
+  const [depth, setDepth] = useStoreState(1)
+  const [connection, setConnection] = useStoreState<'ssh' | 'https'>('https')
+  const [sshKeys, setSSHKeys] = useStoreState<Array<{ name: string }>>([])
+  const [sshLoading, setSSHLoading] = useStoreState(false)
+  const [target, setTarget] = useStoreState<{
     path: string
     exists: boolean
   } | null>(null)
-  const [targetError, setTargetError] = useState('')
+  const [targetError, setTargetError] = useStoreState('')
   useEffect(() => {
     if (open) {
       setRepository('')
@@ -2782,16 +2942,22 @@ function GitInitializeDialog({
 function ProjectItem({
   project,
   active,
+  dragging,
+  dragTarget,
   agentSessions,
   onSelect,
   onRemove,
   onOpenAgent,
   onPin,
   onRename,
-  onArchive
+  onArchive,
+  onDragStart,
+  onDragTarget
 }: {
   project: Project
   active: boolean
+  dragging: boolean
+  dragTarget: boolean
   agentSessions: Array<{
     id: string
     title: string
@@ -2804,18 +2970,28 @@ function ProjectItem({
   onPin: (id: string) => void
   onRename: (id: string, title: string) => void
   onArchive: (id: string) => void
+  onDragStart: (
+    event: ReactPointerEvent<HTMLButtonElement>,
+    projectID: string
+  ) => void
+  onDragTarget: (projectID: string) => void
 }) {
   const [validate, { data }] = useLazyRobotProjectQuery()
-  const [recordsOpen, setRecordsOpen] = useState(false)
-  const [moreOpen, setMoreOpen] = useState(false)
-  const [ctxMenu, setCtxMenu] = useState<{
+  const [recordsOpen, setRecordsOpen] = useStoreState(false)
+  const [moreOpen, setMoreOpen] = useStoreState(false)
+  const [ctxMenu, setCtxMenu] = useStoreState<{
     id: string
     title: string
     x: number
     y: number
   } | null>(null)
+  const [projectMenu, setProjectMenu] = useStoreState<{
+    x: number
+    y: number
+  } | null>(null)
   const moreRef = useRef<HTMLDivElement | null>(null)
   const ctxRef = useRef<HTMLDivElement | null>(null)
+  const projectMenuRef = useRef<HTMLDivElement | null>(null)
   useEffect(() => {
     void validate(project.path)
   }, [project.path, validate])
@@ -2827,6 +3003,12 @@ function ProjectItem({
       if (ctxRef.current && !ctxRef.current.contains(event.target as Node)) {
         setCtxMenu(null)
       }
+      if (
+        projectMenuRef.current &&
+        !projectMenuRef.current.contains(event.target as Node)
+      ) {
+        setProjectMenu(null)
+      }
     }
     document.addEventListener('mousedown', close)
     return () => document.removeEventListener('mousedown', close)
@@ -2837,6 +3019,8 @@ function ProjectItem({
     <article
       className={cn(
         'workspace-project-item group relative rounded-lg transition-colors',
+        dragging && 'workspace-project-dragging',
+        dragTarget && 'workspace-project-drop-target',
         active
           ? invalid
             ? 'workspace-project-invalid'
@@ -2848,6 +3032,13 @@ function ProjectItem({
       <button
         className="flex w-full items-center gap-2 py-1.5 pl-2 pr-12 text-left"
         onClick={() => onSelect(project.id)}
+        onPointerDown={event => onDragStart(event, project.id)}
+        onPointerEnter={() => onDragTarget(project.id)}
+        onContextMenu={event => {
+          event.preventDefault()
+          setMoreOpen(false)
+          setProjectMenu({ x: event.clientX, y: event.clientY })
+        }}
         title={invalid ? data.error || project.path : project.path}
       >
         <Bot
@@ -2862,7 +3053,7 @@ function ProjectItem({
             invalid
               ? 'text-amber-700 dark:text-amber-400'
               : active
-                ? 'font-medium text-[var(--theme-accent-text)]'
+                ? 'font-medium text-(--theme-accent-text)'
                 : 'text-slate-700 dark:text-slate-300'
           )}
         >
@@ -3001,13 +3192,53 @@ function ProjectItem({
           </button>
         </div>
       )}
+      {projectMenu && (
+        <div
+          ref={projectMenuRef}
+          className="fixed z-200 grid min-w-36 gap-0.5 rounded-lg border border-slate-200 bg-white p-1 shadow-lg dark:border-slate-700 dark:bg-slate-800"
+          style={{ left: projectMenu.x, top: projectMenu.y }}
+          role="menu"
+          aria-label={`${project.name} 的操作`}
+        >
+          <button
+            className="flex min-h-8 items-center gap-2 rounded px-2 text-left text-xs text-slate-600 transition hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-700"
+            onClick={() => {
+              onSelect(project.id)
+              setProjectMenu(null)
+            }}
+          >
+            <Bot className="size-3.5 text-slate-400" />
+            打开机器人
+          </button>
+          <button
+            className="flex min-h-8 items-center gap-2 rounded px-2 text-left text-xs text-slate-600 transition hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-700"
+            onClick={() => {
+              onPin(project.id)
+              setProjectMenu(null)
+            }}
+          >
+            <Pin className="size-3.5 text-slate-400" />
+            {project.pinned ? '取消置顶' : '置顶'}
+          </button>
+          <button
+            className="flex min-h-8 items-center gap-2 rounded px-2 text-left text-xs text-red-600 transition hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-950/30"
+            onClick={() => {
+              onRemove(project.id)
+              setProjectMenu(null)
+            }}
+          >
+            <Trash2 className="size-3.5" />
+            移除
+          </button>
+        </div>
+      )}
     </article>
   )
 }
 function McpControl() {
-  const [open, setOpen] = useState(false)
-  const [transport, setTransport] = useState<'stdio' | 'http'>('stdio')
-  const [copied, setCopied] = useState(false)
+  const [open, setOpen] = useStoreState(false)
+  const [transport, setTransport] = useStoreState<'stdio' | 'http'>('stdio')
+  const [copied, setCopied] = useStoreState(false)
   const { data: mcpStatus, refetch: refetchMCP } = useSystemMcpQuery(
     undefined,
     {
@@ -3251,7 +3482,7 @@ function OperationTasksPage({ root }: { root: string }) {
   const tasks = (Array.isArray(data) ? data : []).filter(
     item => !root || !item.root || item.root === root
   )
-  const [selected, setSelected] = useState<string>('')
+  const [selected, setSelected] = useStoreState<string>('')
   const current = tasks.find(item => item.id === selected) ?? tasks[0]
   const label = (action: string) =>
     action.startsWith('setup:')
@@ -3486,7 +3717,7 @@ function EmptyWorkspace({
   onClone: () => void
 }) {
   return (
-    <section className="workspace-content empty-workspace">
+    <section className="bot-workspace empty-workspace">
       <span>◈</span>
       <div>
         <strong>开始管理你的机器人</strong>
@@ -3515,7 +3746,7 @@ function InvalidWorkspace({
   onChoose: () => void
 }) {
   return (
-    <section className="workspace-content invalid-workspace">
+    <section className="bot-workspace invalid-workspace">
       <i>!</i>
       <div>
         <strong>机器人目录不可用</strong>
@@ -3591,7 +3822,7 @@ function SystemPluginCenter({
   const [setEnabled, { isLoading }] = useSetSetupPluginEnabledMutation()
   const [installPlugin, { isLoading: installing }] =
     useInstallSetupPluginMutation()
-  const [message, setMessage] = useState('')
+  const [message, setMessage] = useStoreState('')
   const toggle = async (plugin: SetupPlugin) => {
     try {
       await setEnabled({
@@ -3815,6 +4046,7 @@ function BackpackPanel({
   onOpenPlugins,
   busy,
   onSaveConfig,
+  onConfigChanged,
   onRemove,
   onReplace
 }: {
@@ -3835,11 +4067,12 @@ function BackpackPanel({
     packageName: string,
     values: Record<string, string>
   ) => Promise<boolean>
+  onConfigChanged: () => Promise<void>
   onRemove: (packageName: string) => Promise<void>
   onReplace: (packageName: string, version: string) => Promise<boolean>
 }) {
-  const [selectedName, setSelectedName] = useState('')
-  const [appToggleBusy, setAppToggleBusy] = useState('')
+  const [selectedName, setSelectedName] = useStoreState('')
+  const [appToggleBusy, setAppToggleBusy] = useStoreState('')
   const { data: appsData, refetch: refetchApps } = useRobotAppsQuery(root, {
     skip: !root
   })
@@ -3855,7 +4088,7 @@ function BackpackPanel({
     setAppToggleBusy(packageName)
     try {
       await setAppEnabled({ root, package: packageName, enabled }).unwrap()
-      void refetchApps()
+      await Promise.all([refetchApps(), onConfigChanged()])
     } finally {
       setAppToggleBusy('')
     }
@@ -3874,124 +4107,135 @@ function BackpackPanel({
       />
     )
   return (
-    <section className="backpack-panel grid max-w-190 gap-4">
-      <header className="workspace-page-header flex items-center justify-between gap-3">
-        <div className="flex min-w-0 items-center gap-3">
-          <span className="workspace-page-header-icon">
-            <Archive className="size-4" />
-          </span>
-          <div className="grid gap-1">
-            <p className="m-0 text-lg font-semibold text-ink-950">背包</p>
-            <small className="text-xs text-slate-500" title={`${root}/packages`}>
-              packages
-            </small>
-          </div>
-        </div>
-        <div className="flex items-center gap-2">
-          <button className="text-button" onClick={onOpenPlugins}>
-            插件中心
-          </button>
-          <button
-            className="secondary-button"
-            disabled={loading}
-            onClick={onRefresh}
-            aria-label="刷新背包"
-            title="刷新背包"
-          >
-            {loading ? '读取中…' : <RefreshCw />}
-          </button>
-        </div>
-      </header>
-      {loading ? (
-        <p className="grid min-h-32 place-items-center text-sm text-slate-500">
-          正在读取本地插件包…
-        </p>
-      ) : items.length ? (
-        <div className="grid gap-2">
-          {items.map(item => (
-            <article
-              className={cn(
-                'rounded-lg border bg-white transition hover:border-slate-300',
-                item.valid ? 'border-slate-200' : 'border-amber-200 bg-amber-50'
-              )}
-              key={item.path}
-            >
-              <button
-                type="button"
-                className="flex w-full items-center gap-3 p-3 text-left"
-                onClick={() => setSelectedName(item.name)}
+    <BotWorkspace
+      className="backpack-panel max-w-190"
+      header={
+        <header className="bot-page-header flex items-center justify-between gap-3">
+          <div className="flex min-w-0 items-center gap-3">
+            <span className="bot-page-header-icon">
+              <Archive className="size-4" />
+            </span>
+            <div className="bot-page-header-meta flex-1">
+              <strong>背包</strong>
+              <small
+                className="text-xs text-slate-500"
+                title={`${root}/packages`}
               >
-                <div>
-                  <strong className="flex items-center gap-2 text-sm font-semibold text-slate-800">
-                    {item.name}
-                    {item.version && (
-                      <em className="not-italic text-xs text-slate-400">
-                        v{item.version}
-                      </em>
-                    )}
-                  </strong>
-                  <span className="text-xs text-slate-500">
-                    {item.valid
-                      ? item.description || '本地 AlemonJS 插件包'
-                      : '缺少有效 package.json，暂不能作为插件运行。'}
-                  </span>
-                  <small
-                    className="truncate text-[11px] text-slate-400"
-                    title={item.path}
-                  >
-                    {item.path}
-                  </small>
-                </div>
-                <ChevronRight
-                  className="size-4 shrink-0 text-slate-400"
-                  aria-hidden="true"
-                />
-              </button>
-              <div className="flex shrink-0 items-center gap-2 border-t border-slate-100 px-3 py-2">
-                {item.valid && (
-                  <button
-                    className={
-                      enabledApps.has(item.name)
-                        ? 'secondary-button'
-                        : 'primary-button'
-                    }
-                    disabled={appToggleBusy === item.name}
-                    onClick={() =>
-                      void toggleApp(item.name, !enabledApps.has(item.name))
-                    }
-                  >
-                    {appToggleBusy === item.name
-                      ? '切换中…'
-                      : enabledApps.has(item.name)
-                        ? '停用'
-                        : '启动'}
-                  </button>
+                packages
+              </small>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <button className="text-button" onClick={onOpenPlugins}>
+              插件中心
+            </button>
+            <button
+              className="secondary-button"
+              disabled={loading}
+              onClick={onRefresh}
+              aria-label="刷新背包"
+              title="刷新背包"
+            >
+              {loading ? '读取中…' : <RefreshCw />}
+            </button>
+          </div>
+        </header>
+      }
+    >
+      <div className="bot-page-content">
+        {loading ? (
+          <p className="grid min-h-32 place-items-center text-sm text-slate-500">
+            正在读取本地插件包…
+          </p>
+        ) : items.length ? (
+          <div className="grid gap-2">
+            {items.map(item => (
+              <article
+                className={cn(
+                  'rounded-lg border bg-white transition hover:border-slate-300',
+                  item.valid
+                    ? 'border-slate-200'
+                    : 'border-amber-200 bg-amber-50'
                 )}
-                <span className="text-[11px] text-slate-400">
-                  {enabledApps.has(item.name)
-                    ? '已加入 apps，机器人启动时会加载'
-                    : '未加入 apps'}
-                </span>
-              </div>
-            </article>
-          ))}
-        </div>
-      ) : (
-        <section className="grid min-h-40 place-items-center gap-2 rounded-xl border border-dashed border-slate-300 p-6 text-center">
-          <strong className="text-sm font-semibold text-slate-700">
-            暂无插件包
-          </strong>
-          <span className="text-xs text-slate-500">
-            {failed
-              ? '暂未能读取本地 packages 目录，你仍可从插件页安装。'
-              : '安装后的本地插件包会显示在这里。'}
-          </span>
-          <button className="secondary-button" onClick={onOpenPlugins}>
-            前往插件
-          </button>
-        </section>
-      )}
-    </section>
+                key={item.path}
+              >
+                <button
+                  type="button"
+                  className="flex w-full items-center gap-3 p-3 text-left"
+                  onClick={() => setSelectedName(item.name)}
+                >
+                  <div>
+                    <strong className="flex items-center gap-2 text-sm font-semibold text-slate-800">
+                      {item.name}
+                      {item.version && (
+                        <em className="not-italic text-xs text-slate-400">
+                          v{item.version}
+                        </em>
+                      )}
+                    </strong>
+                    <span className="text-xs text-slate-500">
+                      {item.valid
+                        ? item.description || '本地 AlemonJS 插件包'
+                        : '缺少有效 package.json，暂不能作为插件运行。'}
+                    </span>
+                    <small
+                      className="truncate text-[11px] text-slate-400"
+                      title={item.path}
+                    >
+                      {item.path}
+                    </small>
+                  </div>
+                  <ChevronRight
+                    className="size-4 shrink-0 text-slate-400"
+                    aria-hidden="true"
+                  />
+                </button>
+                <div className="flex shrink-0 items-center gap-2 border-t border-slate-100 px-3 py-2">
+                  {item.valid && (
+                    <button
+                      className={
+                        enabledApps.has(item.name)
+                          ? 'secondary-button'
+                          : 'primary-button'
+                      }
+                      disabled={appToggleBusy === item.name}
+                      onClick={() =>
+                        void toggleApp(item.name, !enabledApps.has(item.name))
+                      }
+                    >
+                      {appToggleBusy === item.name
+                        ? '切换中…'
+                        : enabledApps.has(item.name)
+                          ? '停用'
+                          : '启动'}
+                    </button>
+                  )}
+                  <span className="text-[11px] text-slate-400">
+                    {enabledApps.has(item.name)
+                      ? '已加入 apps，机器人启动时会加载'
+                      : '未加入 apps'}
+                  </span>
+                </div>
+              </article>
+            ))}
+          </div>
+        ) : (
+          <section className="grid min-h-40 place-items-center gap-2 rounded-xl border border-dashed border-slate-300 p-6 text-center">
+            <strong className="text-sm font-semibold text-slate-700">
+              暂无插件包
+            </strong>
+            <span className="text-xs text-slate-500">
+              {failed
+                ? '暂未能读取本地 packages 目录，你仍可从插件页安装。'
+                : '安装后的本地插件包会显示在这里。'}
+            </span>
+            <button className="secondary-button" onClick={onOpenPlugins}>
+              前往插件
+            </button>
+          </section>
+        )}
+      </div>
+    </BotWorkspace>
   )
 }
 
@@ -4023,9 +4267,9 @@ function BackpackPackageManager({
   onBack: () => void
   onRefresh: () => void
 }) {
-  const [tab, setTab] = useState<'readme' | 'config' | 'version'>('readme')
-  const [version, setVersion] = useState('')
-  const { data, isFetching, error } = usePackageConfigQuery(
+  const [tab, setTab] = useStoreState<'readme' | 'config' | 'version'>('readme')
+  const [version, setVersion] = useStoreState('')
+  const { data, isLoading: isConfigLoading, error } = usePackageConfigQuery(
     { root, package: item.name },
     { skip: !item.valid }
   )
@@ -4047,59 +4291,76 @@ function BackpackPackageManager({
       skip: !item.valid || tab !== 'version'
     }
   )
-  const [values, setValues] = useState<Record<string, string>>({})
+  const [values, setValues] = useStoreState<Record<string, string>>({})
+  const scheduleSave = useAutoSave<Record<string, string>>(next =>
+    onSave(item.name, next)
+  )
+  const updateValue = (name: string, value: string) => {
+    const next = { ...values, [name]: value }
+    setValues(next)
+    scheduleSave(next)
+  }
   useEffect(() => {
-    if (data)
-      setValues(
-        Object.fromEntries(
-          data.fields.map(field => [field.name, data.values[field.name] ?? ''])
-        )
-      )
+    if (!data) return
+    const next = Object.fromEntries(
+      data.fields.map(field => [field.name, data.values[field.name] ?? ''])
+    )
+    setValues(current => (sameRecord(current, next) ? current : next))
   }, [data])
   useEffect(() => {
     if (versions?.latest) setVersion(versions.latest)
   }, [versions])
   return (
-    <section className="backpack-manager grid max-w-190 gap-4">
-      <header className="workspace-page-header flex flex-wrap items-start justify-between gap-3">
-        <div className="flex min-w-0 items-start gap-3">
-          <span className="workspace-page-header-icon">
-            <Package className="size-4" />
-          </span>
-          <div className="grid min-w-0 gap-1">
-            <button className="text-button justify-self-start" onClick={onBack}>
-              ‹ 返回背包
-            </button>
-            <h2 className="m-0 break-all text-lg font-semibold text-ink-950">
-              {item.name}
-              {item.version && (
-                <em className="ml-2 not-italic text-xs text-slate-400">
-                  v{item.version}
-                </em>
-              )}
-            </h2>
-            <small className="truncate text-xs text-slate-500" title={item.path}>
-              {item.path}
-            </small>
+    <BotWorkspace
+      className="backpack-manager max-w-190"
+      header={
+        <header className="bot-page-header flex flex-wrap items-start justify-between gap-3">
+          <div className="flex min-w-0 items-start gap-3">
+            <span className="bot-page-header-icon">
+              <Package className="size-4" />
+            </span>
+            <div className="bot-page-header-meta min-w-0 flex-1">
+              <button
+                className="text-button justify-self-start"
+                onClick={onBack}
+              >
+                ‹ 返回背包
+              </button>
+              <h2 className="m-0 break-all text-lg font-semibold text-ink-950">
+                {item.name}
+                {item.version && (
+                  <em className="ml-2 not-italic text-xs text-slate-400">
+                    v{item.version}
+                  </em>
+                )}
+              </h2>
+              <small
+                className="truncate text-xs text-slate-500"
+                title={item.path}
+              >
+                {item.path}
+              </small>
+            </div>
           </div>
-        </div>
-        <div className="flex items-center gap-2">
-          <button
-            className="icon-button size-9 p-0"
-            onClick={onRefresh}
-            title="刷新背包"
-          >
-            <RefreshCw className="size-4" />
-          </button>
-          <button
-            className="inline-flex min-h-8 items-center justify-center rounded-md border border-red-200 px-3 text-xs font-semibold text-red-700 transition hover:bg-red-50"
-            disabled={busy}
-            onClick={() => void onRemove(item.name)}
-          >
-            卸载
-          </button>
-        </div>
-      </header>
+          <div className="flex items-center gap-2">
+            <button
+              className="icon-button size-9 p-0"
+              onClick={onRefresh}
+              title="刷新背包"
+            >
+              <RefreshCw className="size-4" />
+            </button>
+            <button
+              className="inline-flex min-h-8 items-center justify-center rounded-md border border-red-200 px-3 text-xs font-semibold text-red-700 transition hover:bg-red-50"
+              disabled={busy}
+              onClick={() => void onRemove(item.name)}
+            >
+              卸载
+            </button>
+          </div>
+        </header>
+      }
+    >
       <Tabs
         ariaLabel="插件详情"
         items={[
@@ -4128,11 +4389,11 @@ function BackpackPackageManager({
             <MarkdownPage markdown={readme.output} />
           )
         ) : tab === 'config' ? (
-          isFetching ? (
+          isConfigLoading ? (
             <p className="backpack-manager-note">正在读取插件的配置声明…</p>
-          ) : error || !data ? (
+          ) : error || !data || !data.fields.length ? (
             <p className="backpack-manager-note">
-              该插件没有声明可视化配置。使用方式请查看“文档”页。
+              该插件没有可填写的可视化配置。使用方式请查看“文档”页。
             </p>
           ) : (
             <div className="package-config-panel grid gap-4 rounded-xl border border-slate-200 bg-white p-4">
@@ -4145,13 +4406,7 @@ function BackpackPackageManager({
                     保存到当前机器人的 alemon.config.yaml · {data.namespace}.*
                   </span>
                 </div>
-                <button
-                  className="primary-button"
-                  disabled={busy}
-                  onClick={() => void onSave(item.name, values)}
-                >
-                  保存配置
-                </button>
+                <small className="text-xs text-slate-400">修改后自动保存</small>
               </header>
               <div className="grid gap-3 sm:grid-cols-2">
                 {data.fields.map(field => (
@@ -4168,10 +4423,7 @@ function BackpackPackageManager({
                         className="h-9 rounded-md border border-slate-300 bg-white px-2.5 text-sm font-normal text-slate-800 outline-none focus:border-brand-600 focus:ring-2 focus:ring-brand-100"
                         value={values[field.name] ?? ''}
                         onChange={event =>
-                          setValues({
-                            ...values,
-                            [field.name]: event.target.value
-                          })
+                          updateValue(field.name, event.target.value)
                         }
                       >
                         <option value="">不设置</option>
@@ -4188,10 +4440,7 @@ function BackpackPackageManager({
                             : 'text'
                         }
                         onChange={event =>
-                          setValues({
-                            ...values,
-                            [field.name]: event.target.value
-                          })
+                          updateValue(field.name, event.target.value)
                         }
                       />
                     )}
@@ -4247,7 +4496,7 @@ function BackpackPackageManager({
           </section>
         )}
       </div>
-    </section>
+    </BotWorkspace>
   )
 }
 function CatalogDetail({
@@ -4270,8 +4519,8 @@ function CatalogDetail({
     values: Record<string, string>
   ) => Promise<boolean>
 }) {
-  const [version, setVersion] = useState('')
-  const [configOpen, setConfigOpen] = useState(false)
+  const [version, setVersion] = useStoreState('')
+  const [configOpen, setConfigOpen] = useStoreState(false)
   const {
     data: document,
     isFetching,
@@ -4310,18 +4559,24 @@ function CatalogDetail({
   const uninstallAction =
     kind === 'connection' ? 'uninstall-connection' : 'uninstall-package'
   return (
-    <section className="catalog-detail grid max-w-190 gap-4">
-      <header className="workspace-page-header flex items-center gap-3">
-        <div className="flex min-w-0 items-center gap-3">
-          <span className="workspace-page-header-icon">
-            <Globe className="size-4" />
-          </span>
-          <button className="text-button" onClick={onBack}>
-            ‹ 返回目录
-          </button>
-          <span className="text-xs font-semibold text-slate-400">{group}</span>
-        </div>
-      </header>
+    <BotWorkspace
+      className="catalog-detail max-w-190"
+      header={
+        <header className="bot-page-header flex items-center gap-3">
+          <div className="flex min-w-0 items-center gap-3">
+            <span className="bot-page-header-icon">
+              <Globe className="size-4" />
+            </span>
+            <button className="text-button" onClick={onBack}>
+              ‹ 返回目录
+            </button>
+            <span className="text-xs font-semibold text-slate-400">
+              {group}
+            </span>
+          </div>
+        </header>
+      }
+    >
       <section className="catalog-control flex flex-wrap items-start justify-between gap-4 rounded-xl border border-slate-200 bg-white p-4">
         <div className="grid min-w-0 gap-1">
           <h1 className="m-0 break-all text-lg font-semibold text-ink-950">
@@ -4409,11 +4664,7 @@ function CatalogDetail({
         </p>
       )}
       {configOpen && (
-        <PackageConfigPanel
-          source={item.url}
-          busy={busy}
-          onSave={onSaveConfig}
-        />
+        <PackageConfigPanel source={item.url} onSave={onSaveConfig} />
       )}
       <section className="catalog-document grid gap-3 rounded-xl border border-slate-200 bg-white p-4">
         <header className="flex items-center justify-between gap-3 border-b border-slate-200 pb-3">
@@ -4441,34 +4692,41 @@ function CatalogDetail({
         )}
         {document && <MarkdownPage markdown={document.markdown} />}
       </section>
-    </section>
+    </BotWorkspace>
   )
 }
 function PackageConfigPanel({
   source,
-  busy,
   onSave
 }: {
   source: string
-  busy: boolean
   onSave: (
     packageName: string,
     values: Record<string, string>
   ) => Promise<boolean>
 }) {
-  const { data, isFetching, error } = useCatalogPackageConfigQuery(source, {
-    skip: !source
-  })
-  const [values, setValues] = useState<Record<string, string>>({})
+  const {
+    data,
+    isLoading: isConfigLoading,
+    error
+  } = useCatalogPackageConfigQuery(source, { skip: !source })
+  const [values, setValues] = useStoreState<Record<string, string>>({})
+  const scheduleSave = useAutoSave<Record<string, string>>(next =>
+    onSave(data?.package ?? '', next)
+  )
+  const updateValue = (name: string, value: string) => {
+    const next = { ...values, [name]: value }
+    setValues(next)
+    scheduleSave(next)
+  }
   useEffect(() => {
-    if (data)
-      setValues(
-        Object.fromEntries(
-          data.fields.map(field => [field.name, data.values[field.name] ?? ''])
-        )
-      )
+    if (!data) return
+    const next = Object.fromEntries(
+      data.fields.map(field => [field.name, data.values[field.name] ?? ''])
+    )
+    setValues(current => (sameRecord(current, next) ? current : next))
   }, [data])
-  if (isFetching)
+  if (isConfigLoading)
     return (
       <section className="package-config-panel grid gap-3 rounded-xl border border-slate-200 bg-white p-4 text-sm text-slate-500">
         <p>正在读取包配置声明…</p>
@@ -4478,6 +4736,12 @@ function PackageConfigPanel({
     return (
       <section className="package-config-panel rounded-xl border border-slate-200 bg-white p-4 text-sm text-slate-500">
         <p>该条目没有可读取的 alemonjs.config 声明。</p>
+      </section>
+    )
+  if (!data.fields.length)
+    return (
+      <section className="package-config-panel rounded-xl border border-slate-200 bg-white p-4 text-sm text-slate-500">
+        <p>该条目没有可填写的配置项。</p>
       </section>
     )
   return (
@@ -4491,13 +4755,7 @@ function PackageConfigPanel({
             保存至 alemon.config.yaml · {data.namespace}.*
           </span>
         </div>
-        <button
-          className="primary-button"
-          disabled={busy}
-          onClick={() => void onSave(data.package, values)}
-        >
-          保存配置
-        </button>
+        <small className="text-xs text-slate-400">修改后自动保存</small>
       </header>
       <div className="grid gap-3 sm:grid-cols-2">
         {data.fields.map(field => (
@@ -4513,9 +4771,7 @@ function PackageConfigPanel({
               <select
                 className="h-9 rounded-md border border-slate-300 bg-white px-2.5 text-sm font-normal text-slate-800 outline-none focus:border-brand-600 focus:ring-2 focus:ring-brand-100"
                 value={values[field.name] ?? ''}
-                onChange={event =>
-                  setValues({ ...values, [field.name]: event.target.value })
-                }
+                onChange={event => updateValue(field.name, event.target.value)}
               >
                 <option value="">不设置</option>
                 <option value="true">开启</option>
@@ -4530,9 +4786,7 @@ function PackageConfigPanel({
                     ? 'number'
                     : 'text'
                 }
-                onChange={event =>
-                  setValues({ ...values, [field.name]: event.target.value })
-                }
+                onChange={event => updateValue(field.name, event.target.value)}
                 placeholder={field.name}
               />
             )}
@@ -4545,7 +4799,6 @@ function PackageConfigPanel({
 function CurrentProjectConfigPanel({
   config,
   loading,
-  busy,
   onSave
 }: {
   config?: {
@@ -4560,12 +4813,20 @@ function CurrentProjectConfigPanel({
     values: Record<string, string>
   }
   loading: boolean
-  busy: boolean
   onSave: (values: Record<string, string>) => Promise<boolean>
 }) {
-  const [values, setValues] = useState<Record<string, string>>({})
+  const [values, setValues] = useStoreState<Record<string, string>>({})
+  const scheduleSave = useAutoSave(onSave)
+  const updateValue = (name: string, value: string) => {
+    const next = { ...values, [name]: value }
+    setValues(next)
+    scheduleSave(next)
+  }
   useEffect(() => {
-    if (config) setValues(config.values)
+    if (config)
+      setValues(current =>
+        sameRecord(current, config.values) ? current : config.values
+      )
   }, [config])
   // A config declaration is optional. Do not turn its absence into an error
   // for ordinary robots that do not expose project-specific settings.
@@ -4588,13 +4849,7 @@ function CurrentProjectConfigPanel({
             区域
           </span>
         </div>
-        <button
-          className="primary-button"
-          disabled={busy}
-          onClick={() => void onSave(values)}
-        >
-          保存
-        </button>
+        <small className="text-xs text-slate-400">修改后自动保存</small>
       </header>
       <div className="grid gap-3 sm:grid-cols-2">
         {config.fields.map(field => (
@@ -4610,9 +4865,7 @@ function CurrentProjectConfigPanel({
               <select
                 className="h-9 rounded-md border border-slate-300 bg-white px-2.5 text-sm font-normal text-slate-800 outline-none focus:border-brand-600 focus:ring-2 focus:ring-brand-100"
                 value={values[field.name] ?? ''}
-                onChange={event =>
-                  setValues({ ...values, [field.name]: event.target.value })
-                }
+                onChange={event => updateValue(field.name, event.target.value)}
               >
                 <option value="">不设置</option>
                 <option value="true">开启</option>
@@ -4627,9 +4880,7 @@ function CurrentProjectConfigPanel({
                     ? 'number'
                     : 'text'
                 }
-                onChange={event =>
-                  setValues({ ...values, [field.name]: event.target.value })
-                }
+                onChange={event => updateValue(field.name, event.target.value)}
                 placeholder={field.name}
               />
             )}
@@ -4717,16 +4968,17 @@ function RuntimePanel({
     note: string
     preflight: RuntimePreflight
   }
-  const [customLogin, setCustomLogin] = useState('')
-  const [customPackage, setCustomPackage] = useState('')
-  const [selectedPlatform, setSelectedPlatform] = useState('')
-  const [pending, setPending] = useState<PendingAction | null>(null)
-  const [validationMessage, setValidationMessage] = useState('')
-  const [validationTitle, setValidationTitle] = useState('运行前配置不完整')
+  const [customLogin, setCustomLogin] = useStoreState('')
+  const [customPackage, setCustomPackage] = useStoreState('')
+  const [selectedPlatform, setSelectedPlatform] = useStoreState('')
+  const [pending, setPending] = useStoreState<PendingAction | null>(null)
+  const [validationMessage, setValidationMessage] = useStoreState('')
+  const [validationTitle, setValidationTitle] =
+    useStoreState('运行前配置不完整')
   const [loadPackageConfig] = useLazyPackageConfigQuery()
   const [loadRuntimePreflight] = useLazyRobotRuntimePreflightQuery()
-  const [loginChoice, setLoginChoice] = useState<LoginChoice | null>(null)
-  const [connectionConfig, setConnectionConfig] = useState<{
+  const [loginChoice, setLoginChoice] = useStoreState<LoginChoice | null>(null)
+  const [connectionConfig, setConnectionConfig] = useStoreState<{
     package: string
     fields: Array<{
       name: string
@@ -4736,23 +4988,38 @@ function RuntimePanel({
     }>
     values: Record<string, string>
   } | null>(null)
-  const [connectionValues, setConnectionValues] = useState<
+  const [connectionValues, setConnectionValues] = useStoreState<
     Record<string, string>
   >({})
-  const [loginDialogError, setLoginDialogError] = useState('')
-  const [loginDialogBusy, setLoginDialogBusy] = useState(false)
-  const [pm2LogsOpen, setPM2LogsOpen] = useState(false)
-  const [pm2ProcessesOpen, setPM2ProcessesOpen] = useState(false)
+  const [loginDialogError, setLoginDialogError] = useStoreState('')
+  const [loginDialogBusy, setLoginDialogBusy] = useStoreState(false)
+  const [pm2LogsOpen, setPM2LogsOpen] = useStoreState(false)
+  const [pm2ProcessesOpen, setPM2ProcessesOpen] = useStoreState(false)
   const persistentReady = overview?.pm2Configured && overview.hasStartScript
   const pm2Managed = Boolean(pm2Status?.managed)
   const pm2LocalRunning = pm2Running
   const localRunning = developmentRunning || foregroundRunning
   // A missing dependency blocks every run action until dependencies install.
-  const depsMissing = overview ? !overview.dependenciesComplete : false
   const knownPlatform = (overview?.platforms ?? []).find(
     item => item.id === selectedPlatform
   )
   const packageTarget = knownPlatform?.package || customPackage.trim()
+  const scheduleConnectionSave = useAutoSave<Record<string, string>>(next => {
+    if (!packageTarget || !connectionConfig?.fields.length) return
+    return onSavePackageConfig(packageTarget, next)
+  })
+  const scheduleLoginSave = useAutoSave<{
+    login: string
+    packageName: string
+  }>(({ login, packageName }) => {
+    if (!login.trim()) return
+    return onSaveLogin(login, packageName)
+  })
+  const updateConnectionValue = (name: string, value: string) => {
+    const next = { ...connectionValues, [name]: value }
+    setConnectionValues(next)
+    scheduleConnectionSave(next)
+  }
   const ask = (label: string, note: string, execute: () => void) =>
     setPending({ label, note, execute })
   const confirm = () => {
@@ -4803,7 +5070,9 @@ function RuntimePanel({
         package: packageName
       }).unwrap()
       setConnectionConfig(config)
-      setConnectionValues(config.values)
+      setConnectionValues(current =>
+        sameRecord(current, config.values) ? current : config.values
+      )
     } catch (reason) {
       const message = operationErrorMessage(reason, '无法读取连接包配置。')
       // A config declaration is optional; it is valid to continue without a
@@ -4900,32 +5169,36 @@ function RuntimePanel({
     }
   }
   return (
-    <section className="runtime-overview grid max-w-190 gap-4">
-      <header className="workspace-page-header flex items-start justify-between gap-4">
-        <div className="flex min-w-0 items-start gap-3">
-          <span className="workspace-page-header-icon">
-            <Play className="size-4" />
-          </span>
-          <div className="grid min-w-0 gap-1">
-            <p className="m-0 text-xs font-semibold text-slate-500">运行</p>
-            <h1 className="m-0 truncate text-xl font-semibold tracking-tight text-ink-950">
-              {overview?.name || '正在读取项目…'}
-            </h1>
-            <small className="text-xs text-slate-500">
-              {overview
-                ? `${overview.version || '未设置版本'} · ${overview.packageManager} · ${overview.hasDevScript ? '已配置开发命令' : '未配置 dev 命令'}`
-                : '读取包信息、平台包与运行状态。'}
-            </small>
+    <BotWorkspace
+      className="runtime-overview max-w-190"
+      header={
+        <header className="bot-page-header flex items-start justify-between gap-4">
+          <div className="flex min-w-0 items-start gap-3">
+            <span className="bot-page-header-icon">
+              <Play className="size-4" />
+            </span>
+            <div className="bot-page-header-meta min-w-0 flex-1">
+              <p className="m-0 text-xs font-semibold text-slate-500">运行</p>
+              <h1 className="m-0 truncate text-xl font-semibold tracking-tight text-ink-950">
+                {overview?.name || '正在读取项目…'}
+              </h1>
+              <small className="text-xs text-slate-500">
+                {overview
+                  ? `${overview.version || '未设置版本'} · ${overview.packageManager} · ${overview.hasDevScript ? '已配置开发命令' : '未配置 dev 命令'}`
+                  : '读取包信息、平台包与运行状态。'}
+              </small>
+            </div>
           </div>
-        </div>
-        <button
-          className="icon-button size-9 shrink-0 p-0"
-          disabled={loading}
-          onClick={onRefresh}
-        >
-          <RefreshCw className="size-4" />
-        </button>
-      </header>
+          <button
+            className="icon-button size-9 shrink-0 p-0"
+            disabled={loading}
+            onClick={onRefresh}
+          >
+            <RefreshCw className="size-4" />
+          </button>
+        </header>
+      }
+    >
       <ConfirmDialog
         open={Boolean(pending)}
         title={pending?.label ?? ''}
@@ -5014,6 +5287,10 @@ function RuntimePanel({
                         onChange={event => {
                           setSelectedPlatform('')
                           setCustomLogin(event.target.value)
+                          scheduleLoginSave({
+                            login: event.target.value,
+                            packageName: customPackage.trim()
+                          })
                         }}
                         placeholder="如 onebot"
                       />
@@ -5071,10 +5348,10 @@ function RuntimePanel({
                             <select
                               value={connectionValues[field.name] ?? ''}
                               onChange={event =>
-                                setConnectionValues({
-                                  ...connectionValues,
-                                  [field.name]: event.target.value
-                                })
+                                updateConnectionValue(
+                                  field.name,
+                                  event.target.value
+                                )
                               }
                             >
                               <option value="">不设置</option>
@@ -5091,10 +5368,10 @@ function RuntimePanel({
                               }
                               value={connectionValues[field.name] ?? ''}
                               onChange={event =>
-                                setConnectionValues({
-                                  ...connectionValues,
-                                  [field.name]: event.target.value
-                                })
+                                updateConnectionValue(
+                                  field.name,
+                                  event.target.value
+                                )
                               }
                               placeholder={field.name}
                             />
@@ -5164,7 +5441,7 @@ function RuntimePanel({
                 <span className="block text-xs text-slate-500">
                   {overview?.dependenciesComplete
                     ? '依赖完整；可只升级 AlemonJS 相关依赖，或重新安装全部依赖。'
-                    : '依赖未安装或缺失，请先安装后再运行。'}
+                    : '依赖未安装或缺失；启动、构建和后台运行时会自动同步。'}
                 </span>
               </div>
               <div className="ml-auto flex shrink-0 flex-wrap justify-end gap-2">
@@ -5172,7 +5449,9 @@ function RuntimePanel({
                   className="secondary-button"
                   disabled={busy || !overview?.dependenciesComplete}
                   title={
-                    !overview?.dependenciesComplete ? '请先安装依赖。' : ''
+                    !overview?.dependenciesComplete
+                      ? '启动、构建或后台运行时会自动同步依赖。'
+                      : ''
                   }
                   onClick={() =>
                     ask(
@@ -5239,11 +5518,9 @@ function RuntimePanel({
                         ? 'secondary-button'
                         : 'primary-button'
                     }
-                    disabled={busy || depsMissing || foregroundStopping}
+                    disabled={busy || foregroundStopping}
                     title={
-                      depsMissing
-                        ? '请先安装依赖。'
-                        : developmentRunning || pm2LocalRunning
+                      developmentRunning || pm2LocalRunning
                           ? '启动会自动停止当前正在运行的进程。'
                           : ''
                     }
@@ -5315,8 +5592,7 @@ function RuntimePanel({
                 {overview?.hasBuildScript && (
                   <button
                     className="secondary-button"
-                    disabled={busy || depsMissing}
-                    title={depsMissing ? '请先安装依赖。' : ''}
+                    disabled={busy}
                     onClick={() =>
                       ask(
                         '构建脚本',
@@ -5335,11 +5611,9 @@ function RuntimePanel({
                         ? 'secondary-button'
                         : 'primary-button'
                     }
-                    disabled={busy || depsMissing || developmentStopping}
+                    disabled={busy || developmentStopping}
                     title={
-                      depsMissing
-                        ? '请先安装依赖。'
-                        : foregroundRunning || pm2LocalRunning
+                      foregroundRunning || pm2LocalRunning
                           ? '启动会自动停止当前正在运行的进程。'
                           : ''
                     }
@@ -5414,11 +5688,9 @@ function RuntimePanel({
             </div>
             <button
               className="primary-button"
-              disabled={busy || depsMissing || !persistentReady}
+              disabled={busy || !persistentReady}
               title={
-                depsMissing
-                  ? '请先安装依赖。'
-                  : localRunning
+                localRunning
                     ? '启动会自动停止当前正在运行的进程。'
                     : !persistentReady
                       ? '补齐 start 脚本和 PM2 配置后可使用。'
@@ -5529,7 +5801,7 @@ function RuntimePanel({
         root={root}
         onClose={() => setPM2ProcessesOpen(false)}
       />
-    </section>
+    </BotWorkspace>
   )
 }
 // robotAppToken base64url-encodes a robot directory path without padding so it
@@ -5544,17 +5816,17 @@ function robotAppToken(root: string) {
     .replace(/\//g, '_')
     .replace(/=+$/g, '')
 }
-// AppEmbed renders the robot's application service (launchpad and plugin pages)
-// in a full-window modal via the reverse proxy, so it has room to render without
-// squeezing the workspace layout.
+// AppEmbed replaces the workspace with an application-sized surface through the
+// reverse proxy. It intentionally mirrors the dashboard window rather than a
+// dialog, so the robot application feels like a destination page.
 function AppEmbed({ root, onClose }: { root: string; onClose: () => void }) {
   // The robot root travels as a base64url path token (matching the backend's
   // robotAppToken) so every in-app navigation keeps it automatically.
   const src = `/api/v1/robot/app/${robotAppToken(root)}/`
   return (
-    <Modal open zIndex={200} ariaLabel="机器人应用" onBackdropClick={onClose}>
-      <section className="grid h-[min(92vh,900px)] w-[min(92vw,1400px)] grid-rows-[auto_minmax(0,1fr)] overflow-hidden rounded-xl border border-slate-200 bg-white shadow-[0_24px_70px_rgb(28_26_23/0.26)]">
-        <header className="flex items-center justify-between gap-3 border-b border-slate-200 px-4 py-2">
+    <Modal open zIndex={200} ariaLabel="机器人应用" className="app-embed-backdrop">
+      <section className="app-embed-window grid grid-rows-[auto_minmax(0,1fr)] overflow-hidden">
+        <header className="topbar flex min-h-11 items-center justify-between gap-2 border-b border-slate-200 bg-white/90 px-3 dark:border-slate-700">
           <div className="flex min-w-0 items-center gap-2">
             <Monitor className="size-4 shrink-0 text-brand-600 dark:text-brand-200" />
             <strong className="truncate text-sm font-semibold text-slate-900 dark:text-slate-100">
@@ -5562,7 +5834,7 @@ function AppEmbed({ root, onClose }: { root: string; onClose: () => void }) {
             </strong>
           </div>
           <button
-            className="inline-flex size-8 items-center justify-center rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-800"
+            className="icon-button size-8 p-0"
             onClick={onClose}
             aria-label="关闭应用"
             title="关闭应用"
@@ -5588,6 +5860,7 @@ function ControlCard({
   catalog,
   catalogTitle,
   developerMode,
+  agentOpen,
   appLaunching,
   onOpenConsole,
   onOpenAI,
@@ -5605,6 +5878,7 @@ function ControlCard({
   catalog: CatalogGroup[]
   catalogTitle: string
   developerMode: boolean
+  agentOpen: boolean
   appLaunching: boolean
   onOpenConsole: () => void
   onOpenAI: () => void
@@ -5634,8 +5908,9 @@ function ControlCard({
     gitBranches && gitChanges
       ? { ...gitBranches, changes: gitChanges.changes }
       : (gitBranches ?? gitChanges ?? undefined)
-  const activePrimary =
-    page === 'robot'
+  const activePrimary = agentOpen
+    ? null
+    : page === 'robot'
       ? section === 'backpack'
         ? 'backpack'
         : section === 'runtime'
@@ -5819,7 +6094,12 @@ function ControlCard({
               <span>应用</span>
             </button>
             <button
-              className="inline-flex min-h-8 items-center justify-center gap-1 rounded-md px-1 text-[11px] text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-700 dark:text-slate-400 dark:hover:bg-slate-700 dark:hover:text-slate-200"
+              className={cn(
+                'inline-flex min-h-8 items-center justify-center gap-1 rounded-md px-1 text-[11px] transition-colors hover:bg-slate-100 hover:text-slate-700 dark:hover:bg-slate-700 dark:hover:text-slate-200',
+                agentOpen
+                  ? 'workspace-nav-active'
+                  : 'text-slate-500 dark:text-slate-400'
+              )}
               onClick={onOpenAI}
               aria-label="使用 Agent 协助当前机器人"
               title="使用 Agent 协助当前机器人"
@@ -5881,11 +6161,11 @@ function ReadonlyConsole({
   const [load, { data, error, isFetching }] = useLazyRobotConsoleQuery()
   const outputRef = useRef<HTMLPreElement>(null)
   const followLatest = useRef(true)
-  const [showSnapshot, setShowSnapshot] = useState(false)
+  const [showSnapshot, setShowSnapshot] = useStoreState(false)
   // liveOutput accumulates incremental output pushed over SSE; the initial
   // load seeds it with the current buffer so the terminal is real-time without
   // polling. The static snapshot still comes from the query.
-  const [liveOutput, setLiveOutput] = useState('')
+  const [liveOutput, setLiveOutput] = useStoreState('')
   const runError = error
     ? operationErrorMessage(error, '无法读取当前目录的运行终端信息。')
     : ''
@@ -6013,14 +6293,14 @@ function PM2LogsPanel({
   root: string
   onClose: () => void
 }) {
-  const [page, setPage] = useState(1)
-  const [data, setData] = useState<{
+  const [page, setPage] = useStoreState(1)
+  const [data, setData] = useStoreState<{
     output: string
     page: number
     hasOlder: boolean
   } | null>(null)
-  const [error, setError] = useState('')
-  const [loading, setLoading] = useState(false)
+  const [error, setError] = useStoreState('')
+  const [loading, setLoading] = useStoreState(false)
   const load = useCallback(
     async (targetPage: number) => {
       setLoading(true)
@@ -6318,37 +6598,34 @@ function EditorMode({
 function FileEditor({
   toolbar,
   content,
-  busy,
   placeholder,
-  onChange,
-  onSave
+  onChange
 }: {
   toolbar?: ReactNode
   content: string
-  busy: boolean
   placeholder: string
   onChange: (value: string) => void
-  onSave: () => void
 }) {
   return (
-    <section className="file-editor grid gap-3">
-      <header className="workspace-page-header flex items-center justify-between gap-3">
-        <div className="workspace-page-header-meta">
-          <strong>文本编辑</strong>
-          <small>直接编辑当前配置文件内容</small>
-        </div>
-        {toolbar}
-        <button className="primary-button" disabled={busy} onClick={onSave}>
-          保存
-        </button>
-      </header>
+    <BotWorkspace
+      className="file-editor"
+      header={
+        <header className="bot-page-header flex items-center justify-between gap-3">
+          <div className="bot-page-header-meta flex-1">
+            <strong>文本编辑</strong>
+            <small>直接编辑当前配置文件内容 · 修改后自动保存</small>
+          </div>
+          {toolbar}
+        </header>
+      }
+    >
       <textarea
         className="min-h-105 w-full resize-y rounded-lg border border-slate-300 bg-white p-3 font-mono text-xs leading-5 text-slate-800 outline-none focus:border-brand-600 focus:ring-2 focus:ring-brand-100"
         value={content}
         onChange={event => onChange(event.target.value)}
         placeholder={placeholder}
       />
-    </section>
+    </BotWorkspace>
   )
 }
 function OperationLog({
@@ -6449,21 +6726,21 @@ function GitReleasePanelNext({
     error,
     refetch
   } = useGitStatusQuery(root, { skip: !root })
-  const [initializing, setInitializing] = useState(false)
-  const [gitInitOpen, setGitInitOpen] = useState(false)
-  const [sourceCommit, setSourceCommit] = useState('')
-  const [sourceBranch, setSourceBranch] = useState('')
-  const [phase, setPhase] = useState<
+  const [initializing, setInitializing] = useStoreState(false)
+  const [gitInitOpen, setGitInitOpen] = useStoreState(false)
+  const [sourceCommit, setSourceCommit] = useStoreState('')
+  const [sourceBranch, setSourceBranch] = useStoreState('')
+  const [phase, setPhase] = useStoreState<
     'source' | 'building' | 'artifacts' | 'confirm' | 'published'
   >('source')
-  const [session, setSession] = useState<BuildSession | null>(null)
-  const [artifacts, setArtifacts] = useState<string[]>([])
-  const [expandedArtifacts, setExpandedArtifacts] = useState<string[]>([])
-  const [requestError, setRequestError] = useState('')
-  const [result, setResult] = useState<PublishResult | null>(null)
-  const [retryingTag, setRetryingTag] = useState(false)
+  const [session, setSession] = useStoreState<BuildSession | null>(null)
+  const [artifacts, setArtifacts] = useStoreState<string[]>([])
+  const [expandedArtifacts, setExpandedArtifacts] = useStoreState<string[]>([])
+  const [requestError, setRequestError] = useStoreState('')
+  const [result, setResult] = useStoreState<PublishResult | null>(null)
+  const [retryingTag, setRetryingTag] = useStoreState(false)
   const remoteBranchesRefreshed = useRef('')
-  const [gitInit, setGitInit] = useState({
+  const [gitInit, setGitInit] = useStoreState({
     authorName: '',
     authorEmail: '',
     repository: '',
@@ -6653,9 +6930,13 @@ function GitReleasePanelNext({
     )
   }
   return (
-    <section className="git-release-panel grid max-w-230 content-start gap-4">
-      <header className="workspace-page-header release-toolbar flex flex-wrap items-center justify-between gap-3">
-        <div className="workspace-page-header-meta">
+    <BotWorkspace
+      className="git-release-panel max-w-230 content-start"
+      header={<header className="bot-page-header release-toolbar flex flex-wrap items-center justify-between gap-3">
+        <span className="bot-page-header-icon">
+          <GitBranch className="size-4" />
+        </span>
+        <div className="bot-page-header-meta flex-1">
           <strong>
             {status?.packageName
               ? `${status.packageName}@${status.packageVersion || '未设置版本'}`
@@ -6711,7 +6992,8 @@ function GitReleasePanelNext({
                     : '重新开始'}
           </button>
         </div>
-      </header>
+      </header>}
+    >
       {loading ? (
         <p className="m-0 rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-500 dark:bg-slate-800 dark:text-slate-400">
           正在读取所选目录的 Git 状态…
@@ -6967,6 +7249,6 @@ function GitReleasePanelNext({
           setGitInitOpen(false)
         }}
       />
-    </section>
+    </BotWorkspace>
   )
 }

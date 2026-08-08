@@ -1775,13 +1775,12 @@ func (s *server) robotTasksHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if input.Action == "dev" || input.Action == "app" {
-		missing, dependencyErr := s.robots.RuntimeDependencies(input.Root)
+		// Starting a robot owns the dependency lifecycle. A new clone or a
+		// changed workspace must not make beginners detour to a separate
+		// "install dependencies" button before they can run it.
+		dependencyOutput, dependencyErr := s.robots.EnsureRuntimeDependencies(input.Root)
 		if dependencyErr != nil {
 			writeError(w, http.StatusBadRequest, dependencyErr.Error())
-			return
-		}
-		if len(missing) > 0 {
-			writeError(w, http.StatusBadRequest, "项目依赖不完整："+strings.Join(missing, "、")+"。请先执行“重载依赖”后再运行")
 			return
 		}
 		if s.developmentRunning(input.Root) {
@@ -1828,7 +1827,11 @@ func (s *server) robotTasksHandler(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, "当前目录已有前台或开发进程正在运行；请先停止后再启动。")
 			return
 		}
-		created.Output = map[bool]string{true: "开发模式已启动，正在等待进程输出…\n", false: "前台运行已启动，正在等待进程输出…\n"}[input.Action == "dev"]
+		created.Output = strings.TrimSpace(dependencyOutput)
+		if created.Output != "" {
+			created.Output += "\n"
+		}
+		created.Output += map[bool]string{true: "开发模式已启动，正在等待进程输出…\n", false: "前台运行已启动，正在等待进程输出…\n"}[input.Action == "dev"]
 		s.addOperation(created)
 		log.Printf("[ROBOT %s] 开始 action=%s root=%q", created.ID, input.Action, created.Root)
 		go s.watchDevelopmentTask(created.ID, input.Root, input.Action, command)

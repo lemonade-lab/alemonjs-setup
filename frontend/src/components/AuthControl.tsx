@@ -1,4 +1,5 @@
-import { useEffect, useState, type ReactNode } from 'react'
+import { useStoreState } from '../store/guideStore'
+import { useEffect, type ReactNode } from 'react'
 import { LockKeyhole, LogOut, UserRound, X } from 'lucide-react'
 import { Button } from './Button'
 
@@ -31,13 +32,13 @@ async function readStatus() {
 }
 
 export function AuthGate({ children }: { children: ReactNode }) {
-  const [status, setStatus] = useState<AuthStatus | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [loadError, setLoadError] = useState('')
-  const [account, setAccount] = useState('')
-  const [password, setPassword] = useState('')
-  const [error, setError] = useState('')
-  const [busy, setBusy] = useState(false)
+  const [status, setStatus] = useStoreState<AuthStatus | null>(null)
+  const [loading, setLoading] = useStoreState(true)
+  const [loadError, setLoadError] = useStoreState('')
+  const [account, setAccount] = useStoreState('')
+  const [password, setPassword] = useStoreState('')
+  const [error, setError] = useStoreState('')
+  const [busy, setBusy] = useStoreState(false)
   const refresh = () => {
     setLoading(true)
     setLoadError('')
@@ -150,13 +151,13 @@ export function AuthGate({ children }: { children: ReactNode }) {
 }
 
 export function AuthControl() {
-  const [status, setStatus] = useState<AuthStatus | null>(null)
-  const [open, setOpen] = useState(false)
-  const [account, setAccount] = useState('')
-  const [password, setPassword] = useState('')
-  const [confirmation, setConfirmation] = useState('')
-  const [error, setError] = useState('')
-  const [busy, setBusy] = useState(false)
+  const [status, setStatus] = useStoreState<AuthStatus | null>(null)
+  const [open, setOpen] = useStoreState(false)
+  const [account, setAccount] = useStoreState('')
+  const [password, setPassword] = useStoreState('')
+  const [confirmation, setConfirmation] = useStoreState('')
+  const [error, setError] = useStoreState('')
+  const [busy, setBusy] = useStoreState(false)
   const refresh = () => {
     void readStatus()
       .then(setStatus)

@@ -413,8 +413,16 @@ func LoadPackageConfig(source string) (PackageConfig, error) {
 	if err := json.Unmarshal(data, &manifest); err != nil {
 		return PackageConfig{}, fmt.Errorf("在线 package.json 无法识别")
 	}
-	if manifest.Name == "" || len(manifest.Alemonjs.Config) == 0 {
-		return PackageConfig{}, fmt.Errorf("该包没有声明 alemonjs.config")
+	if manifest.Name == "" {
+		return PackageConfig{}, fmt.Errorf("在线 package.json 缺少 name")
+	}
+	if len(manifest.Alemonjs.Config) == 0 {
+		return PackageConfig{
+			Package:   manifest.Name,
+			Namespace: manifest.Name,
+			Fields:    []PackageConfigField{},
+			Values:    map[string]string{},
+		}, nil
 	}
 	namespace := manifest.Name
 	for _, platform := range manifest.Alemonjs.Desktop.Platform {

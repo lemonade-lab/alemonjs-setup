@@ -1,17 +1,18 @@
+import { useStoreState } from '../store/guideStore'
 import { Copy, ExternalLink, KeyRound, Plus, RefreshCw, X } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { useEffect } from 'react'
 import { ConfirmDialog } from './ConfirmDialog'
 import { Button } from './Button'
 
 type SSHKey = { name: string; value: string }
 
 export function SSHControl() {
-  const [open, setOpen] = useState(false)
-  const [keys, setKeys] = useState<SSHKey[]>([])
-  const [loading, setLoading] = useState(false)
-  const [busy, setBusy] = useState(false)
-  const [message, setMessage] = useState('')
-  const [confirmGenerate, setConfirmGenerate] = useState(false)
+  const [open, setOpen] = useStoreState(false)
+  const [keys, setKeys] = useStoreState<SSHKey[]>([])
+  const [loading, setLoading] = useStoreState(false)
+  const [busy, setBusy] = useStoreState(false)
+  const [message, setMessage] = useStoreState('')
+  const [confirmGenerate, setConfirmGenerate] = useStoreState(false)
   const load = async () => {
     setLoading(true)
     try {

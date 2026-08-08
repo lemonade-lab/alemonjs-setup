@@ -1,8 +1,11 @@
-import { useEffect, useState } from 'react'
+import { useStoreState } from '../store/guideStore'
+import { useEffect } from 'react'
+import { useAutoSave } from '../hooks/useAutoSave'
 import {
   usePackageManifestQuery,
   useWritePackageManifestMutation
 } from '../store/workspaceApi'
+import { BotWorkspace } from './BotWorkspace'
 
 type Manifest = {
   name: string
@@ -25,6 +28,19 @@ const blank: Manifest = {
   access: 'public'
 }
 
+function sameManifest(left: Manifest, right: Manifest) {
+  return (
+    left.name === right.name &&
+    left.version === right.version &&
+    left.description === right.description &&
+    left.homepage === right.homepage &&
+    left.repository === right.repository &&
+    left.license === right.license &&
+    left.private === right.private &&
+    left.access === right.access
+  )
+}
+
 function saveErrorMessage(reason: unknown) {
   if (reason instanceof Error && reason.message) return reason.message
   if (reason && typeof reason === 'object') {
@@ -43,38 +59,43 @@ function saveErrorMessage(reason: unknown) {
 
 export function PackageManifestPanel({
   root,
-  busy,
-  onSaved
+  onSaveError
 }: {
   root: string
-  busy: boolean
-  onSaved: (message: string) => void
+  onSaveError: (message: string) => void
 }) {
-  const { data, isFetching, error } = usePackageManifestQuery(root, {
-    skip: !root
-  })
+  const { data, isLoading: isInitialLoading, error } = usePackageManifestQuery(
+    root,
+    { skip: !root }
+  )
   const [save, { isLoading }] = useWritePackageManifestMutation()
-  const [values, setValues] = useState<Manifest>(blank)
+  const [values, setValues] = useStoreState<Manifest>(blank)
   useEffect(() => {
-    if (data) setValues({ ...blank, ...data, access: data.access || 'public' })
+    if (!data) return
+    const next = { ...blank, ...data, access: data.access || 'public' }
+    setValues(current => (sameManifest(current, next) ? current : next))
   }, [data])
-  const set = <K extends keyof Manifest>(key: K, value: Manifest[K]) =>
-    setValues(current => ({ ...current, [key]: value }))
-  const submit = async () => {
+  const saveManifest = async (next: Manifest) => {
     try {
       const result = await save({
         root,
-        ...values,
-        access: values.private ? values.access : ''
+        ...next,
+        access: next.private ? next.access : ''
       }).unwrap()
-      onSaved(result.output || '发布信息已保存。')
+      return result
     } catch (reason) {
-      onSaved(saveErrorMessage(reason))
+      onSaveError(saveErrorMessage(reason))
     }
+  }
+  const scheduleSave = useAutoSave(saveManifest)
+  const set = <K extends keyof Manifest>(key: K, value: Manifest[K]) => {
+    const next = { ...values, [key]: value }
+    setValues(next)
+    scheduleSave(next)
   }
   const fieldClass =
     'min-h-9 w-full rounded-md border border-slate-300 bg-white px-2.5 text-sm font-normal text-slate-800 outline-none transition focus:border-brand-600 focus:ring-2 focus:ring-brand-100'
-  if (isFetching)
+  if (isInitialLoading)
     return (
       <section className="grid max-w-180 rounded-xl border border-slate-200 bg-white p-4 text-xs text-slate-500">
         <p>正在读取 package.json…</p>
@@ -87,21 +108,19 @@ export function PackageManifestPanel({
       </section>
     )
   return (
-    <section className="grid max-w-180 gap-4 rounded-xl border border-slate-200 bg-white p-4 shadow-[0_7px_18px_rgb(28_26_23/0.035)]">
-      <header className="flex items-start justify-between gap-4 border-b border-slate-100 pb-3">
-        <div className="grid gap-0.5">
+    <BotWorkspace
+      className="package-manifest-panel max-w-180"
+      header={<header className="bot-page-header flex items-center justify-between gap-4">
+        <div className="bot-page-header-meta">
           <strong className="text-sm text-ink-950">包信息</strong>
-          <span className="text-xs text-slate-500">Git 与 npm 发布共用。</span>
+          <small>
+            Git 与 npm 发布共用 ·{' '}
+            {isLoading ? '正在自动保存…' : '修改后自动保存'}
+          </small>
         </div>
-        <button
-          className="inline-flex min-h-9 items-center justify-center rounded-md bg-brand-600 px-3.5 text-xs font-semibold text-white hover:bg-brand-700 disabled:cursor-not-allowed disabled:opacity-50"
-          disabled={busy || isLoading}
-          onClick={() => void submit()}
-        >
-          {isLoading ? '保存中' : '保存'}
-        </button>
-      </header>
-      <div className="grid grid-cols-2 gap-3">
+      </header>}
+    >
+      <div className="grid grid-cols-2 gap-3 rounded-xl border border-slate-200 bg-white p-4 shadow-[0_7px_18px_rgb(28_26_23/0.035)]">
         <label className="grid gap-1 text-xs font-semibold text-slate-600">
           包名
           <input
@@ -178,6 +197,6 @@ export function PackageManifestPanel({
           仅本地使用，不发布到 npm
         </label>
       </div>
-    </section>
+    </BotWorkspace>
   )
 }
